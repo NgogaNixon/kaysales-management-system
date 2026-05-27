@@ -12,10 +12,14 @@ export default function Login() {
     setLoading(true)
     setError('')
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password
     })
+
+    if (!error && data.user) {
+      window.location.href = '/dashboard'
+    }
 
     if (error) {
       setError(error.message)

@@ -26,7 +26,7 @@ export default function Signup() {
     if (error) {
       setError(error.message)
     } else {
-      setSuccess('Account created! Please check your email to verify your account.')
+      setSuccess('If this email is new, you will receive a confirmation email shortly. Please check your inbox.')
     }
     setLoading(false)
   }
