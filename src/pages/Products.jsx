@@ -63,10 +63,19 @@ export default function Products() {
     setShowConfirm(true)
   }
 
-  const handleSave = async () => {
+ const handleSave = async () => {
     if (!form.name || !form.quantity || !form.selling_price) {
       setError('Name, quantity and selling price are required')
       return
+    }
+
+    // Check category limit for standard plan
+    if (!selectedProduct && isStandard && form.category) {
+      const existingCategories = [...new Set(products.map(p => p.category).filter(Boolean))]
+      if (existingCategories.length >= 1 && !existingCategories.includes(form.category)) {
+        setError('Standard plan only allows 1 stock category. Upgrade to Premium for more.')
+        return
+      }
     }
     setSaving(true)
     setError('')
@@ -103,7 +112,9 @@ export default function Products() {
   )
 
   const lowStock = products.filter(p => p.quantity < 3)
-
+   const categories = [...new Set(products.map(p => p.category).filter(Boolean))]
+const isStandard = profile?.plan_type === 'standard'
+const categoryLimitReached = isStandard && categories.length >= 1
   return (
     <Layout>
       <div className="p-6 space-y-6">
@@ -120,6 +131,11 @@ export default function Products() {
           >
             + Add Product
           </button>
+          {isStandard && (
+            <span className="text-xs text-yellow-400 bg-yellow-900 px-3 py-2 rounded-lg">
+              Standard Plan — 1 category only
+            </span>
+          )}
         </div>
 
         {/* Low Stock Alert */}

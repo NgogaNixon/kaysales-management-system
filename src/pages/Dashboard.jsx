@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import * as XLSX from 'xlsx'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -97,6 +100,50 @@ export default function Dashboard() {
   }
 
   const daysRemaining = getDaysRemaining()
+  const exportExcel = () => {
+    const data = stats.recentSales.map(s => ({
+      Product: s.product_name,
+      Quantity: s.quantity_sold,
+      'Selling Price (RWF)': s.selling_price,
+      'Total (RWF)': s.total,
+      Date: new Date(s.created_at).toLocaleDateString(),
+    }))
+    const ws = XLSX.utils.json_to_sheet(data)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Sales')
+    XLSX.writeFile(wb, 'KaySales_Dashboard_Report.xlsx')
+  }
+
+  const exportPDF = () => {
+    const doc = new jsPDF()
+    doc.setFontSize(16)
+    doc.text('KaySales Management System', 14, 15)
+    doc.setFontSize(12)
+    doc.text('Dashboard Report', 14, 25)
+    doc.setFontSize(10)
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
+    doc.text(`Total Revenue: RWF ${stats.totalRevenue.toLocaleString()}`, 14, 39)
+    doc.text(`Total Sales: ${stats.totalSales}`, 14, 46)
+    doc.text(`Total Products: ${stats.totalProducts}`, 14, 53)
+    doc.text(`Credits Given: RWF ${stats.creditsGiven.toLocaleString()}`, 14, 60)
+    doc.text(`Credits Taken: RWF ${stats.creditsTaken.toLocaleString()}`, 14, 67)
+
+    autoTable(doc, {
+      startY: 75,
+      head: [['Product', 'Qty', 'Price (RWF)', 'Total (RWF)', 'Date']],
+      body: stats.recentSales.map(s => [
+        s.product_name,
+        s.quantity_sold,
+        s.selling_price?.toLocaleString(),
+        s.total?.toLocaleString(),
+        new Date(s.created_at).toLocaleDateString(),
+      ]),
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [29, 78, 216] },
+    })
+
+    doc.save('KaySales_Dashboard_Report.pdf')
+  }
 
   if (loading) {
     return (
@@ -112,7 +159,7 @@ export default function Dashboard() {
     <Layout>
       <div className="p-6 space-y-6">
 
-        {/* Header */}
+       {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">
@@ -120,8 +167,20 @@ export default function Dashboard() {
             </h1>
             <p className="text-gray-400 text-sm mt-1">Here's what's happening with your business today</p>
           </div>
-          <div className="text-right">
-            <p className="text-gray-400 text-sm">{new Date().toLocaleDateString('en-RW', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+          <div className="flex items-center gap-3">
+            <p className="text-gray-400 text-sm hidden sm:block">{new Date().toLocaleDateString('en-RW', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+            <button
+              onClick={exportExcel}
+              className="px-3 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium"
+            >
+              Excel
+            </button>
+            <button
+              onClick={exportPDF}
+              className="px-3 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium"
+            >
+              PDF
+            </button>
           </div>
         </div>
 
