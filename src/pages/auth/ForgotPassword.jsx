@@ -11,11 +11,9 @@ export default function ForgotPassword() {
     e.preventDefault()
     setLoading(true)
     setError('')
-
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: window.location.origin + '/reset-password'
     })
-
     if (error) {
       setError(error.message)
     } else {
@@ -28,15 +26,11 @@ export default function ForgotPassword() {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 w-full max-w-md text-center">
-          <span className="text-5xl">📧</span>
-          <h2 className="text-2xl font-bold text-white mt-4 mb-2">Reset Email Sent</h2>
+          <h2 className="text-2xl font-bold text-white mb-2">Reset Email Sent</h2>
           <p className="text-gray-400 mb-6">
-            We sent a password reset link to <span className="text-white font-medium">{email}</span>. Check your inbox.
+            We sent a reset link to <span className="text-white font-medium">{email}</span>. Check your inbox.
           </p>
-          
-            href="/login"
-            className="block w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition"
-          >
+          <a href="/login" className="block w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition">
             Back to Login
           </a>
         </div>
@@ -47,8 +41,6 @@ export default function ForgotPassword() {
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
       <div className="w-full max-w-md">
-
-        {/* Logo */}
         <div className="text-center mb-8">
           <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4">
             <span className="text-white font-bold text-xl">K</span>
@@ -56,15 +48,12 @@ export default function ForgotPassword() {
           <h1 className="text-2xl font-bold text-white">KaySales Management System</h1>
           <p className="text-gray-400 text-sm mt-1">Reset your password</p>
         </div>
-
-        {/* Card */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
           {error && (
             <div className="bg-red-900 border border-red-700 text-red-300 p-3 rounded-lg mb-4 text-sm">
               {error}
             </div>
           )}
-
           <form onSubmit={handleReset} className="space-y-4">
             <div>
               <label className="block text-gray-400 text-sm font-medium mb-2">Email</label>
@@ -77,7 +66,6 @@ export default function ForgotPassword() {
                 required
               />
             </div>
-
             <button
               type="submit"
               disabled={loading}
@@ -86,14 +74,12 @@ export default function ForgotPassword() {
               {loading ? 'Sending...' : 'Send Reset Link'}
             </button>
           </form>
-
           <div className="mt-6 text-center">
             <a href="/login" className="text-blue-400 hover:text-blue-300 text-sm transition">
               Back to Login
             </a>
           </div>
         </div>
-
       </div>
     </div>
   )

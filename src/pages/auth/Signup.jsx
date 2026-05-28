@@ -13,15 +13,11 @@ export default function Signup() {
     e.preventDefault()
     setLoading(true)
     setError('')
-
     const { error } = await supabase.auth.signUp({
       email,
       password,
-      options: {
-        data: { full_name: fullName }
-      }
+      options: { data: { full_name: fullName } }
     })
-
     if (error) {
       setError(error.message)
     } else {
@@ -34,15 +30,11 @@ export default function Signup() {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 w-full max-w-md text-center">
-          <span className="text-5xl">📧</span>
-          <h2 className="text-2xl font-bold text-white mt-4 mb-2">Check Your Email</h2>
+          <h2 className="text-2xl font-bold text-white mb-2">Check Your Email</h2>
           <p className="text-gray-400 mb-6">
-            We sent a confirmation link to <span className="text-white font-medium">{email}</span>. Click it to confirm your account then come back to login.
+            We sent a confirmation link to <span className="text-white font-medium">{email}</span>. Click it to confirm your account.
           </p>
-          
-            href="/login"
-            className="block w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition"
-          >
+          <a href="/login" className="block w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition">
             Back to Login
           </a>
         </div>
@@ -53,8 +45,6 @@ export default function Signup() {
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
       <div className="w-full max-w-md">
-
-        {/* Logo */}
         <div className="text-center mb-8">
           <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4">
             <span className="text-white font-bold text-xl">K</span>
@@ -62,15 +52,12 @@ export default function Signup() {
           <h1 className="text-2xl font-bold text-white">KaySales Management System</h1>
           <p className="text-gray-400 text-sm mt-1">Create your account</p>
         </div>
-
-        {/* Card */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
           {error && (
             <div className="bg-red-900 border border-red-700 text-red-300 p-3 rounded-lg mb-4 text-sm">
               {error}
             </div>
           )}
-
           <form onSubmit={handleSignup} className="space-y-4">
             <div>
               <label className="block text-gray-400 text-sm font-medium mb-2">Full Name</label>
@@ -83,7 +70,6 @@ export default function Signup() {
                 required
               />
             </div>
-
             <div>
               <label className="block text-gray-400 text-sm font-medium mb-2">Email</label>
               <input
@@ -95,7 +81,6 @@ export default function Signup() {
                 required
               />
             </div>
-
             <div>
               <label className="block text-gray-400 text-sm font-medium mb-2">Password</label>
               <input
@@ -107,7 +92,6 @@ export default function Signup() {
                 required
               />
             </div>
-
             <button
               type="submit"
               disabled={loading}
@@ -116,7 +100,6 @@ export default function Signup() {
               {loading ? 'Creating Account...' : 'Create Account'}
             </button>
           </form>
-
           <div className="mt-6 text-center">
             <p className="text-gray-500 text-sm">
               Already have an account?{' '}
@@ -126,7 +109,6 @@ export default function Signup() {
             </p>
           </div>
         </div>
-
       </div>
     </div>
   )
