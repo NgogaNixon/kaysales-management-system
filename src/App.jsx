@@ -14,6 +14,7 @@ import AdminDashboard from './pages/admin/AdminDashboard'
 import ClientManagement from './pages/admin/ClientManagement'
 import Subscriptions from './pages/admin/Subscriptions'
 import SystemReports from './pages/admin/SystemReports'
+import ChoosePlan from './pages/ChoosePlan'
 
 function App() {
   return (
@@ -25,7 +26,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
-
+          <Route path="/choose-plan" element={<ChoosePlan />} />
           {/* Protected client routes */}
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />

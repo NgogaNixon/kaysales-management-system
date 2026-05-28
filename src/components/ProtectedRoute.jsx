@@ -19,32 +19,6 @@ export default function ProtectedRoute({ children }) {
     return <Navigate to="/login" />
   }
 
-  if (profile && !profile.approved) {
-    return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="bg-gray-900 border border-gray-800 p-8 rounded-2xl w-full max-w-md text-center">
-          <span className="text-4xl">⏳</span>
-          <h2 className="text-xl font-bold text-white mt-4 mb-2">
-            Account Pending Approval
-          </h2>
-          <p className="text-gray-400 mb-6">
-            Your account is waiting for admin approval. Please check back later.
-          </p>
-          <button
-            onClick={async () => {
-              const { supabase } = await import('../lib/supabase')
-              await supabase.auth.signOut()
-              window.location.href = '/login'
-            }}
-            className="bg-red-600 text-white px-6 py-2 rounded-lg hover:bg-red-700 transition"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
-    )
-  }
-
   if (!profile) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -54,6 +28,10 @@ export default function ProtectedRoute({ children }) {
         </div>
       </div>
     )
+  }
+
+  if (!profile.approved && profile.role !== 'admin') {
+    return <Navigate to="/choose-plan" />
   }
 
   return children
