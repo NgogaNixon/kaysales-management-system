@@ -73,7 +73,7 @@ export default function Dashboard() {
     const totalRevenue = salesData?.reduce((sum, s) => sum + (s.total || 0), 0) || 0
     const creditsGivenTotal = creditsGivenData?.reduce((sum, c) => sum + (c.amount || 0), 0) || 0
     const creditsTakenTotal = creditsTakenData?.reduce((sum, c) => sum + (c.amount || 0), 0) || 0
-    const lowStock = productsData?.filter(p => p.quantity < 10) || []
+    const lowStock = productsData?.filter(p => p.quantity < 3) || []
     const recentSales = salesData?.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5) || []
 
     setStats({
