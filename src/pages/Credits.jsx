@@ -23,6 +23,7 @@ export default function Credits() {
     amount: '',
     date: '',
     notes: '',
+    status: 'unpaid',
   })
 
   useEffect(() => {
@@ -50,7 +51,7 @@ export default function Credits() {
 
   const openAdd = () => {
     setSelectedCredit(null)
-    setForm({ name: '', product_name: '', quantity: '', amount: '', date: '', notes: '' })
+    setForm({ name: '', product_name: '', quantity: '', amount: '', date: '', notes: '', status: 'unpaid' })
     setError('')
     setShowModal(true)
   }
@@ -64,6 +65,7 @@ export default function Credits() {
       amount: credit.amount || '',
       date: credit.date ? credit.date.split('T')[0] : '',
       notes: credit.notes || '',
+      status: credit.status || 'unpaid',
     })
     setError('')
     setShowModal(true)
@@ -92,6 +94,7 @@ export default function Credits() {
       amount: parseInt(form.amount),
       date: form.date || new Date().toISOString(),
       notes: form.notes,
+      status: form.status,
       user_id: profile.id,
     }
 
@@ -113,9 +116,18 @@ export default function Credits() {
     fetchCredits()
   }
 
+  const handleStatusToggle = async (credit) => {
+    const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+    const newStatus = credit.status === 'paid' ? 'unpaid' : 'paid'
+    await supabase.from(table).update({ status: newStatus }).eq('id', credit.id)
+    fetchCredits()
+  }
+
   const currentCredits = activeTab === 'given' ? creditsGiven : creditsTaken
   const totalGiven = creditsGiven.reduce((sum, c) => sum + (c.amount || 0), 0)
   const totalTaken = creditsTaken.reduce((sum, c) => sum + (c.amount || 0), 0)
+  const unpaidGiven = creditsGiven.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
+  const unpaidTaken = creditsTaken.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
 
   return (
     <Layout>
@@ -136,16 +148,26 @@ export default function Credits() {
         </div>
 
         {/* Summary Cards */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
             <span className="text-2xl">📤</span>
             <p className="text-2xl font-bold text-yellow-400 mt-2">RWF {totalGiven.toLocaleString()}</p>
-            <p className="text-gray-400 text-sm mt-1">Total Credits Given (Owed to you)</p>
+            <p className="text-gray-400 text-sm mt-1">Total Given</p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <span className="text-2xl">⏳</span>
+            <p className="text-2xl font-bold text-orange-400 mt-2">RWF {unpaidGiven.toLocaleString()}</p>
+            <p className="text-gray-400 text-sm mt-1">Unpaid Given</p>
           </div>
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
             <span className="text-2xl">📥</span>
             <p className="text-2xl font-bold text-red-400 mt-2">RWF {totalTaken.toLocaleString()}</p>
-            <p className="text-gray-400 text-sm mt-1">Total Credits Taken (You owe)</p>
+            <p className="text-gray-400 text-sm mt-1">Total Taken</p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <span className="text-2xl">💸</span>
+            <p className="text-2xl font-bold text-red-300 mt-2">RWF {unpaidTaken.toLocaleString()}</p>
+            <p className="text-gray-400 text-sm mt-1">Unpaid Taken</p>
           </div>
         </div>
 
@@ -202,6 +224,7 @@ export default function Credits() {
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Amount</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Date</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Notes</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -220,6 +243,18 @@ export default function Credits() {
                         {credit.date ? new Date(credit.date).toLocaleDateString() : '—'}
                       </td>
                       <td className="px-6 py-4 text-gray-400 max-w-xs truncate">{credit.notes || '—'}</td>
+                      <td className="px-6 py-4">
+                        <button
+                          onClick={() => handleStatusToggle(credit)}
+                          className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                            credit.status === 'paid'
+                              ? 'bg-green-900 text-green-300 hover:bg-green-800'
+                              : 'bg-red-900 text-red-300 hover:bg-red-800'
+                          }`}
+                        >
+                          {credit.status === 'paid' ? '✅ Paid' : '❌ Unpaid'}
+                        </button>
+                      </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
                           <button
@@ -308,6 +343,17 @@ export default function Credits() {
               />
             </div>
             <div>
+              <label className="text-gray-400 text-sm mb-1 block">Status</label>
+              <select
+                value={form.status}
+                onChange={(e) => setForm({ ...form, status: e.target.value })}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="unpaid">Unpaid</option>
+                <option value="paid">Paid</option>
+              </select>
+            </div>
+            <div>
               <label className="text-gray-400 text-sm mb-1 block">Notes</label>
               <textarea
                 value={form.notes}
@@ -339,7 +385,7 @@ export default function Credits() {
       {/* Confirm Delete */}
       {showConfirm && (
         <ConfirmDialog
-          message={`Are you sure you want to delete this credit entry?`}
+          message="Are you sure you want to delete this credit entry?"
           onConfirm={handleDelete}
           onCancel={() => setShowConfirm(false)}
         />

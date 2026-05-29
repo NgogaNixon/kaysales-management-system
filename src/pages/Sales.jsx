@@ -5,6 +5,7 @@ import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import * as XLSX from 'xlsx'
+import { useRef } from 'react'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -28,6 +29,8 @@ export default function Sales() {
   })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [showReceipt, setShowReceipt] = useState(false)
+const [receiptSale, setReceiptSale] = useState(null)
 
   useEffect(() => {
     if (profile?.id) {
@@ -167,6 +170,30 @@ export default function Sales() {
     XLSX.writeFile(wb, 'KaySales_Sales_Report.xlsx')
   }
 
+   const generateReceipt = (sale) => {
+    setReceiptSale(sale)
+    setShowReceipt(true)
+  }
+
+  const printReceipt = () => {
+    const doc = new jsPDF({ format: [80, 150], unit: 'mm' })
+    doc.setFontSize(12)
+    doc.text('KaySales Management System', 40, 10, { align: 'center' })
+    doc.setFontSize(9)
+    doc.text('Sales Receipt', 40, 16, { align: 'center' })
+    doc.text('--------------------------------', 40, 20, { align: 'center' })
+    doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 5, 26)
+    doc.text(`Product: ${receiptSale.product_name}`, 5, 32)
+    doc.text(`Quantity: ${receiptSale.quantity_sold}`, 5, 38)
+    doc.text(`Unit Price: RWF ${receiptSale.selling_price?.toLocaleString()}`, 5, 44)
+    doc.text('--------------------------------', 40, 48, { align: 'center' })
+    doc.setFontSize(11)
+    doc.text(`TOTAL: RWF ${receiptSale.total?.toLocaleString()}`, 40, 55, { align: 'center' })
+    doc.setFontSize(8)
+    doc.text('Thank you for your business!', 40, 62, { align: 'center' })
+    doc.text('Powered by KaySales', 40, 67, { align: 'center' })
+    doc.save(`Receipt_${receiptSale.product_name}_${new Date(receiptSale.created_at).toLocaleDateString()}.pdf`)
+  }
   const exportPDF = () => {
     const doc = new jsPDF()
     doc.setFontSize(16)
@@ -299,13 +326,19 @@ export default function Sales() {
                       <td className="px-6 py-4 text-gray-300">RWF {sale.selling_price?.toLocaleString()}</td>
                       <td className="px-6 py-4 text-green-400 font-medium">RWF {sale.total?.toLocaleString()}</td>
                       <td className="px-6 py-4 text-gray-400">{new Date(sale.created_at).toLocaleDateString()}</td>
-                      <td className="px-6 py-4">
+             <td className="px-6 py-4">
                         <div className="flex gap-2">
                           <button
                             onClick={() => openEdit(sale)}
                             className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition"
                           >
                             Edit
+                          </button>
+                          <button
+                            onClick={() => generateReceipt(sale)}
+                            className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
+                          >
+                            Receipt
                           </button>
                           <button
                             onClick={() => openDelete(sale)}
@@ -389,13 +422,74 @@ export default function Sales() {
         </Modal>
       )}
 
-      {/* Confirm Delete */}
+   {/* Confirm Delete */}
       {showConfirm && (
         <ConfirmDialog
           message={`Are you sure you want to delete this sale of "${selectedSale?.product_name}"?`}
           onConfirm={handleDelete}
           onCancel={() => setShowConfirm(false)}
         />
+      )}
+
+      {/* Receipt Modal */}
+      {showReceipt && receiptSale && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <h2 className="text-lg font-bold text-white">Sales Receipt</h2>
+              <button onClick={() => setShowReceipt(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="px-6 py-4">
+              <div className="text-center mb-4">
+                <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
+                  <span className="text-white font-bold">K</span>
+                </div>
+                <p className="text-white font-bold">KaySales Management System</p>
+                <p className="text-gray-400 text-xs">Sales Receipt</p>
+              </div>
+              <div className="border-t border-gray-700 pt-4 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Date</span>
+                  <span className="text-white">{new Date(receiptSale.created_at).toLocaleDateString()}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Product</span>
+                  <span className="text-white">{receiptSale.product_name}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Quantity</span>
+                  <span className="text-white">{receiptSale.quantity_sold}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Unit Price</span>
+                  <span className="text-white">RWF {receiptSale.selling_price?.toLocaleString()}</span>
+                </div>
+                <div className="border-t border-gray-700 pt-2 flex justify-between">
+                  <span className="text-white font-bold">TOTAL</span>
+                  <span className="text-green-400 font-bold text-lg">RWF {receiptSale.total?.toLocaleString()}</span>
+                </div>
+              </div>
+              <div className="text-center mt-4 text-gray-500 text-xs">
+                <p>Thank you for your business!</p>
+                <p>Powered by KaySales</p>
+              </div>
+              <div className="flex gap-3 mt-4">
+                <button
+                  onClick={() => setShowReceipt(false)}
+                  className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={printReceipt}
+                  className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+                >
+                  Download PDF
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
     </Layout>
