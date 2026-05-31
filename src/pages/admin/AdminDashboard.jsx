@@ -2,18 +2,23 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../context/AuthContext'
 import Layout from '../../components/Layout'
+import { useNavigate } from 'react-router-dom'
 
 export default function AdminDashboard() {
   const { profile } = useAuth()
+  const navigate = useNavigate()
   const [stats, setStats] = useState({
     totalClients: 0,
     pendingApprovals: 0,
     activeSubscriptions: 0,
-    totalRevenue: 0,
+    expiringSoon: 0,
+    expired: 0,
+    estimatedRevenue: 0,
   })
-  const [clients, setClients] = useState([])
+  const [expiringSoonClients, setExpiringSoonClients] = useState([])
+  const [expiredClients, setExpiredClients] = useState([])
+  const [pendingPayments, setPendingPayments] = useState([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState('all')
 
   useEffect(() => {
     fetchData()
@@ -32,49 +37,56 @@ export default function AdminDashboard() {
       .from('subscriptions')
       .select('*')
 
+    const { data: paymentsData } = await supabase
+      .from('payment_requests')
+      .select('*')
+      .eq('status', 'pending')
+
+    const today = new Date()
+    const in7Days = new Date()
+    in7Days.setDate(in7Days.getDate() + 7)
+
+    const expiring = []
+    const expired = []
+
+    subsData?.forEach(sub => {
+      if (!sub.expiry_date) return
+      const expiry = new Date(sub.expiry_date)
+      const client = profilesData?.find(p => p.id === sub.user_id)
+      if (!client) return
+
+      if (expiry < today) {
+        expired.push({ ...client, subscription: sub })
+      } else if (expiry <= in7Days) {
+        expiring.push({ ...client, subscription: sub })
+      }
+    })
+
     const totalClients = profilesData?.length || 0
     const pendingApprovals = profilesData?.filter(p => !p.approved).length || 0
-    const activeSubscriptions = subsData?.filter(s => s.payment_status === 'paid').length || 0
+    const activeSubscriptions = subsData?.filter(s => s.payment_status === 'paid' && new Date(s.expiry_date) >= today).length || 0
+    const standardPlans = profilesData?.filter(p => p.plan_type === 'standard' && p.approved).length || 0
+    const premiumPlans = profilesData?.filter(p => p.plan_type === 'premium' && p.approved).length || 0
 
-    setClients(profilesData || [])
+    setExpiringSoonClients(expiring)
+    setExpiredClients(expired)
+    setPendingPayments(paymentsData || [])
     setStats({
       totalClients,
       pendingApprovals,
       activeSubscriptions,
-      totalRevenue: activeSubscriptions * 50000,
+      expiringSoon: expiring.length,
+      expired: expired.length,
+      estimatedRevenue: (standardPlans * 45000) + (premiumPlans * 80000),
     })
     setLoading(false)
   }
 
-  const handleApprove = async (userId) => {
-    await supabase
-      .from('profiles')
-      .update({ approved: true })
-      .eq('id', userId)
-    fetchData()
+  const getDaysRemaining = (expiryDate) => {
+    const today = new Date()
+    const expiry = new Date(expiryDate)
+    return Math.ceil((expiry - today) / (1000 * 60 * 60 * 24))
   }
-
-  const handleRevoke = async (userId) => {
-    await supabase
-      .from('profiles')
-      .update({ approved: false })
-      .eq('id', userId)
-    fetchData()
-  }
-
-  const handlePlanChange = async (userId, plan) => {
-    await supabase
-      .from('profiles')
-      .update({ plan_type: plan })
-      .eq('id', userId)
-    fetchData()
-  }
-
-  const filteredClients = clients.filter(c => {
-    if (filter === 'pending') return !c.approved
-    if (filter === 'approved') return c.approved
-    return true
-  })
 
   if (loading) {
     return (
@@ -92,21 +104,19 @@ export default function AdminDashboard() {
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-white">
-            Admin Dashboard 👑
-          </h1>
-          <p className="text-gray-400 text-sm mt-1">
-            Manage clients, subscriptions and system overview
-          </p>
+          <h1 className="text-2xl font-bold text-white">Admin Dashboard 👑</h1>
+          <p className="text-gray-400 text-sm mt-1">System overview and client management</p>
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
           {[
-            { label: 'Total Clients', value: stats.totalClients, icon: '👥', color: 'blue' },
-            { label: 'Pending Approvals', value: stats.pendingApprovals, icon: '⏳', color: 'yellow' },
-            { label: 'Active Subscriptions', value: stats.activeSubscriptions, icon: '✅', color: 'green' },
-            { label: 'Est. Monthly Revenue', value: `RWF ${stats.totalRevenue.toLocaleString()}`, icon: '💰', color: 'purple' },
+            { label: 'Total Clients', value: stats.totalClients, icon: '👥' },
+            { label: 'Pending Approvals', value: stats.pendingApprovals, icon: '⏳' },
+            { label: 'Active Subscriptions', value: stats.activeSubscriptions, icon: '✅' },
+            { label: 'Expiring Soon', value: stats.expiringSoon, icon: '⚠️' },
+            { label: 'Expired', value: stats.expired, icon: '🔒' },
+            { label: 'Est. Monthly Revenue', value: `RWF ${stats.estimatedRevenue.toLocaleString()}`, icon: '💰' },
           ].map((stat, i) => (
             <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
               <span className="text-2xl">{stat.icon}</span>
@@ -116,107 +126,97 @@ export default function AdminDashboard() {
           ))}
         </div>
 
-        {/* Pending Approvals Alert */}
-        {stats.pendingApprovals > 0 && (
-          <div className="bg-yellow-900 border border-yellow-700 rounded-xl p-4 flex items-center gap-3">
-            <span className="text-2xl">⏳</span>
-            <p className="text-yellow-300 font-bold">
-              {stats.pendingApprovals} client{stats.pendingApprovals > 1 ? 's' : ''} waiting for approval
-            </p>
+        {/* Pending Payments Alert */}
+        {pendingPayments.length > 0 && (
+          <div
+            onClick={() => navigate('/admin/subscriptions')}
+            className="bg-yellow-900 border border-yellow-700 rounded-xl p-4 flex items-center justify-between cursor-pointer hover:bg-yellow-800 transition"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">💰</span>
+              <p className="text-yellow-300 font-bold">
+                {pendingPayments.length} payment{pendingPayments.length > 1 ? 's' : ''} waiting for verification
+              </p>
+            </div>
+            <span className="text-yellow-400 text-sm">View →</span>
           </div>
         )}
 
-        {/* Clients Table */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-white">All Clients</h2>
-            <div className="flex gap-2">
-              {['all', 'pending', 'approved'].map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
-                    filter === f
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-800 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  {f.charAt(0).toUpperCase() + f.slice(1)}
-                </button>
+        {/* Pending Approvals Alert */}
+        {stats.pendingApprovals > 0 && (
+          <div
+            onClick={() => navigate('/admin/clients')}
+            className="bg-blue-900 border border-blue-700 rounded-xl p-4 flex items-center justify-between cursor-pointer hover:bg-blue-800 transition"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">⏳</span>
+              <p className="text-blue-300 font-bold">
+                {stats.pendingApprovals} client{stats.pendingApprovals > 1 ? 's' : ''} waiting for approval
+              </p>
+            </div>
+            <span className="text-blue-400 text-sm">View →</span>
+          </div>
+        )}
+
+        {/* Expiring Soon */}
+        {expiringSoonClients.length > 0 && (
+          <div className="bg-gray-900 border border-orange-700 rounded-xl p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-xl">⚠️</span>
+              <h2 className="text-lg font-bold text-orange-300">Expiring Soon</h2>
+            </div>
+            <div className="space-y-3">
+              {expiringSoonClients.map((client) => (
+                <div key={client.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
+                  <div>
+                    <p className="text-white font-medium">{client.full_name}</p>
+                    <p className="text-gray-400 text-xs">{client.email}</p>
+                  </div>
+                  <div className="text-right">
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      client.plan_type === 'premium' ? 'bg-purple-900 text-purple-300' : 'bg-blue-900 text-blue-300'
+                    }`}>
+                      {client.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                    </span>
+                    <p className="text-orange-400 text-xs mt-1 font-medium">
+                      {getDaysRemaining(client.subscription.expiry_date)} days left
+                    </p>
+                  </div>
+                </div>
               ))}
             </div>
           </div>
+        )}
 
-          {filteredClients.length === 0 ? (
-            <div className="text-center py-8">
-              <p className="text-gray-500">No clients found</p>
+        {/* Expired Clients */}
+        {expiredClients.length > 0 && (
+          <div className="bg-gray-900 border border-red-700 rounded-xl p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-xl">🔒</span>
+              <h2 className="text-lg font-bold text-red-300">Expired Subscriptions</h2>
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-800">
-                    <th className="text-left text-gray-400 pb-3 font-medium">Name</th>
-                    <th className="text-left text-gray-400 pb-3 font-medium">Email</th>
-                    <th className="text-left text-gray-400 pb-3 font-medium">Plan</th>
-                    <th className="text-left text-gray-400 pb-3 font-medium">Status</th>
-                    <th className="text-left text-gray-400 pb-3 font-medium">Joined</th>
-                    <th className="text-left text-gray-400 pb-3 font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredClients.map((client) => (
-                    <tr key={client.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
-                      <td className="py-3 text-white font-medium">{client.full_name}</td>
-                      <td className="py-3 text-gray-300">{client.email}</td>
-                      <td className="py-3">
-                        <select
-                          value={client.plan_type || 'standard'}
-                          onChange={(e) => handlePlanChange(client.id, e.target.value)}
-                          className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700"
-                        >
-                          <option value="standard">Standard</option>
-                          <option value="premium">Premium</option>
-                        </select>
-                      </td>
-                      <td className="py-3">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          client.approved
-                            ? 'bg-green-900 text-green-300'
-                            : 'bg-yellow-900 text-yellow-300'
-                        }`}>
-                          {client.approved ? '✅ Approved' : '⏳ Pending'}
-                        </span>
-                      </td>
-                      <td className="py-3 text-gray-400">
-                        {new Date(client.created_at).toLocaleDateString()}
-                      </td>
-                      <td className="py-3">
-                        <div className="flex gap-2">
-                          {!client.approved ? (
-                            <button
-                              onClick={() => handleApprove(client.id)}
-                              className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
-                            >
-                              Approve
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => handleRevoke(client.id)}
-                              className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
-                            >
-                              Revoke
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-3">
+              {expiredClients.map((client) => (
+                <div key={client.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
+                  <div>
+                    <p className="text-white font-medium">{client.full_name}</p>
+                    <p className="text-gray-400 text-xs">{client.email}</p>
+                  </div>
+                  <div className="text-right">
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      client.plan_type === 'premium' ? 'bg-purple-900 text-purple-300' : 'bg-blue-900 text-blue-300'
+                    }`}>
+                      {client.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                    </span>
+                    <p className="text-red-400 text-xs mt-1 font-medium">
+                      Expired {new Date(client.subscription.expiry_date).toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
       </div>
     </Layout>

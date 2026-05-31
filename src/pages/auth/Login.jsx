@@ -43,14 +43,16 @@ export default function Login() {
       <div className="w-full max-w-md">
 
         {/* Logo */}
-        <div className="text-center mb-8">
-          <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4">
+       <div className="text-center mb-8">
+          <div
+            onClick={() => navigate('/')}
+            className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4 cursor-pointer hover:bg-blue-700 transition"
+          >
             <span className="text-white font-bold text-xl">K</span>
           </div>
           <h1 className="text-2xl font-bold text-white">KaySales Management System</h1>
           <p className="text-gray-400 text-sm mt-1">Sign in to your account</p>
         </div>
-
         {/* Card */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
           {error && (
@@ -93,7 +95,7 @@ export default function Login() {
             </button>
           </form>
 
-          <div className="mt-6 text-center space-y-2">
+        <div className="mt-6 text-center space-y-2">
             <a href="/forgot-password" className="text-blue-400 hover:text-blue-300 text-sm transition block">
               Forgot Password?
             </a>
@@ -103,6 +105,12 @@ export default function Login() {
                 Sign Up
               </a>
             </p>
+            <button
+              onClick={() => navigate('/')}
+              className="text-gray-500 hover:text-gray-300 text-sm transition block w-full mt-2"
+            >
+              ← Back to Home
+            </button>
           </div>
         </div>
 

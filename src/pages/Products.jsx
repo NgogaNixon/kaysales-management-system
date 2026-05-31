@@ -17,7 +17,6 @@ export default function Products() {
     name: '',
     category: '',
     quantity: '',
-    buying_price: '',
     selling_price: '',
   })
   const [error, setError] = useState('')
@@ -40,7 +39,7 @@ export default function Products() {
 
   const openAdd = () => {
     setSelectedProduct(null)
-    setForm({ name: '', category: '', quantity: '', buying_price: '', selling_price: '' })
+    setForm({ name: '', category: '', quantity: '', selling_price: '' })
     setError('')
     setShowModal(true)
   }
@@ -51,7 +50,6 @@ export default function Products() {
       name: product.name,
       category: product.category || '',
       quantity: product.quantity,
-      buying_price: product.buying_price,
       selling_price: product.selling_price,
     })
     setError('')
@@ -63,20 +61,21 @@ export default function Products() {
     setShowConfirm(true)
   }
 
- const handleSave = async () => {
+  const handleSave = async () => {
     if (!form.name || !form.quantity || !form.selling_price) {
       setError('Name, quantity and selling price are required')
       return
     }
 
-    // Check category limit for standard plan
+    const isStandard = profile?.plan_type === 'standard'
     if (!selectedProduct && isStandard && form.category) {
       const existingCategories = [...new Set(products.map(p => p.category).filter(Boolean))]
-      if (existingCategories.length >= 1 && !existingCategories.includes(form.category)) {
-        setError('Standard plan only allows 1 stock category. Upgrade to Premium for more.')
+      if (existingCategories.length >= 2 && !existingCategories.includes(form.category)) {
+        setError('Standard plan only allows 2 stock categories. Upgrade to Premium for more.')
         return
       }
     }
+
     setSaving(true)
     setError('')
 
@@ -84,7 +83,7 @@ export default function Products() {
       name: form.name,
       category: form.category,
       quantity: parseInt(form.quantity),
-      buying_price: parseInt(form.buying_price) || 0,
+      buying_price: 0,
       selling_price: parseInt(form.selling_price),
       user_id: profile.id,
     }
@@ -112,9 +111,9 @@ export default function Products() {
   )
 
   const lowStock = products.filter(p => p.quantity < 3)
-   const categories = [...new Set(products.map(p => p.category).filter(Boolean))]
-const isStandard = profile?.plan_type === 'standard'
-const categoryLimitReached = isStandard && categories.length >= 1
+  const isStandard = profile?.plan_type === 'standard'
+  const categories = [...new Set(products.map(p => p.category).filter(Boolean))]
+
   return (
     <Layout>
       <div className="p-6 space-y-6">
@@ -125,17 +124,19 @@ const categoryLimitReached = isStandard && categories.length >= 1
             <h1 className="text-2xl font-bold text-white">📦 Products</h1>
             <p className="text-gray-400 text-sm mt-1">Manage your stock and inventory</p>
           </div>
-          <button
-            onClick={openAdd}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm"
-          >
-            + Add Product
-          </button>
-          {isStandard && (
-            <span className="text-xs text-yellow-400 bg-yellow-900 px-3 py-2 rounded-lg">
-              Standard Plan — 1 category only
-            </span>
-          )}
+          <div className="flex items-center gap-3">
+            {isStandard && (
+              <span className="text-xs text-yellow-400 bg-yellow-900 px-3 py-2 rounded-lg">
+                Standard Plan — up to 2 categories
+              </span>
+            )}
+            <button
+              onClick={openAdd}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm"
+            >
+              + Add Product
+            </button>
+          </div>
         </div>
 
         {/* Low Stock Alert */}
@@ -188,9 +189,7 @@ const categoryLimitReached = isStandard && categories.length >= 1
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Name</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Category</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Qty</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Buying Price</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Selling Price</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Profit/Unit</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
                   </tr>
@@ -205,11 +204,7 @@ const categoryLimitReached = isStandard && categories.length >= 1
                           {product.quantity}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-gray-300">RWF {product.buying_price?.toLocaleString()}</td>
                       <td className="px-6 py-4 text-gray-300">RWF {product.selling_price?.toLocaleString()}</td>
-                      <td className="px-6 py-4 text-green-400 font-medium">
-                        RWF {(product.selling_price - product.buying_price)?.toLocaleString()}
-                      </td>
                       <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                           product.quantity === 0
@@ -262,7 +257,7 @@ const categoryLimitReached = isStandard && categories.length >= 1
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder="e.g. Rice 1kg"
+                placeholder=""
               />
             </div>
             <div>
@@ -272,7 +267,7 @@ const categoryLimitReached = isStandard && categories.length >= 1
                 value={form.category}
                 onChange={(e) => setForm({ ...form, category: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder="e.g. Food, Electronics"
+                placeholder=""
               />
             </div>
             <div>
@@ -282,17 +277,7 @@ const categoryLimitReached = isStandard && categories.length >= 1
                 value={form.quantity}
                 onChange={(e) => setForm({ ...form, quantity: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder="0"
-              />
-            </div>
-            <div>
-              <label className="text-gray-400 text-sm mb-1 block">Buying Price (RWF)</label>
-              <input
-                type="number"
-                value={form.buying_price}
-                onChange={(e) => setForm({ ...form, buying_price: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder="0"
+                placeholder=""
               />
             </div>
             <div>
@@ -302,7 +287,7 @@ const categoryLimitReached = isStandard && categories.length >= 1
                 value={form.selling_price}
                 onChange={(e) => setForm({ ...form, selling_price: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder="0"
+                placeholder=""
               />
             </div>
             <div className="flex gap-3 pt-2">

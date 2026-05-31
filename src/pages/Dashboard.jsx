@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useLanguage } from '../context/LanguageContext'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -10,6 +11,7 @@ import Layout from '../components/Layout'
 export default function Dashboard() {
   const { profile } = useAuth()
   const navigate = useNavigate()
+  const { t } = useLanguage()
 
   // Redirect admin to admin dashboard
   useEffect(() => {
@@ -163,9 +165,9 @@ export default function Dashboard() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">
-              Welcome back, {profile?.full_name?.split(' ')[0]} 👋
+              {t('welcomeBack')}, {profile?.full_name?.split(' ')[0]} 👋
             </h1>
-            <p className="text-gray-400 text-sm mt-1">Here's what's happening with your business today</p>
+            <p className="text-gray-400 text-sm mt-1">{t('businessOverview')}</p>
           </div>
           <div className="flex items-center gap-3">
             <p className="text-gray-400 text-sm hidden sm:block">{new Date().toLocaleDateString('en-RW', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
@@ -222,11 +224,11 @@ export default function Dashboard() {
         {/* Stats Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           {[
-            { label: 'Total Sales', value: stats.totalSales, icon: '🧾', color: 'blue' },
-            { label: 'Total Revenue', value: `RWF ${stats.totalRevenue.toLocaleString()}`, icon: '💵', color: 'green' },
-            { label: 'Products', value: stats.totalProducts, icon: '📦', color: 'purple' },
-            { label: 'Credits Given', value: `RWF ${stats.creditsGiven.toLocaleString()}`, icon: '📤', color: 'yellow' },
-            { label: 'Credits Taken', value: `RWF ${stats.creditsTaken.toLocaleString()}`, icon: '📥', color: 'red' },
+           { label: t('totalSales'), value: stats.totalSales, icon: '🧾', color: 'blue' },
+            { label: t('totalRevenue'), value: `RWF ${stats.totalRevenue.toLocaleString()}`, icon: '💵', color: 'green' },
+            { label: t('totalProducts'), value: stats.totalProducts, icon: '📦', color: 'purple' },
+            { label: t('creditsGiven'), value: `RWF ${stats.creditsGiven.toLocaleString()}`, icon: '📤', color: 'yellow' },
+            { label: t('creditsTaken'), value: `RWF ${stats.creditsTaken.toLocaleString()}`, icon: '📥', color: 'red' },
           ].map((stat, i) => (
             <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
@@ -241,12 +243,12 @@ export default function Dashboard() {
         {/* Recent Sales */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-white">Recent Sales</h2>
-            <button
+            <h2 className="text-lg font-bold text-white">{t('recentSales')}</h2>
+           <button
               onClick={() => navigate('/sales')}
               className="text-blue-400 hover:text-blue-300 text-sm transition"
             >
-              View All →
+              {t('viewAll')}
             </button>
           </div>
 

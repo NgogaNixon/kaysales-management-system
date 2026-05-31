@@ -69,8 +69,8 @@ export default function Subscriptions() {
 
     // Set expiry date to 30 days from now
     const expiryDate = new Date()
-    expiryDate.setDate(expiryDate.getDate() + 30)
-
+    const isTrial = payment.transaction_id === 'FREE-TRIAL'
+    expiryDate.setDate(expiryDate.getDate() + (isTrial ? 7 : 30))
     // Check if subscription exists
     const { data: existingSub } = await supabase
       .from('subscriptions')
@@ -239,11 +239,19 @@ export default function Subscriptions() {
                             {payment.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-green-400 font-medium">
-                          RWF {payment.amount?.toLocaleString()}
+                        <td className="px-6 py-4 font-medium">
+                          {payment.amount === 0
+                            ? <span className="text-green-400">FREE TRIAL</span>
+                            : <span className="text-green-400">RWF {payment.amount?.toLocaleString()}</span>
+                          }
                         </td>
                         <td className="px-6 py-4 text-gray-300">{payment.sender_name}</td>
-                        <td className="px-6 py-4 text-gray-300 font-mono">{payment.transaction_id}</td>
+                       <td className="px-6 py-4 font-mono">
+                          {payment.transaction_id === 'FREE-TRIAL'
+                            ? <span className="text-green-400 bg-green-900 px-2 py-1 rounded text-xs">7-Day Trial</span>
+                            : <span className="text-gray-300">{payment.transaction_id}</span>
+                          }
+                        </td>
                         <td className="px-6 py-4 text-gray-400">
                           {new Date(payment.created_at).toLocaleDateString()}
                         </td>

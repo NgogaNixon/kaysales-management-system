@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import { useNavigate } from 'react-router-dom'
 
 export default function Signup() {
   const [fullName, setFullName] = useState('')
@@ -7,12 +8,36 @@ export default function Signup() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState(false)
+  const navigate = useNavigate()
+const [success, setSuccess] = useState(false)
+  const disposableDomains = [
+    'mailinator.com', 'tempmail.com', 'guerrillamail.com', 'throwaway.email',
+    'yopmail.com', 'sharklasers.com', 'guerrillamailblock.com', 'grr.la',
+    'guerrillamail.info', 'spam4.me', 'trashmail.com', 'dispostable.com',
+    'maildrop.cc', 'spamgourmet.com', 'getairmail.com', 'filzmail.com',
+    'throwam.com', 'tempr.email', 'discard.email', 'spamfree24.org',
+    'mailnull.com', 'spamspot.com', 'spamthisplease.com', 'binkmail.com',
+    'safetymail.info', 'tempinbox.com', 'fakeinbox.com', 'mailnew.com',
+    'spamevader.net', 'trashmail.io', 'tempmail.ninja', 'moakt.com',
+    'mohmal.com', 'temp-mail.org', 'emailondeck.com', 'spamgourmet.net',
+  ]
+
+  const isDisposableEmail = (email) => {
+    const domain = email.split('@')[1]?.toLowerCase()
+    return disposableDomains.includes(domain)
+  }
 
   const handleSignup = async (e) => {
     e.preventDefault()
-    setLoading(true)
+   setLoading(true)
     setError('')
+
+    if (isDisposableEmail(email)) {
+      setError('Please use a valid business or personal email address. Disposable emails are not allowed.')
+      setLoading(false)
+      return
+    }
+
     const { error } = await supabase.auth.signUp({
       email,
       password,
@@ -46,7 +71,10 @@ export default function Signup() {
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4">
+          <div
+            onClick={() => navigate('/')}
+            className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4 cursor-pointer hover:bg-blue-700 transition"
+          >
             <span className="text-white font-bold text-xl">K</span>
           </div>
           <h1 className="text-2xl font-bold text-white">KaySales Management System</h1>
@@ -100,13 +128,19 @@ export default function Signup() {
               {loading ? 'Creating Account...' : 'Create Account'}
             </button>
           </form>
-          <div className="mt-6 text-center">
+          <div className="mt-6 text-center space-y-2">
             <p className="text-gray-500 text-sm">
               Already have an account?{' '}
               <a href="/login" className="text-blue-400 hover:text-blue-300 transition">
                 Sign In
               </a>
             </p>
+            <button
+              onClick={() => navigate('/')}
+              className="text-gray-500 hover:text-gray-300 text-sm transition block w-full mt-2"
+            >
+              ← Back to Home
+            </button>
           </div>
         </div>
       </div>

@@ -38,7 +38,7 @@ export default function SystemReports() {
     const premiumPlans = profilesData?.filter(p => p.plan_type === 'premium').length || 0
     const totalSubscriptions = subsData?.length || 0
     const paidSubscriptions = subsData?.filter(s => s.payment_status === 'paid').length || 0
-    const estimatedRevenue = (standardPlans * 50000) + (premiumPlans * 80000)
+   const estimatedRevenue = (standardPlans * 45000) + (premiumPlans * 80000)
 
     setStats({
       totalClients,
@@ -101,7 +101,7 @@ export default function SystemReports() {
                 </div>
                 <div className="text-right">
                   <p className="text-white font-bold">{stats.standardPlans} clients</p>
-                  <p className="text-gray-500 text-xs">RWF {(stats.standardPlans * 50000).toLocaleString()}/mo</p>
+                  <p className="text-gray-500 text-xs">RWF {(stats.standardPlans * 45000).toLocaleString()}/mo</p>
                 </div>
               </div>
               <div className="w-full bg-gray-800 rounded-full h-2">

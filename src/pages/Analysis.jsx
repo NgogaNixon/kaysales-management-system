@@ -9,10 +9,12 @@ import autoTable from 'jspdf-autotable'
 export default function Analysis() {
   const { profile } = useAuth()
   const [sales, setSales] = useState([])
-  const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [showExportModal, setShowExportModal] = useState(false)
+  const [exportFrom, setExportFrom] = useState('')
+  const [exportTo, setExportTo] = useState('')
 
   useEffect(() => {
     if (profile?.id) fetchData()
@@ -25,14 +27,7 @@ export default function Analysis() {
       .select('*')
       .eq('user_id', profile.id)
       .order('created_at', { ascending: true })
-
-    const { data: productsData } = await supabase
-      .from('products')
-      .select('*')
-      .eq('user_id', profile.id)
-
     setSales(salesData || [])
-    setProducts(productsData || [])
     setLoading(false)
   }
 
@@ -43,7 +38,6 @@ export default function Analysis() {
     return matchesFrom && matchesTo
   })
 
-  // Revenue by day
   const revenueByDay = filtered.reduce((acc, sale) => {
     const date = new Date(sale.created_at).toLocaleDateString()
     acc[date] = (acc[date] || 0) + (sale.total || 0)
@@ -51,7 +45,6 @@ export default function Analysis() {
   }, {})
   const revenueChartData = Object.entries(revenueByDay).map(([date, total]) => ({ date, total }))
 
-  // Best selling products
   const productSales = filtered.reduce((acc, sale) => {
     acc[sale.product_name] = (acc[sale.product_name] || 0) + (sale.quantity_sold || 0)
     return acc
@@ -61,7 +54,6 @@ export default function Analysis() {
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5)
 
-  // Revenue by product
   const revenueByProduct = filtered.reduce((acc, sale) => {
     acc[sale.product_name] = (acc[sale.product_name] || 0) + (sale.total || 0)
     return acc
@@ -77,7 +69,25 @@ export default function Analysis() {
   const totalSales = filtered.length
   const avgSale = totalSales > 0 ? Math.round(totalRevenue / totalSales) : 0
 
-  const exportPDF = () => {
+  const handleExport = () => {
+    const exportFiltered = sales.filter(s => {
+      const saleDate = new Date(s.created_at)
+      const matchesFrom = exportFrom ? saleDate >= new Date(exportFrom) : true
+      const matchesTo = exportTo ? saleDate <= new Date(exportTo + 'T23:59:59') : true
+      return matchesFrom && matchesTo
+    })
+
+    const exportRevenue = exportFiltered.reduce((sum, s) => sum + (s.total || 0), 0)
+    const exportSalesCount = exportFiltered.length
+
+    const exportProductSales = exportFiltered.reduce((acc, sale) => {
+      acc[sale.product_name] = (acc[sale.product_name] || 0) + (sale.quantity_sold || 0)
+      return acc
+    }, {})
+    const exportProductData = Object.entries(exportProductSales)
+      .map(([name, qty]) => ({ name, qty }))
+      .sort((a, b) => b.qty - a.qty)
+
     const doc = new jsPDF()
     doc.setFontSize(16)
     doc.text('KaySales Management System', 14, 15)
@@ -85,20 +95,29 @@ export default function Analysis() {
     doc.text('Analysis Report', 14, 25)
     doc.setFontSize(10)
     doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-    doc.text(`Total Revenue: RWF ${totalRevenue.toLocaleString()}`, 14, 39)
-    doc.text(`Total Sales: ${totalSales}`, 14, 46)
+    if (exportFrom || exportTo) {
+      doc.text(`Period: ${exportFrom || 'beginning'} to ${exportTo || 'today'}`, 14, 39)
+      doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 46)
+      doc.text(`Total Sales: ${exportSalesCount}`, 14, 53)
+    } else {
+      doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 39)
+      doc.text(`Total Sales: ${exportSalesCount}`, 14, 46)
+    }
 
     doc.setFontSize(12)
-    doc.text('Best Selling Products', 14, 58)
+    doc.text('Best Selling Products', 14, 65)
     autoTable(doc, {
-      startY: 63,
+      startY: 70,
       head: [['Product', 'Quantity Sold']],
-      body: productChartData.map(p => [p.name, p.qty]),
+      body: exportProductData.map(p => [p.name, p.qty]),
       styles: { fontSize: 9 },
       headStyles: { fillColor: [29, 78, 216] },
     })
 
-    doc.save('KaySales_Analysis_Report.pdf')
+    doc.save(`KaySales_Analysis_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
+    setShowExportModal(false)
+    setExportFrom('')
+    setExportTo('')
   }
 
   if (loading) {
@@ -122,7 +141,7 @@ export default function Analysis() {
             <p className="text-gray-400 text-sm mt-1">Visual insights from your sales data</p>
           </div>
           <button
-            onClick={exportPDF}
+            onClick={() => setShowExportModal(true)}
             className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium"
           >
             📄 Export PDF
@@ -198,8 +217,6 @@ export default function Analysis() {
 
         {/* Best Selling Products & Pie Chart */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-          {/* Best Sellers Bar Chart */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <h2 className="text-lg font-bold text-white mb-4">🏆 Best Selling Products</h2>
             {productChartData.length === 0 ? (
@@ -221,7 +238,6 @@ export default function Analysis() {
             )}
           </div>
 
-          {/* Revenue by Product Pie Chart */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <h2 className="text-lg font-bold text-white mb-4">💰 Revenue by Product</h2>
             {pieData.length === 0 ? (
@@ -250,10 +266,51 @@ export default function Analysis() {
               </ResponsiveContainer>
             )}
           </div>
-
         </div>
 
       </div>
+
+      {/* Export Date Range Modal */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <h2 className="text-lg font-bold text-white">📄 Export PDF Report</h2>
+              <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <p className="text-gray-400 text-sm">Select date range. Leave blank to export all data.</p>
+              <div>
+                <label className="text-gray-400 text-sm mb-1 block">From Date</label>
+                <input
+                  type="date"
+                  value={exportFrom}
+                  onChange={(e) => setExportFrom(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-gray-400 text-sm mb-1 block">To Date</label>
+                <input
+                  type="date"
+                  value={exportTo}
+                  onChange={(e) => setExportTo(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
+                  Cancel
+                </button>
+                <button onClick={handleExport} className="flex-1 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg transition font-medium">
+                  Download
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </Layout>
   )
 }
