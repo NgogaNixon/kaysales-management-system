@@ -27,7 +27,7 @@ const [exportTo, setExportTo] = useState('')
   const [date, setDate] = useState('')
   const [notes, setNotes] = useState('')
   const [status, setStatus] = useState('unpaid')
-  const [creditItems, setCreditItems] = useState([{ product_name: '', quantity: '', amount: '' }])
+  const [creditItems, setCreditItems] = useState([{ product_name: '', quantity: '', unit_price: '', amount: '' }])
 
   useEffect(() => {
     if (profile?.id) fetchCredits()
@@ -58,7 +58,7 @@ const [exportTo, setExportTo] = useState('')
     setDate('')
     setNotes('')
     setStatus('unpaid')
-    setCreditItems([{ product_name: '', quantity: '', amount: '' }])
+    setCreditItems([{ product_name: '', quantity: '', unit_price: '', amount: '' }])
     setError('')
     setShowModal(true)
   }
@@ -83,8 +83,8 @@ const [exportTo, setExportTo] = useState('')
     setShowConfirm(true)
   }
 
-  const addItem = () => {
-    setCreditItems([...creditItems, { product_name: '', quantity: '', amount: '' }])
+ const addItem = () => {
+    setCreditItems([...creditItems, { product_name: '', quantity: '', unit_price: '', amount: '' }])
   }
 
   const removeItem = (index) => {
@@ -422,20 +422,37 @@ const [exportTo, setExportTo] = useState('')
                     className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
                     placeholder="Product name"
                   />
-                  <div className="grid grid-cols-2 gap-2">
+                 <div className="grid grid-cols-3 gap-2">
                     <input
                       type="number"
                       value={item.quantity}
-                      onChange={(e) => updateItem(index, 'quantity', e.target.value)}
+                      onChange={(e) => {
+                        const qty = e.target.value
+                        const price = parseInt(item.unit_price) || 0
+                        updateItem(index, 'quantity', qty)
+                        updateItem(index, 'amount', (parseInt(qty) || 0) * price)
+                      }}
                       className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      placeholder="Quantity"
+                      placeholder="Qty"
+                    />
+                    <input
+                      type="number"
+                      value={item.unit_price || ''}
+                      onChange={(e) => {
+                        const price = e.target.value
+                        const qty = parseInt(item.quantity) || 0
+                        updateItem(index, 'unit_price', price)
+                        updateItem(index, 'amount', qty * (parseInt(price) || 0))
+                      }}
+                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      placeholder="Unit Price"
                     />
                     <input
                       type="number"
                       value={item.amount}
-                      onChange={(e) => updateItem(index, 'amount', e.target.value)}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      placeholder="Amount (RWF)"
+                      readOnly
+                      className="bg-gray-600 border border-gray-600 text-green-400 px-3 py-2 rounded-lg text-sm font-medium"
+                      placeholder="Total"
                     />
                   </div>
                 </div>
