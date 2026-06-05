@@ -5,6 +5,9 @@ import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import * as XLSX from 'xlsx'
+import UndoToast from '../components/UndoToast'
+import OTPVerify from '../components/OTPVerify'
+import { logActivity } from '../lib/activityLogger'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -30,6 +33,10 @@ export default function Sales() {
   const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState(null)
+const [showUndoToast, setShowUndoToast] = useState(false)
+const [showOTP, setShowOTP] = useState(false)
+const [otpAction, setOtpAction] = useState('')
 
   useEffect(() => {
     if (profile?.id) {
@@ -68,6 +75,13 @@ export default function Sales() {
   const openDelete = (sale) => {
     setSelectedSale(sale)
     setShowConfirm(true)
+  }
+  const openEdit = (sale) => {
+    setSelectedSale(sale)
+    setCustomerName(sale.product_name)
+    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
+    setError('')
+    setShowModal(true)
   }
 
   const handleProductChange = (index, productId) => {
@@ -123,17 +137,41 @@ export default function Sales() {
     setSaving(true)
     setError('')
 
-    const { data: saleData, error: saleError } = await supabase
-      .from('sales')
-      .insert({
-        user_id: profile.id,
-        product_name: customerName,
-        quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
-        selling_price: 0,
-        total: grandTotal,
-      })
-      .select()
-      .single()
+    let saleData, saleError
+
+    if (selectedSale) {
+      // Edit existing sale
+      const { data, error } = await supabase
+        .from('sales')
+        .update({
+          product_name: customerName,
+          quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
+          total: grandTotal,
+        })
+        .eq('id', selectedSale.id)
+        .select()
+        .single()
+      saleData = data
+      saleError = error
+
+      // Delete old items and insert new ones
+      await supabase.from('sale_items').delete().eq('sale_id', selectedSale.id)
+    } else {
+      // New sale
+      const { data, error } = await supabase
+        .from('sales')
+        .insert({
+          user_id: profile.id,
+          product_name: customerName,
+          quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
+          selling_price: 0,
+          total: grandTotal,
+        })
+        .select()
+        .single()
+      saleData = data
+      saleError = error
+    }
 
     if (saleError) {
       setError('Failed to save sale')
@@ -163,16 +201,73 @@ export default function Sales() {
       }
     }
 
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      selectedSale ? 'Edit Sale' : 'Add Sale',
+      `${selectedSale ? 'Updated' : 'Added'} sale for customer: ${customerName} - RWF ${grandTotal.toLocaleString()}`
+    )
     setSaving(false)
     setShowModal(false)
+    setSelectedSale(null)
     fetchSales()
     fetchProducts()
   }
 
   const handleDelete = async () => {
-    await supabase.from('sales').delete().eq('id', selectedSale.id)
     setShowConfirm(false)
+    setPendingDelete(selectedSale)
+    setShowUndoToast(true)
+  }
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return
+
+    // Get sale items to restore stock
+    const { data: items } = await supabase
+      .from('sale_items')
+      .select('*')
+      .eq('sale_id', pendingDelete.id)
+
+    // Restore product quantities
+    if (items && items.length > 0) {
+      for (const item of items) {
+        const { data: product } = await supabase
+          .from('products')
+          .select('quantity')
+          .eq('id', item.product_id)
+          .single()
+
+        if (product) {
+          await supabase
+            .from('products')
+            .update({ quantity: product.quantity + item.quantity_sold })
+            .eq('id', item.product_id)
+        }
+      }
+    }
+
+    // Delete sale items then sale
+    await supabase.from('sale_items').delete().eq('sale_id', pendingDelete.id)
+    await supabase.from('sales').delete().eq('id', pendingDelete.id)
+
+   await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      'Delete Sale',
+      `Deleted sale for customer: ${pendingDelete.product_name} — RWF ${pendingDelete.total?.toLocaleString()}`
+    )
+    setPendingDelete(null)
+    setShowUndoToast(false)
     fetchSales()
+    fetchProducts()
+  }
+
+  const handleUndo = () => {
+    setPendingDelete(null)
+    setShowUndoToast(false)
   }
 
   const generateReceipt = async (sale) => {
@@ -290,21 +385,6 @@ export default function Sales() {
           </button>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-          {[
-            { label: 'Total Sales', value: filtered.length, icon: '🧾' },
-            { label: 'Total Revenue', value: `RWF ${totalRevenue.toLocaleString()}`, icon: '💵' },
-            { label: 'Avg per Sale', value: `RWF ${filtered.length > 0 ? Math.round(totalRevenue / filtered.length).toLocaleString() : 0}`, icon: '📊' },
-          ].map((stat, i) => (
-            <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <span className="text-2xl">{stat.icon}</span>
-              <p className="text-xl font-bold text-white mt-2">{stat.value}</p>
-              <p className="text-gray-400 text-sm mt-1">{stat.label}</p>
-            </div>
-          ))}
-        </div>
-
         {/* Filters & Export */}
         <div className="flex flex-col sm:flex-row gap-3">
           <input
@@ -377,6 +457,12 @@ export default function Sales() {
                             Receipt
                           </button>
                           <button
+                            onClick={() => openEdit(sale)}
+                            className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition"
+                          >
+                            Edit
+                          </button>
+                          <button
                             onClick={() => openDelete(sale)}
                             className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
                           >
@@ -396,7 +482,7 @@ export default function Sales() {
 
       {/* Add Sale Modal */}
       {showModal && (
-        <Modal title="Record Sale" onClose={() => setShowModal(false)}>
+       <Modal title={selectedSale ? 'Edit Sale' : 'Record Sale'} onClose={() => setShowModal(false)}>
           <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <div>
@@ -467,20 +553,49 @@ export default function Sales() {
               <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
                 Cancel
               </button>
-              <button onClick={handleSave} disabled={saving} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
-                {saving ? 'Saving...' : 'Record Sale'}
+              <button
+                onClick={() => {
+                  if (selectedSale) {
+                    setOtpAction('edit')
+                    setShowModal(false)
+                    setShowOTP(true)
+                  } else {
+                    handleSave()
+                  }
+                }}
+                disabled={saving}
+                className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+              >
+                {saving ? 'Saving...' : selectedSale ? 'Update Sale' : 'Record Sale'}
               </button>
             </div>
           </div>
         </Modal>
       )}
 
-      {/* Confirm Delete */}
-      {showConfirm && (
+      {showConfirm && !showOTP && (
         <ConfirmDialog
           message="Are you sure you want to delete this sale?"
-          onConfirm={handleDelete}
+          onConfirm={() => { setShowConfirm(false); setOtpAction('delete'); setShowOTP(true) }}
           onCancel={() => setShowConfirm(false)}
+        />
+      )}
+
+      {showOTP && (
+        <OTPVerify
+          email={profile?.email}
+          actionLabel={otpAction === 'delete'
+            ? `Delete sale for: ${selectedSale?.product_name}`
+            : `Edit sale for: ${selectedSale?.product_name}`}
+          onVerified={() => {
+            setShowOTP(false)
+            if (otpAction === 'delete') {
+              handleDelete()
+            } else {
+              handleSave()
+            }
+          }}
+          onCancel={() => setShowOTP(false)}
         />
       )}
 
@@ -588,7 +703,14 @@ export default function Sales() {
           </div>
         </div>
       )}
-
+{/* Undo Toast */}
+      {showUndoToast && pendingDelete && (
+        <UndoToast
+          message={`Sale deleted — stock will be restored`}
+          onUndo={handleUndo}
+          onExpire={confirmDelete}
+        />
+      )}
     </Layout>
   )
 }

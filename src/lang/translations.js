@@ -9,6 +9,10 @@ export const translations = {
     clients: 'Clients',
     subscriptions: 'Subscriptions',
     reports: 'Reports',
+    activity: 'Activity Log',
+    adminReports: 'Admin Reports',
+    adminReports: 'Rapports Admin',
+    activity: 'Journal d\'activité',
     logout: 'Logout',
 
     // Dashboard

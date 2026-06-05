@@ -9,6 +9,8 @@ export default function ClientManagement() {
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [selectedClient, setSelectedClient] = useState(null)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+const [clientToDelete, setClientToDelete] = useState(null)
 
   useEffect(() => {
     fetchData()
@@ -49,6 +51,20 @@ export default function ClientManagement() {
 
   const handleRevoke = async (userId) => {
     await supabase.from('profiles').update({ approved: false }).eq('id', userId)
+    fetchData()
+  }
+  const handleDeleteClient = async (userId) => {
+    // Delete all client data in order
+    await supabase.from('sale_items').delete().eq('user_id', userId)
+    await supabase.from('sales').delete().eq('user_id', userId)
+    await supabase.from('products').delete().eq('user_id', userId)
+    await supabase.from('credits_given').delete().eq('user_id', userId)
+    await supabase.from('credits_taken').delete().eq('user_id', userId)
+    await supabase.from('subscriptions').delete().eq('user_id', userId)
+    await supabase.from('payment_requests').delete().eq('user_id', userId)
+    await supabase.from('profiles').delete().eq('id', userId)
+    setShowDeleteConfirm(false)
+    setClientToDelete(null)
     fetchData()
   }
 
@@ -175,7 +191,7 @@ export default function ClientManagement() {
                         <td className="px-6 py-4 text-gray-400">
                           {new Date(client.created_at).toLocaleDateString()}
                         </td>
-                        <td className="px-6 py-4">
+                       <td className="px-6 py-4">
                           <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                             {!client.approved ? (
                               <button
@@ -187,11 +203,17 @@ export default function ClientManagement() {
                             ) : (
                               <button
                                 onClick={() => handleRevoke(client.id)}
-                                className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
+                                className="px-3 py-1 bg-orange-700 hover:bg-orange-600 text-white rounded-lg text-xs transition"
                               >
                                 Revoke
                               </button>
                             )}
+                            <button
+                              onClick={() => { setClientToDelete(client); setShowDeleteConfirm(true) }}
+                              className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
+                            >
+                              Delete
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -332,7 +354,38 @@ export default function ClientManagement() {
           </div>
         </div>
       )}
-
+{/* Delete Client Confirmation */}
+      {showDeleteConfirm && clientToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
+          <div className="bg-gray-900 border border-red-700 rounded-2xl w-full max-w-md mx-4 shadow-2xl p-6">
+            <div className="text-center">
+              <span className="text-4xl">⚠️</span>
+              <h2 className="text-xl font-bold text-white mt-3 mb-2">Delete Client Account</h2>
+              <p className="text-gray-400 text-sm mb-2">
+                You are about to permanently delete <span className="text-white font-bold">{clientToDelete.full_name}</span>
+              </p>
+              <p className="text-red-400 text-sm mb-6">
+                This will delete all their products, sales, credits and subscription data. This cannot be undone.
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setShowDeleteConfirm(false); setClientToDelete(null) }}
+                className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDeleteClient(clientToDelete.id)}
+                className="flex-1 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium"
+              >
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
+    
   )
 }

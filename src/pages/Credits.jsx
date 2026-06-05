@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { logActivity } from '../lib/activityLogger'
+import OTPVerify from '../components/OTPVerify'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -25,6 +27,7 @@ export default function Credits() {
   const [selectedCustomer, setSelectedCustomer] = useState(null)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [showOTP, setShowOTP] = useState(false)
   const [customerName, setCustomerName] = useState('')
   const [date, setDate] = useState('')
   const [notes, setNotes] = useState('')
@@ -144,6 +147,13 @@ export default function Credits() {
       }
     }
 
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      selectedCredit ? 'Edit Credit' : 'Add Credit',
+      `${selectedCredit ? 'Updated' : 'Added'} credit for: ${customerName}`
+    )
     setSaving(false)
     setShowModal(false)
     fetchCredits()
@@ -152,6 +162,13 @@ export default function Credits() {
   const handleDelete = async () => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
     await supabase.from(table).delete().eq('id', selectedCredit.id)
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      'Delete Credit',
+      `Deleted credit for: ${activeTab === 'given' ? selectedCredit.customer_name : selectedCredit.supplier_name} - RWF ${selectedCredit.amount?.toLocaleString()}`
+    )
     setShowConfirm(false)
     setSelectedCustomer(null)
     fetchCredits()
@@ -410,13 +427,21 @@ export default function Credits() {
                         {credit.status === 'paid' ? '✅ Paid' : '❌ Unpaid'}
                       </span>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 text-sm mb-3">
+                   <div className="grid grid-cols-2 gap-2 text-sm mb-3">
                       <div>
                         <p className="text-gray-400 text-xs">Quantity</p>
                         <p className="text-white">{credit.quantity || '—'}</p>
                       </div>
                       <div>
-                        <p className="text-gray-400 text-xs">Amount</p>
+                        <p className="text-gray-400 text-xs">Unit Price</p>
+                        <p className="text-white">
+                          {credit.quantity && credit.amount
+                            ? `RWF ${Math.round(credit.amount / credit.quantity).toLocaleString()}`
+                            : '—'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400 text-xs">Total Amount</p>
                         <p className={`font-medium ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
                           RWF {credit.amount?.toLocaleString()}
                         </p>
@@ -560,12 +585,20 @@ export default function Credits() {
         </Modal>
       )}
 
-      {/* Confirm Delete */}
-      {showConfirm && (
+      {showConfirm && !showOTP && (
         <ConfirmDialog
           message="Are you sure you want to delete this credit entry?"
-          onConfirm={handleDelete}
+          onConfirm={() => { setShowConfirm(false); setShowOTP(true) }}
           onCancel={() => setShowConfirm(false)}
+        />
+      )}
+
+      {showOTP && (
+        <OTPVerify
+          email={profile?.email}
+          actionLabel={`Delete credit for: ${selectedCredit?.customer_name || selectedCredit?.supplier_name}`}
+          onVerified={handleDelete}
+          onCancel={() => setShowOTP(false)}
         />
       )}
 

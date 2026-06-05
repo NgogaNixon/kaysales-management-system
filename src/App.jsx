@@ -17,6 +17,8 @@ import AdminDashboard from './pages/admin/AdminDashboard'
 import ClientManagement from './pages/admin/ClientManagement'
 import Subscriptions from './pages/admin/Subscriptions'
 import SystemReports from './pages/admin/SystemReports'
+import ActivityLog from './pages/admin/ActivityLog'
+import AdminReports from './pages/admin/AdminReports'
 
 function App() {
   return (
@@ -44,6 +46,8 @@ function App() {
             <Route path="/admin/clients" element={<ProtectedRoute><ClientManagement /></ProtectedRoute>} />
             <Route path="/admin/subscriptions" element={<ProtectedRoute><Subscriptions /></ProtectedRoute>} />
             <Route path="/admin/reports" element={<ProtectedRoute><SystemReports /></ProtectedRoute>} />
+            <Route path="/admin/activity" element={<ProtectedRoute><ActivityLog /></ProtectedRoute>} />
+            <Route path="/admin/admin-reports" element={<ProtectedRoute><AdminReports /></ProtectedRoute>} />
           </Routes>
         </LanguageProvider>
       </AuthProvider>

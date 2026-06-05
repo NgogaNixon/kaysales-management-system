@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
+import { logActivity } from '../lib/activityLogger'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
+import OTPVerify from '../components/OTPVerify'
 
 export default function Products() {
   const { profile } = useAuth()
@@ -21,7 +23,8 @@ export default function Products() {
   })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-
+  const [showOTP, setShowOTP] = useState(false)
+const [otpAction, setOtpAction] = useState('')
   useEffect(() => {
     if (profile?.id) fetchProducts()
   }, [profile])
@@ -62,8 +65,8 @@ export default function Products() {
   }
 
   const handleSave = async () => {
-    if (!form.name || !form.quantity || !form.selling_price) {
-      setError('Name, quantity and selling price are required')
+    if (!form.name || !form.category || !form.quantity || !form.selling_price) {
+      setError('Name, category, quantity and selling price are required')
       return
     }
 
@@ -94,6 +97,14 @@ export default function Products() {
       await supabase.from('products').insert(data)
     }
 
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      selectedProduct ? 'Edit Product' : 'Add Product',
+      `${selectedProduct ? 'Updated' : 'Added'} product: ${form.name}`
+    )
+
     setSaving(false)
     setShowModal(false)
     fetchProducts()
@@ -101,6 +112,13 @@ export default function Products() {
 
   const handleDelete = async () => {
     await supabase.from('products').delete().eq('id', selectedProduct.id)
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      'Delete Product',
+      `Deleted product: ${selectedProduct.name}`
+    )
     setShowConfirm(false)
     fetchProducts()
   }
@@ -112,7 +130,6 @@ export default function Products() {
 
   const lowStock = products.filter(p => p.quantity < 3)
   const isStandard = profile?.plan_type === 'standard'
-  const categories = [...new Set(products.map(p => p.category).filter(Boolean))]
 
   return (
     <Layout>
@@ -174,10 +191,7 @@ export default function Products() {
           ) : filtered.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500 mb-3">No products found</p>
-              <button
-                onClick={openAdd}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition"
-              >
+              <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">
                 Add First Product
               </button>
             </div>
@@ -218,18 +232,8 @@ export default function Products() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
-                          <button
-                            onClick={() => openEdit(product)}
-                            className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => openDelete(product)}
-                            className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
-                          >
-                            Delete
-                          </button>
+                         <button onClick={() => { openEdit(product); }} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
+                          <button onClick={() => openDelete(product)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                         </div>
                       </td>
                     </tr>
@@ -261,7 +265,7 @@ export default function Products() {
               />
             </div>
             <div>
-              <label className="text-gray-400 text-sm mb-1 block">Category</label>
+              <label className="text-gray-400 text-sm mb-1 block">Category *</label>
               <input
                 type="text"
                 value={form.category}
@@ -291,14 +295,19 @@ export default function Products() {
               />
             </div>
             <div className="flex gap-3 pt-2">
-              <button
-                onClick={() => setShowModal(false)}
-                className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition"
-              >
+              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
                 Cancel
               </button>
               <button
-                onClick={handleSave}
+                onClick={() => {
+                  if (selectedProduct) {
+                    setOtpAction('edit')
+                    setShowModal(false)
+                    setShowOTP(true)
+                  } else {
+                    handleSave()
+                  }
+                }}
                 disabled={saving}
                 className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
               >
@@ -309,12 +318,27 @@ export default function Products() {
         </Modal>
       )}
 
-      {/* Confirm Delete */}
-      {showConfirm && (
+      {showConfirm && !showOTP && (
         <ConfirmDialog
           message={`Are you sure you want to delete "${selectedProduct?.name}"? This cannot be undone.`}
-          onConfirm={handleDelete}
+          onConfirm={() => { setShowConfirm(false); setOtpAction('delete'); setShowOTP(true) }}
           onCancel={() => setShowConfirm(false)}
+        />
+      )}
+
+      {showOTP && (
+        <OTPVerify
+          email={profile?.email}
+          actionLabel={otpAction === 'delete' ? `Delete product: ${selectedProduct?.name}` : `Edit product: ${selectedProduct?.name}`}
+          onVerified={() => {
+            setShowOTP(false)
+            if (otpAction === 'delete') {
+              handleDelete()
+            } else {
+              handleSave()
+            }
+          }}
+          onCancel={() => setShowOTP(false)}
         />
       )}
 

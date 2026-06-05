@@ -16,6 +16,8 @@ const adminNavItems = [
   { path: '/admin/clients', icon: '👥', labelKey: 'clients' },
   { path: '/admin/subscriptions', icon: '💳', labelKey: 'subscriptions' },
   { path: '/admin/reports', icon: '📊', labelKey: 'reports' },
+{ path: '/admin/admin-reports', icon: '📑', labelKey: 'adminReports' },
+  { path: '/admin/activity', icon: '📋', labelKey: 'activity' },
 ]
 
 export default function Layout({ children }) {
