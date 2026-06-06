@@ -12,7 +12,7 @@ export default function ForgotPassword() {
     setLoading(true)
     setError('')
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: window.location.origin + '/reset-password'
+      redirectTo: 'https://kaysales-management-system.netlify.app/reset-password'
     })
     if (error) {
       setError(error.message)

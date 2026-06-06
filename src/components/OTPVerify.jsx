@@ -13,7 +13,10 @@ export default function OTPVerify({ email, onVerified, onCancel, actionLabel }) 
     setError('')
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: { shouldCreateUser: false }
+      options: { 
+        shouldCreateUser: false,
+        emailRedirectTo: null
+      }
     })
     if (error) {
       setError('Failed to send OTP. Please try again.')
@@ -33,7 +36,7 @@ export default function OTPVerify({ email, onVerified, onCancel, actionLabel }) 
     const { error } = await supabase.auth.verifyOtp({
       email,
       token: otp,
-      type: 'email'
+      type: 'magiclink'
     })
     if (error) {
       setError('Invalid or expired OTP. Please try again.')
