@@ -8,11 +8,11 @@ export const translations = {
     analysis: 'Analysis',
     clients: 'Clients',
     subscriptions: 'Subscriptions',
-    reports: 'Reports',
-    activity: 'Activity Log',
+    reports: 'Rapports',
+activity: 'Journal d\'activité',
     adminReports: 'Admin Reports',
     adminReports: 'Rapports Admin',
-    activity: 'Journal d\'activité',
+    activity: 'Activity Log',
     logout: 'Logout',
 
     // Dashboard
@@ -153,7 +153,7 @@ export const translations = {
     analysis: 'Analyse',
     clients: 'Clients',
     subscriptions: 'Abonnements',
-    reports: 'Rapports',
+    reports: 'Reports',
     logout: 'Déconnexion',
 
     // Dashboard

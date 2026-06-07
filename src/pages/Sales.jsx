@@ -4,10 +4,10 @@ import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
-import * as XLSX from 'xlsx'
-import UndoToast from '../components/UndoToast'
 import OTPVerify from '../components/OTPVerify'
+import UndoToast from '../components/UndoToast'
 import { logActivity } from '../lib/activityLogger'
+import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -20,6 +20,8 @@ export default function Sales() {
   const [showConfirm, setShowConfirm] = useState(false)
   const [showReceipt, setShowReceipt] = useState(false)
   const [showExportModal, setShowExportModal] = useState(false)
+  const [showOTP, setShowOTP] = useState(false)
+  const [otpAction, setOtpAction] = useState('')
   const [exportType, setExportType] = useState('')
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
@@ -30,13 +32,13 @@ export default function Sales() {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [customerName, setCustomerName] = useState('')
+  const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0])
   const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(null)
-const [showUndoToast, setShowUndoToast] = useState(false)
-const [showOTP, setShowOTP] = useState(false)
-const [otpAction, setOtpAction] = useState('')
+  const [showUndoToast, setShowUndoToast] = useState(false)
 
   useEffect(() => {
     if (profile?.id) {
@@ -67,6 +69,18 @@ const [otpAction, setOtpAction] = useState('')
   const openAdd = () => {
     setSelectedSale(null)
     setCustomerName('')
+    setPaymentMethod('cash')
+    setSaleDate(new Date().toISOString().split('T')[0])
+    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
+    setError('')
+    setShowModal(true)
+  }
+
+  const openEdit = (sale) => {
+    setSelectedSale(sale)
+    setCustomerName(sale.product_name)
+    setPaymentMethod('cash')
+    setSaleDate(sale.created_at ? sale.created_at.split('T')[0] : new Date().toISOString().split('T')[0])
     setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
     setError('')
     setShowModal(true)
@@ -75,13 +89,6 @@ const [otpAction, setOtpAction] = useState('')
   const openDelete = (sale) => {
     setSelectedSale(sale)
     setShowConfirm(true)
-  }
-  const openEdit = (sale) => {
-    setSelectedSale(sale)
-    setCustomerName(sale.product_name)
-    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
-    setError('')
-    setShowModal(true)
   }
 
   const handleProductChange = (index, productId) => {
@@ -140,24 +147,21 @@ const [otpAction, setOtpAction] = useState('')
     let saleData, saleError
 
     if (selectedSale) {
-      // Edit existing sale
       const { data, error } = await supabase
         .from('sales')
         .update({
           product_name: customerName,
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
           total: grandTotal,
+          created_at: saleDate,
         })
         .eq('id', selectedSale.id)
         .select()
         .single()
       saleData = data
       saleError = error
-
-      // Delete old items and insert new ones
       await supabase.from('sale_items').delete().eq('sale_id', selectedSale.id)
     } else {
-      // New sale
       const { data, error } = await supabase
         .from('sales')
         .insert({
@@ -166,6 +170,7 @@ const [otpAction, setOtpAction] = useState('')
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
           selling_price: 0,
           total: grandTotal,
+          created_at: saleDate,
         })
         .select()
         .single()
@@ -179,6 +184,7 @@ const [otpAction, setOtpAction] = useState('')
       return
     }
 
+    // Insert sale items
     const itemsToInsert = validItems.map(item => ({
       sale_id: saleData.id,
       user_id: profile.id,
@@ -188,16 +194,34 @@ const [otpAction, setOtpAction] = useState('')
       selling_price: parseInt(item.selling_price),
       total: item.total,
     }))
-
     await supabase.from('sale_items').insert(itemsToInsert)
 
-    for (const item of validItems) {
-      const product = products.find(p => p.id === item.product_id)
-      if (product) {
-        await supabase
-          .from('products')
-          .update({ quantity: product.quantity - parseInt(item.quantity_sold) })
-          .eq('id', item.product_id)
+    // Reduce product quantities for new sales only
+    if (!selectedSale) {
+      for (const item of validItems) {
+        const product = products.find(p => p.id === item.product_id)
+        if (product) {
+          await supabase
+            .from('products')
+            .update({ quantity: product.quantity - parseInt(item.quantity_sold) })
+            .eq('id', item.product_id)
+        }
+      }
+
+      // If payment method is credit, add to credits given
+      if (paymentMethod === 'credit') {
+        for (const item of validItems) {
+          await supabase.from('credits_given').insert({
+            user_id: profile.id,
+            customer_name: customerName,
+            product_name: item.product_name,
+            quantity: parseInt(item.quantity_sold),
+            amount: item.total,
+            date: saleDate,
+            notes: 'Auto-added from sale on credit',
+            status: 'unpaid',
+          })
+        }
       }
     }
 
@@ -206,10 +230,12 @@ const [otpAction, setOtpAction] = useState('')
       profile.email,
       profile.full_name,
       selectedSale ? 'Edit Sale' : 'Add Sale',
-      `${selectedSale ? 'Updated' : 'Added'} sale for customer: ${customerName} - RWF ${grandTotal.toLocaleString()}`
+      `${selectedSale ? 'Updated' : 'Added'} sale for customer: ${customerName} - RWF ${grandTotal.toLocaleString()} - Payment: ${paymentMethod}`
     )
+
     setSaving(false)
     setShowModal(false)
+    setShowOTP(false)
     setSelectedSale(null)
     fetchSales()
     fetchProducts()
@@ -224,13 +250,11 @@ const [otpAction, setOtpAction] = useState('')
   const confirmDelete = async () => {
     if (!pendingDelete) return
 
-    // Get sale items to restore stock
     const { data: items } = await supabase
       .from('sale_items')
       .select('*')
       .eq('sale_id', pendingDelete.id)
 
-    // Restore product quantities
     if (items && items.length > 0) {
       for (const item of items) {
         const { data: product } = await supabase
@@ -238,7 +262,6 @@ const [otpAction, setOtpAction] = useState('')
           .select('quantity')
           .eq('id', item.product_id)
           .single()
-
         if (product) {
           await supabase
             .from('products')
@@ -248,17 +271,17 @@ const [otpAction, setOtpAction] = useState('')
       }
     }
 
-    // Delete sale items then sale
     await supabase.from('sale_items').delete().eq('sale_id', pendingDelete.id)
     await supabase.from('sales').delete().eq('id', pendingDelete.id)
 
-   await logActivity(
+    await logActivity(
       profile.id,
       profile.email,
       profile.full_name,
       'Delete Sale',
-      `Deleted sale for customer: ${pendingDelete.product_name} — RWF ${pendingDelete.total?.toLocaleString()}`
+      `Deleted sale for customer: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
     )
+
     setPendingDelete(null)
     setShowUndoToast(false)
     fetchSales()
@@ -310,12 +333,11 @@ const [otpAction, setOtpAction] = useState('')
 
   const handleExport = () => {
     const exportFiltered = sales.filter(s => {
-      const saleDate = new Date(s.created_at)
-      const matchesFrom = exportFrom ? saleDate >= new Date(exportFrom) : true
-      const matchesTo = exportTo ? saleDate <= new Date(exportTo + 'T23:59:59') : true
+      const saleDate2 = new Date(s.created_at)
+      const matchesFrom = exportFrom ? saleDate2 >= new Date(exportFrom) : true
+      const matchesTo = exportTo ? saleDate2 <= new Date(exportTo + 'T23:59:59') : true
       return matchesFrom && matchesTo
     })
-
     const exportRevenue = exportFiltered.reduce((sum, s) => sum + (s.total || 0), 0)
 
     if (exportType === 'excel') {
@@ -336,14 +358,9 @@ const [otpAction, setOtpAction] = useState('')
       doc.text('Sales Report', 14, 25)
       doc.setFontSize(10)
       doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-      if (exportFrom || exportTo) {
-        doc.text(`Period: ${exportFrom || 'beginning'} to ${exportTo || 'today'}`, 14, 39)
-        doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 46)
-      } else {
-        doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 39)
-      }
+      doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 39)
       autoTable(doc, {
-        startY: 55,
+        startY: 48,
         head: [['Customer', 'Total (RWF)', 'Date']],
         body: exportFiltered.map(s => [
           s.product_name,
@@ -362,9 +379,9 @@ const [otpAction, setOtpAction] = useState('')
 
   const filtered = sales.filter(s => {
     const matchesSearch = s.product_name?.toLowerCase().includes(search.toLowerCase())
-    const saleDate = new Date(s.created_at)
-    const matchesFrom = dateFrom ? saleDate >= new Date(dateFrom) : true
-    const matchesTo = dateTo ? saleDate <= new Date(dateTo + 'T23:59:59') : true
+    const saleDate2 = new Date(s.created_at)
+    const matchesFrom = dateFrom ? saleDate2 >= new Date(dateFrom) : true
+    const matchesTo = dateTo ? saleDate2 <= new Date(dateTo + 'T23:59:59') : true
     return matchesSearch && matchesFrom && matchesTo
   })
 
@@ -406,18 +423,20 @@ const [otpAction, setOtpAction] = useState('')
             onChange={(e) => setDateTo(e.target.value)}
             className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
           />
-          <button
-            onClick={() => { setExportType('excel'); setShowExportModal(true) }}
-            className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium"
-          >
-            📊 Excel
-          </button>
-          <button
-            onClick={() => { setExportType('pdf'); setShowExportModal(true) }}
-            className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium"
-          >
-            📄 PDF
-          </button>
+          <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
+          <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
+        </div>
+
+        {/* Total Revenue */}
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <p className="text-gray-400 text-sm">Total Revenue</p>
+            <p className="text-green-400 text-2xl font-bold">RWF {totalRevenue.toLocaleString()}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-gray-400 text-sm">Total Sales</p>
+            <p className="text-white text-2xl font-bold">{filtered.length}</p>
+          </div>
         </div>
 
         {/* Sales Table */}
@@ -427,9 +446,7 @@ const [otpAction, setOtpAction] = useState('')
           ) : filtered.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500 mb-3">No sales found</p>
-              <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">
-                Record First Sale
-              </button>
+              <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">Record First Sale</button>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -450,24 +467,9 @@ const [otpAction, setOtpAction] = useState('')
                       <td className="px-6 py-4 text-gray-400">{new Date(sale.created_at).toLocaleDateString()}</td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
-                          <button
-                            onClick={() => generateReceipt(sale)}
-                            className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
-                          >
-                            Receipt
-                          </button>
-                          <button
-                            onClick={() => openEdit(sale)}
-                            className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => openDelete(sale)}
-                            className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
-                          >
-                            Delete
-                          </button>
+                          <button onClick={() => generateReceipt(sale)} className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition">Receipt</button>
+                          <button onClick={() => openEdit(sale)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
+                          <button onClick={() => openDelete(sale)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                         </div>
                       </td>
                     </tr>
@@ -480,9 +482,9 @@ const [otpAction, setOtpAction] = useState('')
 
       </div>
 
-      {/* Add Sale Modal */}
+      {/* Add/Edit Sale Modal */}
       {showModal && (
-       <Modal title={selectedSale ? 'Edit Sale' : 'Record Sale'} onClose={() => setShowModal(false)}>
+        <Modal title={selectedSale ? 'Edit Sale' : 'Record Sale'} onClose={() => setShowModal(false)}>
           <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <div>
@@ -495,6 +497,32 @@ const [otpAction, setOtpAction] = useState('')
                 placeholder="Customer name"
               />
             </div>
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Sale Date</label>
+              <input
+                type="date"
+                value={saleDate}
+                onChange={(e) => setSaleDate(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
+              <select
+                value={paymentMethod}
+                onChange={(e) => setPaymentMethod(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="cash">💵 Cash</option>
+                <option value="mtn">📱 MTN Mobile Money</option>
+                <option value="credit">💳 Credit (Add to Credits Given)</option>
+              </select>
+            </div>
+            {paymentMethod === 'credit' && (
+              <div className="bg-yellow-900 border border-yellow-700 rounded-lg p-3">
+                <p className="text-yellow-300 text-xs">⚠️ This sale will be automatically added to Credits Given as unpaid.</p>
+              </div>
+            )}
             <div className="space-y-3">
               <label className="text-gray-400 text-sm block">Products *</label>
               {saleItems.map((item, index) => (
@@ -536,10 +564,7 @@ const [otpAction, setOtpAction] = useState('')
                   )}
                 </div>
               ))}
-              <button
-                onClick={addItem}
-                className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition"
-              >
+              <button onClick={addItem} className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
                 + Add Another Product
               </button>
             </div>
@@ -550,9 +575,7 @@ const [otpAction, setOtpAction] = useState('')
               </div>
             )}
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
-                Cancel
-              </button>
+              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
               <button
                 onClick={() => {
                   if (selectedSale) {
@@ -573,6 +596,7 @@ const [otpAction, setOtpAction] = useState('')
         </Modal>
       )}
 
+      {/* Confirm Delete */}
       {showConfirm && !showOTP && (
         <ConfirmDialog
           message="Are you sure you want to delete this sale?"
@@ -581,6 +605,7 @@ const [otpAction, setOtpAction] = useState('')
         />
       )}
 
+      {/* OTP Verify */}
       {showOTP && (
         <OTPVerify
           email={profile?.email}
@@ -599,46 +624,27 @@ const [otpAction, setOtpAction] = useState('')
         />
       )}
 
-      {/* Export Date Range Modal */}
+      {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h2 className="text-lg font-bold text-white">
-                {exportType === 'excel' ? '📊 Export Excel' : '📄 Export PDF'}
-              </h2>
+              <h2 className="text-lg font-bold text-white">{exportType === 'excel' ? '📊 Export Excel' : '📄 Export PDF'}</h2>
               <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-4">
               <p className="text-gray-400 text-sm">Select date range. Leave blank to export all records.</p>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">From Date</label>
-                <input
-                  type="date"
-                  value={exportFrom}
-                  onChange={(e) => setExportFrom(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                />
+                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">To Date</label>
-                <input
-                  type="date"
-                  value={exportTo}
-                  onChange={(e) => setExportTo(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                />
+                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
               </div>
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
-                  Cancel
-                </button>
-                <button
-                  onClick={handleExport}
-                  className={`flex-1 py-2 text-white rounded-lg transition font-medium ${exportType === 'excel' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'}`}
-                >
-                  Download
-                </button>
+                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={handleExport} className={`flex-1 py-2 text-white rounded-lg transition font-medium ${exportType === 'excel' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'}`}>Download</button>
               </div>
             </div>
           </div>
@@ -692,25 +698,23 @@ const [otpAction, setOtpAction] = useState('')
                 <p>Powered by KaySales</p>
               </div>
               <div className="flex gap-3 mt-4">
-                <button onClick={() => setShowReceipt(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
-                  Close
-                </button>
-                <button onClick={printReceipt} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
-                  Download PDF
-                </button>
+                <button onClick={() => setShowReceipt(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Close</button>
+                <button onClick={printReceipt} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">Download PDF</button>
               </div>
             </div>
           </div>
         </div>
       )}
-{/* Undo Toast */}
+
+      {/* Undo Toast */}
       {showUndoToast && pendingDelete && (
         <UndoToast
-          message={`Sale deleted — stock will be restored`}
+          message="Sale deleted — stock will be restored"
           onUndo={handleUndo}
           onExpire={confirmDelete}
         />
       )}
+
     </Layout>
   )
 }

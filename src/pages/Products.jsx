@@ -13,6 +13,8 @@ export default function Products() {
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
+  const [showOTP, setShowOTP] = useState(false)
+  const [otpAction, setOtpAction] = useState('')
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [search, setSearch] = useState('')
   const [form, setForm] = useState({
@@ -23,8 +25,7 @@ export default function Products() {
   })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  const [showOTP, setShowOTP] = useState(false)
-const [otpAction, setOtpAction] = useState('')
+
   useEffect(() => {
     if (profile?.id) fetchProducts()
   }, [profile])
@@ -107,6 +108,7 @@ const [otpAction, setOtpAction] = useState('')
 
     setSaving(false)
     setShowModal(false)
+    setShowOTP(false)
     fetchProducts()
   }
 
@@ -119,6 +121,7 @@ const [otpAction, setOtpAction] = useState('')
       'Delete Product',
       `Deleted product: ${selectedProduct.name}`
     )
+    setShowOTP(false)
     setShowConfirm(false)
     fetchProducts()
   }
@@ -232,7 +235,7 @@ const [otpAction, setOtpAction] = useState('')
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
-                         <button onClick={() => { openEdit(product); }} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
+                          <button onClick={() => openEdit(product)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
                           <button onClick={() => openDelete(product)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                         </div>
                       </td>
@@ -261,7 +264,6 @@ const [otpAction, setOtpAction] = useState('')
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder=""
               />
             </div>
             <div>
@@ -271,7 +273,6 @@ const [otpAction, setOtpAction] = useState('')
                 value={form.category}
                 onChange={(e) => setForm({ ...form, category: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder=""
               />
             </div>
             <div>
@@ -281,7 +282,6 @@ const [otpAction, setOtpAction] = useState('')
                 value={form.quantity}
                 onChange={(e) => setForm({ ...form, quantity: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder=""
               />
             </div>
             <div>
@@ -291,7 +291,6 @@ const [otpAction, setOtpAction] = useState('')
                 value={form.selling_price}
                 onChange={(e) => setForm({ ...form, selling_price: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder=""
               />
             </div>
             <div className="flex gap-3 pt-2">
@@ -318,6 +317,7 @@ const [otpAction, setOtpAction] = useState('')
         </Modal>
       )}
 
+      {/* Confirm Delete */}
       {showConfirm && !showOTP && (
         <ConfirmDialog
           message={`Are you sure you want to delete "${selectedProduct?.name}"? This cannot be undone.`}
@@ -326,10 +326,13 @@ const [otpAction, setOtpAction] = useState('')
         />
       )}
 
+      {/* OTP Verify */}
       {showOTP && (
         <OTPVerify
           email={profile?.email}
-          actionLabel={otpAction === 'delete' ? `Delete product: ${selectedProduct?.name}` : `Edit product: ${selectedProduct?.name}`}
+          actionLabel={otpAction === 'delete'
+            ? `Delete product: ${selectedProduct?.name}`
+            : `Edit product: ${selectedProduct?.name}`}
           onVerified={() => {
             setShowOTP(false)
             if (otpAction === 'delete') {

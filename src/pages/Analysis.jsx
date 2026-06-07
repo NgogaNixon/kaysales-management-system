@@ -2,19 +2,29 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, Legend } from 'recharts'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, Legend
+} from 'recharts'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
 export default function Analysis() {
   const { profile } = useAuth()
+  const [saleItems, setSaleItems] = useState([])
   const [sales, setSales] = useState([])
   const [loading, setLoading] = useState(true)
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 30)
+    return d.toISOString().split('T')[0]
+  })
+  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0])
   const [showExportModal, setShowExportModal] = useState(false)
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
+
+  const isPremium = profile?.plan_type === 'premium'
 
   useEffect(() => {
     if (profile?.id) fetchData()
@@ -22,69 +32,120 @@ export default function Analysis() {
 
   const fetchData = async () => {
     setLoading(true)
+
     const { data: salesData } = await supabase
       .from('sales')
       .select('*')
       .eq('user_id', profile.id)
       .order('created_at', { ascending: true })
+
+    const { data: itemsData } = await supabase
+      .from('sale_items')
+      .select('*')
+      .eq('user_id', profile.id)
+
     setSales(salesData || [])
+    setSaleItems(itemsData || [])
     setLoading(false)
   }
 
-  const filtered = sales.filter(s => {
-    const saleDate = new Date(s.created_at)
-    const matchesFrom = dateFrom ? saleDate >= new Date(dateFrom) : true
-    const matchesTo = dateTo ? saleDate <= new Date(dateTo + 'T23:59:59') : true
-    return matchesFrom && matchesTo
+  // Filter sales by date
+  const filteredSales = sales.filter(s => {
+    const d = new Date(s.created_at)
+    const from = dateFrom ? d >= new Date(dateFrom) : true
+    const to = dateTo ? d <= new Date(dateTo + 'T23:59:59') : true
+    return from && to
   })
 
-  const revenueByDay = filtered.reduce((acc, sale) => {
+  // Get sale IDs for filtered sales
+  const filteredSaleIds = filteredSales.map(s => s.id)
+
+  // Filter sale items by filtered sale IDs
+  const filteredItems = saleItems.filter(i => filteredSaleIds.includes(i.sale_id))
+
+  // 1. Revenue Over Time (by day)
+  const revenueByDay = filteredSales.reduce((acc, sale) => {
     const date = new Date(sale.created_at).toLocaleDateString()
     acc[date] = (acc[date] || 0) + (sale.total || 0)
     return acc
   }, {})
   const revenueChartData = Object.entries(revenueByDay).map(([date, total]) => ({ date, total }))
 
-  const productSales = filtered.reduce((acc, sale) => {
-    acc[sale.product_name] = (acc[sale.product_name] || 0) + (sale.quantity_sold || 0)
+  // 2. Best Selling Products (by quantity from sale_items)
+  const productQty = filteredItems.reduce((acc, item) => {
+    acc[item.product_name] = (acc[item.product_name] || 0) + (item.quantity_sold || 0)
     return acc
   }, {})
-  const productChartData = Object.entries(productSales)
+  const bestSellingData = Object.entries(productQty)
     .map(([name, qty]) => ({ name, qty }))
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5)
 
-  const revenueByProduct = filtered.reduce((acc, sale) => {
-    acc[sale.product_name] = (acc[sale.product_name] || 0) + (sale.total || 0)
+  // 3. Revenue by Product (from sale_items)
+  const productRevenue = filteredItems.reduce((acc, item) => {
+    acc[item.product_name] = (acc[item.product_name] || 0) + (item.total || 0)
     return acc
   }, {})
-  const pieData = Object.entries(revenueByProduct)
+  const revenueByProductData = Object.entries(productRevenue)
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 5)
 
+  // 4. Daily Sales Summary (count per day)
+  const salesPerDay = filteredSales.reduce((acc, sale) => {
+    const date = new Date(sale.created_at).toLocaleDateString()
+    acc[date] = (acc[date] || 0) + 1
+    return acc
+  }, {})
+  const dailySalesData = Object.entries(salesPerDay).map(([date, count]) => ({ date, count }))
+
+  // PREMIUM CHARTS
+
+  // 5. Revenue by Category
+  const categoryRevenue = filteredItems.reduce((acc, item) => {
+    // We need product category — join via product_id
+    return acc
+  }, {})
+
+  // 5. Best Selling Day of Week
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+  const revenueByDayOfWeek = filteredSales.reduce((acc, sale) => {
+    const day = dayNames[new Date(sale.created_at).getDay()]
+    acc[day] = (acc[day] || 0) + (sale.total || 0)
+    return acc
+  }, {})
+  const dayOfWeekData = dayNames.map(day => ({ day, total: revenueByDayOfWeek[day] || 0 }))
+
+  // 6. Monthly Revenue Trend
+  const revenueByMonth = filteredSales.reduce((acc, sale) => {
+    const month = new Date(sale.created_at).toLocaleDateString('en-RW', { month: 'short', year: 'numeric' })
+    acc[month] = (acc[month] || 0) + (sale.total || 0)
+    return acc
+  }, {})
+  const monthlyData = Object.entries(revenueByMonth).map(([month, total]) => ({ month, total }))
+
   const COLORS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444']
 
-  const totalRevenue = filtered.reduce((sum, s) => sum + (s.total || 0), 0)
-  const totalSales = filtered.length
-  const avgSale = totalSales > 0 ? Math.round(totalRevenue / totalSales) : 0
+  const totalRevenue = filteredSales.reduce((sum, s) => sum + (s.total || 0), 0)
+  const totalItemsSold = filteredItems.reduce((sum, i) => sum + (i.quantity_sold || 0), 0)
+  const totalSalesCount = filteredSales.length
 
   const handleExport = () => {
-    const exportFiltered = sales.filter(s => {
-      const saleDate = new Date(s.created_at)
-      const matchesFrom = exportFrom ? saleDate >= new Date(exportFrom) : true
-      const matchesTo = exportTo ? saleDate <= new Date(exportTo + 'T23:59:59') : true
-      return matchesFrom && matchesTo
+    const exportSales = sales.filter(s => {
+      const d = new Date(s.created_at)
+      const from = exportFrom ? d >= new Date(exportFrom) : true
+      const to = exportTo ? d <= new Date(exportTo + 'T23:59:59') : true
+      return from && to
     })
+    const exportIds = exportSales.map(s => s.id)
+    const exportItems = saleItems.filter(i => exportIds.includes(i.sale_id))
+    const expRevenue = exportSales.reduce((sum, s) => sum + (s.total || 0), 0)
 
-    const exportRevenue = exportFiltered.reduce((sum, s) => sum + (s.total || 0), 0)
-    const exportSalesCount = exportFiltered.length
-
-    const exportProductSales = exportFiltered.reduce((acc, sale) => {
-      acc[sale.product_name] = (acc[sale.product_name] || 0) + (sale.quantity_sold || 0)
+    const expProductQty = exportItems.reduce((acc, item) => {
+      acc[item.product_name] = (acc[item.product_name] || 0) + (item.quantity_sold || 0)
       return acc
     }, {})
-    const exportProductData = Object.entries(exportProductSales)
+    const expBestSelling = Object.entries(expProductQty)
       .map(([name, qty]) => ({ name, qty }))
       .sort((a, b) => b.qty - a.qty)
 
@@ -97,19 +158,17 @@ export default function Analysis() {
     doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
     if (exportFrom || exportTo) {
       doc.text(`Period: ${exportFrom || 'beginning'} to ${exportTo || 'today'}`, 14, 39)
-      doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 46)
-      doc.text(`Total Sales: ${exportSalesCount}`, 14, 53)
-    } else {
-      doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 39)
-      doc.text(`Total Sales: ${exportSalesCount}`, 14, 46)
     }
+    doc.text(`Total Revenue: RWF ${expRevenue.toLocaleString()}`, 14, 46)
+    doc.text(`Total Sales: ${exportSales.length}`, 14, 53)
+    doc.text(`Total Items Sold: ${exportItems.reduce((sum, i) => sum + (i.quantity_sold || 0), 0)}`, 14, 60)
 
     doc.setFontSize(12)
-    doc.text('Best Selling Products', 14, 65)
+    doc.text('Best Selling Products', 14, 72)
     autoTable(doc, {
-      startY: 70,
+      startY: 77,
       head: [['Product', 'Quantity Sold']],
-      body: exportProductData.map(p => [p.name, p.qty]),
+      body: expBestSelling.map(p => [p.name, p.qty]),
       styles: { fontSize: 9 },
       headStyles: { fillColor: [29, 78, 216] },
     })
@@ -138,7 +197,10 @@ export default function Analysis() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">📈 Analysis</h1>
-            <p className="text-gray-400 text-sm mt-1">Visual insights from your sales data</p>
+            <p className="text-gray-400 text-sm mt-1">
+              Visual insights from your sales data
+              {isPremium && <span className="ml-2 text-xs bg-purple-800 text-purple-300 px-2 py-0.5 rounded-full">⭐ Premium</span>}
+            </p>
           </div>
           <button
             onClick={() => setShowExportModal(true)}
@@ -149,7 +211,7 @@ export default function Analysis() {
         </div>
 
         {/* Date Filter */}
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3 items-center">
           <div className="flex items-center gap-2">
             <label className="text-gray-400 text-sm">From:</label>
             <input
@@ -168,22 +230,31 @@ export default function Analysis() {
               className="bg-gray-900 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
             />
           </div>
-          {(dateFrom || dateTo) && (
-            <button
-              onClick={() => { setDateFrom(''); setDateTo('') }}
-              className="px-3 py-2 bg-gray-800 text-gray-400 hover:text-white rounded-lg text-sm transition"
-            >
-              Clear
-            </button>
-          )}
+          <button
+            onClick={() => {
+              const d = new Date()
+              d.setDate(d.getDate() - 30)
+              setDateFrom(d.toISOString().split('T')[0])
+              setDateTo(new Date().toISOString().split('T')[0])
+            }}
+            className="px-3 py-2 bg-gray-800 text-gray-400 hover:text-white rounded-lg text-sm transition"
+          >
+            Last 30 Days
+          </button>
+          <button
+            onClick={() => { setDateFrom(''); setDateTo('') }}
+            className="px-3 py-2 bg-gray-800 text-gray-400 hover:text-white rounded-lg text-sm transition"
+          >
+            All Time
+          </button>
         </div>
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-4">
           {[
             { label: 'Total Revenue', value: `RWF ${totalRevenue.toLocaleString()}`, icon: '💵' },
-            { label: 'Total Sales', value: totalSales, icon: '🧾' },
-            { label: 'Avg per Sale', value: `RWF ${avgSale.toLocaleString()}`, icon: '📊' },
+            { label: 'Total Sales', value: totalSalesCount, icon: '🧾' },
+            { label: 'Items Sold', value: totalItemsSold, icon: '📦' },
           ].map((stat, i) => (
             <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
               <span className="text-2xl">{stat.icon}</span>
@@ -193,7 +264,7 @@ export default function Analysis() {
           ))}
         </div>
 
-        {/* Revenue Over Time */}
+        {/* Chart 1 — Revenue Over Time */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h2 className="text-lg font-bold text-white mb-4">📈 Revenue Over Time</h2>
           {revenueChartData.length === 0 ? (
@@ -202,11 +273,10 @@ export default function Analysis() {
             <ResponsiveContainer width="100%" height={250}>
               <LineChart data={revenueChartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis dataKey="date" stroke="#9ca3af" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#9ca3af" tick={{ fontSize: 11 }} />
+                <XAxis dataKey="date" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} />
                 <Tooltip
                   contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
-                  labelStyle={{ color: '#fff' }}
                   formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
                 />
                 <Line type="monotone" dataKey="total" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6' }} />
@@ -215,45 +285,47 @@ export default function Analysis() {
           )}
         </div>
 
-        {/* Best Selling Products & Pie Chart */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <h2 className="text-lg font-bold text-white mb-4">🏆 Best Selling Products</h2>
-            {productChartData.length === 0 ? (
-              <p className="text-gray-500 text-center py-8">No data available</p>
-            ) : (
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={productChartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis dataKey="name" stroke="#9ca3af" tick={{ fontSize: 11 }} />
-                  <YAxis stroke="#9ca3af" tick={{ fontSize: 11 }} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
-                    labelStyle={{ color: '#fff' }}
-                    formatter={(value) => [value, 'Units Sold']}
-                  />
-                  <Bar dataKey="qty" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
+        {/* Chart 2 — Best Selling Products */}
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h2 className="text-lg font-bold text-white mb-4">🏆 Best Selling Products</h2>
+          {bestSellingData.length === 0 ? (
+            <p className="text-gray-500 text-center py-8">No data available</p>
+          ) : (
+            <ResponsiveContainer width="100%" height={250}>
+              <BarChart data={bestSellingData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="name" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  formatter={(value) => [value, 'Units Sold']}
+                />
+                <Bar dataKey="qty" fill="#10b981" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
 
+        {/* Chart 3 & 4 — Revenue by Product + Daily Sales */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+          {/* Revenue by Product */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <h2 className="text-lg font-bold text-white mb-4">💰 Revenue by Product</h2>
-            {pieData.length === 0 ? (
+            {revenueByProductData.length === 0 ? (
               <p className="text-gray-500 text-center py-8">No data available</p>
             ) : (
               <ResponsiveContainer width="100%" height={250}>
                 <PieChart>
                   <Pie
-                    data={pieData}
+                    data={revenueByProductData}
                     cx="50%"
                     cy="50%"
                     outerRadius={80}
                     dataKey="value"
                     label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                   >
-                    {pieData.map((entry, index) => (
+                    {revenueByProductData.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
@@ -266,11 +338,77 @@ export default function Analysis() {
               </ResponsiveContainer>
             )}
           </div>
+
+          {/* Daily Sales Count */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h2 className="text-lg font-bold text-white mb-4">📅 Daily Sales Count</h2>
+            {dailySalesData.length === 0 ? (
+              <p className="text-gray-500 text-center py-8">No data available</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={dailySalesData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis dataKey="date" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                  <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                    formatter={(value) => [value, 'Sales']}
+                  />
+                  <Bar dataKey="count" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
         </div>
+
+        {/* PREMIUM CHARTS */}
+        {isPremium && (
+          <>
+            {/* Chart 5 — Best Selling Day of Week */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-lg font-bold text-white mb-1">📆 Best Selling Day of Week <span className="text-xs bg-purple-800 text-purple-300 px-2 py-0.5 rounded-full ml-2">⭐ Premium</span></h2>
+              <p className="text-gray-400 text-xs mb-4">Which day of the week brings most revenue</p>
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={dayOfWeekData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis dataKey="day" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                  <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                    formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
+                  />
+                  <Bar dataKey="total" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Chart 6 — Monthly Revenue Trend */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-lg font-bold text-white mb-1">📊 Monthly Revenue Trend <span className="text-xs bg-purple-800 text-purple-300 px-2 py-0.5 rounded-full ml-2">⭐ Premium</span></h2>
+              <p className="text-gray-400 text-xs mb-4">Month by month revenue comparison</p>
+              {monthlyData.length === 0 ? (
+                <p className="text-gray-500 text-center py-8">No data available</p>
+              ) : (
+                <ResponsiveContainer width="100%" height={250}>
+                  <LineChart data={monthlyData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                    <XAxis dataKey="month" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                    <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                      formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
+                    />
+                    <Line type="monotone" dataKey="total" stroke="#ec4899" strokeWidth={2} dot={{ fill: '#ec4899' }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </>
+        )}
 
       </div>
 
-      {/* Export Date Range Modal */}
+      {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
@@ -282,29 +420,15 @@ export default function Analysis() {
               <p className="text-gray-400 text-sm">Select date range. Leave blank to export all data.</p>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">From Date</label>
-                <input
-                  type="date"
-                  value={exportFrom}
-                  onChange={(e) => setExportFrom(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                />
+                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">To Date</label>
-                <input
-                  type="date"
-                  value={exportTo}
-                  onChange={(e) => setExportTo(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                />
+                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
               </div>
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
-                  Cancel
-                </button>
-                <button onClick={handleExport} className="flex-1 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg transition font-medium">
-                  Download
-                </button>
+                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={handleExport} className="flex-1 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg transition font-medium">Download</button>
               </div>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
 export default function OTPVerify({ email, onVerified, onCancel, actionLabel }) {
@@ -7,21 +7,33 @@ export default function OTPVerify({ email, onVerified, onCancel, actionLabel }) 
   const [verifying, setVerifying] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState('')
+  const [cooldown, setCooldown] = useState(0)
+
+  useEffect(() => {
+    let timer
+    if (cooldown > 0) {
+      timer = setTimeout(() => setCooldown(c => c - 1), 1000)
+    }
+    return () => clearTimeout(timer)
+  }, [cooldown])
 
   const sendOTP = async () => {
+    if (cooldown > 0) return
     setSending(true)
     setError('')
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: { 
+      options: {
         shouldCreateUser: false,
         emailRedirectTo: null
       }
     })
     if (error) {
-      setError('Failed to send OTP. Please try again.')
+      setError('Failed to send OTP. Please wait 60 seconds before trying again.')
+      setCooldown(60)
     } else {
       setSent(true)
+      setCooldown(60)
     }
     setSending(false)
   }
@@ -62,19 +74,26 @@ export default function OTPVerify({ email, onVerified, onCancel, actionLabel }) 
           {!sent ? (
             <>
               <p className="text-gray-400 text-sm">
-                We will send a verification code to: <span className="text-white font-medium">{email}</span>
+                We will send a 6-digit verification code to: <span className="text-white font-medium">{email}</span>
               </p>
               {error && <p className="text-red-400 text-sm">{error}</p>}
+              {cooldown > 0 && (
+                <p className="text-yellow-400 text-sm text-center">Please wait {cooldown}s before resending</p>
+              )}
               <div className="flex gap-3">
                 <button onClick={onCancel} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
                   Cancel
                 </button>
                 <button
                   onClick={sendOTP}
-                  disabled={sending}
-                  className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+                  disabled={sending || cooldown > 0}
+                  className={`flex-1 py-2 rounded-lg font-medium transition ${
+                    cooldown > 0
+                      ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
                 >
-                  {sending ? 'Sending...' : 'Send OTP'}
+                  {sending ? 'Sending...' : cooldown > 0 ? `Wait ${cooldown}s` : 'Send OTP'}
                 </button>
               </div>
             </>
@@ -90,22 +109,34 @@ export default function OTPVerify({ email, onVerified, onCancel, actionLabel }) 
                 className="w-full bg-gray-800 border border-gray-700 text-white px-4 py-3 rounded-lg text-center text-2xl tracking-widest focus:outline-none focus:border-blue-500"
                 placeholder="000000"
                 maxLength={6}
+                autoFocus
               />
               {error && <p className="text-red-400 text-sm">{error}</p>}
               <p className="text-gray-500 text-xs text-center">Code expires in 5 minutes</p>
               <div className="flex gap-3">
                 <button
-                  onClick={() => { setSent(false); setOtp(''); setError('') }}
-                  className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition text-sm"
+                  onClick={() => {
+                    if (cooldown === 0) {
+                      setSent(false)
+                      setOtp('')
+                      setError('')
+                    }
+                  }}
+                  disabled={cooldown > 0}
+                  className={`flex-1 py-2 rounded-lg text-sm transition ${
+                    cooldown > 0
+                      ? 'bg-gray-800 text-gray-600 cursor-not-allowed'
+                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                  }`}
                 >
-                  Resend
+                  {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend'}
                 </button>
                 <button
                   onClick={verifyOTP}
                   disabled={verifying || otp.length < 6}
-                  className="flex-1 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium"
+                  className="flex-1 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium disabled:opacity-50"
                 >
-                  {verifying ? 'Verifying...' : 'Confirm Delete'}
+                  {verifying ? 'Verifying...' : 'Confirm'}
                 </button>
               </div>
             </>

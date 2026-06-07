@@ -9,12 +9,16 @@ export default function AdminReports() {
   const [clients, setClients] = useState([])
   const [subscriptions, setSubscriptions] = useState([])
   const [products, setProducts] = useState([])
+  const [sales, setSales] = useState([])
+  const [creditsGiven, setCreditsGiven] = useState([])
+  const [creditsTaken, setCreditsTaken] = useState([])
   const [payments, setPayments] = useState([])
   const [loading, setLoading] = useState(true)
-  const [filterClient, setFilterClient] = useState('all')
+  const [selectedClient, setSelectedClient] = useState(null)
+  const [search, setSearch] = useState('')
   const [filterPlan, setFilterPlan] = useState('all')
   const [filterStatus, setFilterStatus] = useState('all')
-  const [activeTab, setActiveTab] = useState('clients')
+  const [generating, setGenerating] = useState(false)
 
   useEffect(() => {
     fetchData()
@@ -37,6 +41,18 @@ export default function AdminReports() {
       .from('products')
       .select('*')
 
+    const { data: salesData } = await supabase
+      .from('sales')
+      .select('*')
+
+    const { data: givenData } = await supabase
+      .from('credits_given')
+      .select('*')
+
+    const { data: takenData } = await supabase
+      .from('credits_taken')
+      .select('*')
+
     const { data: paymentsData } = await supabase
       .from('payment_requests')
       .select('*')
@@ -45,6 +61,9 @@ export default function AdminReports() {
     setClients(profilesData || [])
     setSubscriptions(subsData || [])
     setProducts(productsData || [])
+    setSales(salesData || [])
+    setCreditsGiven(givenData || [])
+    setCreditsTaken(takenData || [])
     setPayments(paymentsData || [])
     setLoading(false)
   }
@@ -68,11 +87,9 @@ export default function AdminReports() {
     return 'Active'
   }
 
-  const getClientPayments = (userId) => payments.filter(p => p.user_id === userId)
-
-  // Filter clients
   const filteredClients = clients.filter(c => {
-    const matchesClient = filterClient === 'all' || c.id === filterClient
+    const matchesSearch = c.full_name?.toLowerCase().includes(search.toLowerCase()) ||
+      c.email?.toLowerCase().includes(search.toLowerCase())
     const matchesPlan = filterPlan === 'all' || c.plan_type === filterPlan
     const sub = getSubscription(c.id)
     const days = getDaysRemaining(sub?.expiry_date)
@@ -81,111 +98,207 @@ export default function AdminReports() {
     if (filterStatus === 'expiring') matchesStatus = days !== null && days <= 7 && days > 0
     if (filterStatus === 'expired') matchesStatus = days !== null && days <= 0
     if (filterStatus === 'trial') matchesStatus = sub?.payment_status === 'trial'
-    return matchesClient && matchesPlan && matchesStatus
+    return matchesSearch && matchesPlan && matchesStatus
   })
 
-  // Filter products
-  const filteredProducts = products.filter(p => {
-    if (filterClient === 'all') return true
-    return p.user_id === filterClient
-  })
-
-  const exportExcel = () => {
+  const generateClientExcel = (client) => {
+    setGenerating(true)
     const wb = XLSX.utils.book_new()
+    const sub = getSubscription(client.id)
+    const clientPayments = payments.filter(p => p.user_id === client.id)
+    const clientProducts = products.filter(p => p.user_id === client.id)
+    const clientSales = sales.filter(s => s.user_id === client.id)
+    const clientCreditsGiven = creditsGiven.filter(c => c.user_id === client.id)
+    const clientCreditsTaken = creditsTaken.filter(c => c.user_id === client.id)
 
-    // Sheet 1 — Clients
-    const clientData = filteredClients.map(c => {
-      const sub = getSubscription(c.id)
-      const days = getDaysRemaining(sub?.expiry_date)
-      const clientPayments = getClientPayments(c.id)
-      return {
-        'Full Name': c.full_name,
-        'Email': c.email,
-        'Plan': c.plan_type,
-        'Status': c.approved ? 'Approved' : 'Pending',
-        'Subscription Status': getSubStatus(c.id),
-        'Expiry Date': sub?.expiry_date ? new Date(sub.expiry_date).toLocaleDateString() : '—',
-        'Days Remaining': days !== null ? days : '—',
-        'Total Payments': clientPayments.filter(p => p.status === 'approved').length,
-        'Joined': new Date(c.created_at).toLocaleDateString(),
-      }
-    })
-    const ws1 = XLSX.utils.json_to_sheet(clientData)
-    XLSX.utils.book_append_sheet(wb, ws1, 'Clients')
+    // Sheet 1 — Client Info
+    const infoData = [
+      { Field: 'Full Name', Value: client.full_name },
+      { Field: 'Email', Value: client.email },
+      { Field: 'Plan', Value: client.plan_type },
+      { Field: 'Account Status', Value: client.approved ? 'Approved' : 'Pending' },
+      { Field: 'Subscription Status', Value: getSubStatus(client.id) },
+      { Field: 'Subscription Start', Value: sub?.start_date ? new Date(sub.start_date).toLocaleDateString() : '—' },
+      { Field: 'Subscription Expiry', Value: sub?.expiry_date ? new Date(sub.expiry_date).toLocaleDateString() : '—' },
+      { Field: 'Date Joined', Value: new Date(client.created_at).toLocaleDateString() },
+    ]
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(infoData), 'Client Info')
 
-    // Sheet 2 — Stock
-    const stockData = filteredProducts.map(p => {
-      const client = clients.find(c => c.id === p.user_id)
-      return {
-        'Client Name': client?.full_name || '—',
-        'Client Email': client?.email || '—',
-        'Product Name': p.name,
-        'Category': p.category || '—',
-        'Quantity': p.quantity,
-        'Selling Price (RWF)': p.selling_price,
-        'Status': p.quantity === 0 ? 'Out of Stock' : p.quantity < 3 ? 'Low Stock' : 'In Stock',
-      }
-    })
-    const ws2 = XLSX.utils.json_to_sheet(stockData)
-    XLSX.utils.book_append_sheet(wb, ws2, 'Stock')
+    // Sheet 2 — Products/Stock
+    const productsData = clientProducts.map(p => ({
+      'Product Name': p.name,
+      'Category': p.category || '—',
+      'Quantity': p.quantity,
+      'Selling Price (RWF)': p.selling_price,
+      'Status': p.quantity === 0 ? 'Out of Stock' : p.quantity < 3 ? 'Low Stock' : 'In Stock',
+    }))
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(productsData.length ? productsData : [{ Info: 'No products' }]), 'Stock')
 
-    XLSX.writeFile(wb, `KaySales_Admin_Report_${new Date().toLocaleDateString()}.xlsx`)
+    // Sheet 3 — Sales
+    const salesData = clientSales.map(s => ({
+      'Customer': s.product_name,
+      'Total (RWF)': s.total,
+      'Date': new Date(s.created_at).toLocaleDateString(),
+    }))
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesData.length ? salesData : [{ Info: 'No sales' }]), 'Sales')
+
+    // Sheet 4 — Credits Given
+    const givenData = clientCreditsGiven.map(c => ({
+      'Customer': c.customer_name,
+      'Product': c.product_name || '—',
+      'Quantity': c.quantity || '—',
+      'Amount (RWF)': c.amount,
+      'Status': c.status || 'unpaid',
+      'Date': c.date ? new Date(c.date).toLocaleDateString() : '—',
+    }))
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(givenData.length ? givenData : [{ Info: 'No credits given' }]), 'Credits Given')
+
+    // Sheet 5 — Credits Taken
+    const takenData = clientCreditsTaken.map(c => ({
+      'Supplier': c.supplier_name,
+      'Product': c.product_name || '—',
+      'Quantity': c.quantity || '—',
+      'Amount (RWF)': c.amount,
+      'Status': c.status || 'unpaid',
+      'Date': c.date ? new Date(c.date).toLocaleDateString() : '—',
+    }))
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(takenData.length ? takenData : [{ Info: 'No credits taken' }]), 'Credits Taken')
+
+    // Sheet 6 — Payment History
+    const paymentData = clientPayments.map(p => ({
+      'Plan': p.plan_type,
+      'Amount (RWF)': p.amount === 0 ? 'Free Trial' : p.amount,
+      'Transaction ID': p.transaction_id,
+      'Sender Name': p.sender_name,
+      'Status': p.status,
+      'Date': new Date(p.created_at).toLocaleDateString(),
+    }))
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentData.length ? paymentData : [{ Info: 'No payments' }]), 'Payment History')
+
+    XLSX.writeFile(wb, `KaySales_${client.full_name.replace(' ', '_')}_Report.xlsx`)
+    setGenerating(false)
   }
 
-  const exportPDF = () => {
+  const generateClientPDF = (client) => {
+    setGenerating(true)
+    const sub = getSubscription(client.id)
+    const clientPayments = payments.filter(p => p.user_id === client.id)
+    const clientProducts = products.filter(p => p.user_id === client.id)
+    const clientSales = sales.filter(s => s.user_id === client.id)
+    const clientCreditsGiven = creditsGiven.filter(c => c.user_id === client.id)
+    const clientCreditsTaken = creditsTaken.filter(c => c.user_id === client.id)
+
     const doc = new jsPDF()
+
+    // Header
     doc.setFontSize(16)
     doc.text('KaySales Management System', 14, 15)
     doc.setFontSize(12)
-    doc.text('Admin Full Report', 14, 25)
+    doc.text('Client Full Report', 14, 23)
     doc.setFontSize(10)
-    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 32)
-    doc.text(`Total Clients: ${filteredClients.length}`, 14, 39)
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 30)
 
-    // Clients Table
+    // Client Info
     doc.setFontSize(12)
-    doc.text('Client Information', 14, 50)
+    doc.text('Client Information', 14, 42)
     autoTable(doc, {
-      startY: 55,
-      head: [['Name', 'Email', 'Plan', 'Status', 'Sub Status', 'Expiry']],
-      body: filteredClients.map(c => {
-        const sub = getSubscription(c.id)
-        return [
-          c.full_name,
-          c.email,
-          c.plan_type,
-          c.approved ? 'Approved' : 'Pending',
-          getSubStatus(c.id),
-          sub?.expiry_date ? new Date(sub.expiry_date).toLocaleDateString() : '—',
-        ]
-      }),
-      styles: { fontSize: 8 },
-      headStyles: { fillColor: [10, 22, 40] },
+      startY: 47,
+      body: [
+        ['Full Name', client.full_name],
+        ['Email', client.email],
+        ['Plan', client.plan_type],
+        ['Account Status', client.approved ? 'Approved' : 'Pending'],
+        ['Subscription Status', getSubStatus(client.id)],
+        ['Expiry Date', sub?.expiry_date ? new Date(sub.expiry_date).toLocaleDateString() : '—'],
+        ['Date Joined', new Date(client.created_at).toLocaleDateString()],
+      ],
+      styles: { fontSize: 9 },
+      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
+      theme: 'grid',
     })
 
-    // Stock Table
-    const finalY = doc.lastAutoTable.finalY + 10
+    // Stock
+    let y = doc.lastAutoTable.finalY + 10
     doc.setFontSize(12)
-    doc.text('Stock Information', 14, finalY)
+    doc.text('Stock / Products', 14, y)
     autoTable(doc, {
-      startY: finalY + 5,
-      head: [['Client', 'Product', 'Category', 'Qty', 'Price (RWF)', 'Status']],
-      body: filteredProducts.map(p => {
-        const client = clients.find(c => c.id === p.user_id)
-        return [
-          client?.full_name || '—',
-          p.name,
-          p.category || '—',
-          p.quantity,
-          p.selling_price?.toLocaleString(),
-          p.quantity === 0 ? 'Out of Stock' : p.quantity < 3 ? 'Low Stock' : 'In Stock',
-        ]
-      }),
+      startY: y + 5,
+      head: [['Product', 'Category', 'Qty', 'Price (RWF)', 'Status']],
+      body: clientProducts.length ? clientProducts.map(p => [
+        p.name, p.category || '—', p.quantity,
+        p.selling_price?.toLocaleString(),
+        p.quantity === 0 ? 'Out of Stock' : p.quantity < 3 ? 'Low Stock' : 'In Stock',
+      ]) : [['No products', '', '', '', '']],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [13, 148, 136] },
     })
 
-    doc.save(`KaySales_Admin_Report_${new Date().toLocaleDateString()}.pdf`)
+    // Sales
+    y = doc.lastAutoTable.finalY + 10
+    doc.setFontSize(12)
+    doc.text('Sales History', 14, y)
+    autoTable(doc, {
+      startY: y + 5,
+      head: [['Customer', 'Total (RWF)', 'Date']],
+      body: clientSales.length ? clientSales.map(s => [
+        s.product_name,
+        s.total?.toLocaleString(),
+        new Date(s.created_at).toLocaleDateString(),
+      ]) : [['No sales', '', '']],
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [29, 78, 216] },
+    })
+
+    // Credits Given
+    y = doc.lastAutoTable.finalY + 10
+    doc.setFontSize(12)
+    doc.text('Credits Given', 14, y)
+    autoTable(doc, {
+      startY: y + 5,
+      head: [['Customer', 'Product', 'Qty', 'Amount (RWF)', 'Status']],
+      body: clientCreditsGiven.length ? clientCreditsGiven.map(c => [
+        c.customer_name, c.product_name || '—', c.quantity || '—',
+        c.amount?.toLocaleString(), c.status || 'unpaid',
+      ]) : [['No credits given', '', '', '', '']],
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [234, 179, 8] },
+    })
+
+    // Credits Taken
+    y = doc.lastAutoTable.finalY + 10
+    doc.setFontSize(12)
+    doc.text('Credits Taken', 14, y)
+    autoTable(doc, {
+      startY: y + 5,
+      head: [['Supplier', 'Product', 'Qty', 'Amount (RWF)', 'Status']],
+      body: clientCreditsTaken.length ? clientCreditsTaken.map(c => [
+        c.supplier_name, c.product_name || '—', c.quantity || '—',
+        c.amount?.toLocaleString(), c.status || 'unpaid',
+      ]) : [['No credits taken', '', '', '', '']],
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [239, 68, 68] },
+    })
+
+    // Payment History
+    y = doc.lastAutoTable.finalY + 10
+    doc.setFontSize(12)
+    doc.text('Payment History', 14, y)
+    autoTable(doc, {
+      startY: y + 5,
+      head: [['Plan', 'Amount', 'Transaction ID', 'Status', 'Date']],
+      body: clientPayments.length ? clientPayments.map(p => [
+        p.plan_type,
+        p.amount === 0 ? 'Free Trial' : `RWF ${p.amount?.toLocaleString()}`,
+        p.transaction_id,
+        p.status,
+        new Date(p.created_at).toLocaleDateString(),
+      ]) : [['No payments', '', '', '', '']],
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [10, 22, 40] },
+    })
+
+    doc.save(`KaySales_${client.full_name.replace(' ', '_')}_Report.pdf`)
+    setGenerating(false)
   }
 
   return (
@@ -193,23 +306,17 @@ export default function AdminReports() {
       <div className="p-6 space-y-6">
 
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-white">📊 Admin Reports</h1>
-            <p className="text-gray-400 text-sm mt-1">Full system report with client and stock information</p>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={exportExcel} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
-            <button onClick={exportPDF} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
-          </div>
+        <div>
+          <h1 className="text-2xl font-bold text-white">📑 Admin Reports</h1>
+          <p className="text-gray-400 text-sm mt-1">Generate full client reports with all their information</p>
         </div>
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[
             { label: 'Total Clients', value: clients.length, icon: '👥' },
-            { label: 'Active Subscriptions', value: clients.filter(c => { const d = getDaysRemaining(getSubscription(c.id)?.expiry_date); return d !== null && d > 0 }).length, icon: '✅' },
             { label: 'Total Products', value: products.length, icon: '📦' },
+            { label: 'Total Sales', value: sales.length, icon: '💰' },
             { label: 'Low Stock Items', value: products.filter(p => p.quantity < 3).length, icon: '⚠️' },
           ].map((stat, i) => (
             <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
@@ -222,16 +329,13 @@ export default function AdminReports() {
 
         {/* Filters */}
         <div className="flex flex-col sm:flex-row gap-3">
-          <select
-            value={filterClient}
-            onChange={(e) => setFilterClient(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500 flex-1"
-          >
-            <option value="all">All Clients</option>
-            {clients.map(c => (
-              <option key={c.id} value={c.id}>{c.full_name}</option>
-            ))}
-          </select>
+          <input
+            type="text"
+            placeholder="Search client by name or email..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500"
+          />
           <select
             value={filterPlan}
             onChange={(e) => setFilterPlan(e.target.value)}
@@ -254,142 +358,78 @@ export default function AdminReports() {
           </select>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-2">
-          <button
-            onClick={() => setActiveTab('clients')}
-            className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'clients' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
-          >
-            👥 Clients ({filteredClients.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('stock')}
-            className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'stock' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
-          >
-            📦 Stock ({filteredProducts.length})
-          </button>
+        {/* Clients List */}
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          {loading ? (
+            <div className="text-center py-12"><p className="text-gray-400">Loading clients...</p></div>
+          ) : filteredClients.length === 0 ? (
+            <div className="text-center py-12"><p className="text-gray-500">No clients found</p></div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-800">
+                  <tr>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Client</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Plan</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Products</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Sales</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Download Report</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredClients.map((client) => (
+                    <tr key={client.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
+                      <td className="px-6 py-4">
+                        <p className="text-white font-medium">{client.full_name}</p>
+                        <p className="text-gray-500 text-xs">{client.email}</p>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${client.plan_type === 'premium' ? 'bg-purple-900 text-purple-300' : 'bg-blue-900 text-blue-300'}`}>
+                          {client.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          getSubStatus(client.id) === 'Active' ? 'bg-green-900 text-green-300' :
+                          getSubStatus(client.id).includes('Expiring') ? 'bg-orange-900 text-orange-300' :
+                          getSubStatus(client.id) === 'Expired' ? 'bg-red-900 text-red-300' :
+                          'bg-gray-800 text-gray-400'
+                        }`}>
+                          {getSubStatus(client.id)}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-gray-300">
+                        {products.filter(p => p.user_id === client.id).length} items
+                      </td>
+                      <td className="px-6 py-4 text-gray-300">
+                        {sales.filter(s => s.user_id === client.id).length} sales
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => generateClientExcel(client)}
+                            disabled={generating}
+                            className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
+                          >
+                            📊 Excel
+                          </button>
+                          <button
+                            onClick={() => generateClientPDF(client)}
+                            disabled={generating}
+                            className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
+                          >
+                            📄 PDF
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-
-        {/* Clients Tab */}
-        {activeTab === 'clients' && (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            {loading ? (
-              <div className="text-center py-12"><p className="text-gray-400">Loading...</p></div>
-            ) : filteredClients.length === 0 ? (
-              <div className="text-center py-12"><p className="text-gray-500">No clients found</p></div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-800">
-                    <tr>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Name</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Email</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Plan</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Account Status</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Subscription</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Expiry</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Joined</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredClients.map((client) => {
-                      const sub = getSubscription(client.id)
-                      const days = getDaysRemaining(sub?.expiry_date)
-                      return (
-                        <tr key={client.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
-                          <td className="px-6 py-4 text-white font-medium">{client.full_name}</td>
-                          <td className="px-6 py-4 text-gray-300">{client.email}</td>
-                          <td className="px-6 py-4">
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${client.plan_type === 'premium' ? 'bg-purple-900 text-purple-300' : 'bg-blue-900 text-blue-300'}`}>
-                              {client.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4">
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${client.approved ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'}`}>
-                              {client.approved ? '✅ Approved' : '⏳ Pending'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4">
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                              days === null ? 'bg-gray-800 text-gray-400' :
-                              days <= 0 ? 'bg-red-900 text-red-300' :
-                              days <= 7 ? 'bg-orange-900 text-orange-300' :
-                              'bg-green-900 text-green-300'
-                            }`}>
-                              {getSubStatus(client.id)}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-gray-400">
-                            {sub?.expiry_date ? new Date(sub.expiry_date).toLocaleDateString() : '—'}
-                          </td>
-                          <td className="px-6 py-4 text-gray-400">
-                            {new Date(client.created_at).toLocaleDateString()}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Stock Tab */}
-        {activeTab === 'stock' && (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            {loading ? (
-              <div className="text-center py-12"><p className="text-gray-400">Loading...</p></div>
-            ) : filteredProducts.length === 0 ? (
-              <div className="text-center py-12"><p className="text-gray-500">No products found</p></div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-800">
-                    <tr>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Client</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Product</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Category</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Qty</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Price (RWF)</th>
-                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredProducts.map((product) => {
-                      const client = clients.find(c => c.id === product.user_id)
-                      return (
-                        <tr key={product.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
-                          <td className="px-6 py-4">
-                            <p className="text-white font-medium">{client?.full_name || '—'}</p>
-                            <p className="text-gray-500 text-xs">{client?.email || '—'}</p>
-                          </td>
-                          <td className="px-6 py-4 text-white">{product.name}</td>
-                          <td className="px-6 py-4 text-gray-300">{product.category || '—'}</td>
-                          <td className="px-6 py-4">
-                            <span className={`font-bold ${product.quantity < 3 ? 'text-orange-400' : 'text-white'}`}>
-                              {product.quantity}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-gray-300">{product.selling_price?.toLocaleString()}</td>
-                          <td className="px-6 py-4">
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                              product.quantity === 0 ? 'bg-red-900 text-red-300' :
-                              product.quantity < 3 ? 'bg-orange-900 text-orange-300' :
-                              'bg-green-900 text-green-300'
-                            }`}>
-                              {product.quantity === 0 ? '❌ Out of Stock' : product.quantity < 3 ? '⚠️ Low Stock' : '✅ In Stock'}
-                            </span>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
 
       </div>
     </Layout>
