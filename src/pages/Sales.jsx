@@ -76,13 +76,31 @@ export default function Sales() {
     setShowModal(true)
   }
 
-  const openEdit = (sale) => {
+  const openEdit = async (sale) => {
     setSelectedSale(sale)
     setCustomerName(sale.product_name)
-    setPaymentMethod('cash')
+    setPaymentMethod(sale.payment_method || 'cash')
     setSaleDate(sale.created_at ? sale.created_at.split('T')[0] : new Date().toISOString().split('T')[0])
-    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
     setError('')
+
+    // Load existing sale items
+    const { data: existingItems } = await supabase
+      .from('sale_items')
+      .select('*')
+      .eq('sale_id', sale.id)
+
+    if (existingItems && existingItems.length > 0) {
+      setSaleItems(existingItems.map(item => ({
+        product_id: item.product_id || '',
+        product_name: item.product_name,
+        quantity_sold: item.quantity_sold,
+        selling_price: item.selling_price,
+        total: item.total,
+      })))
+    } else {
+      setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
+    }
+
     setShowModal(true)
   }
 
@@ -149,13 +167,15 @@ export default function Sales() {
     if (selectedSale) {
       const { data, error } = await supabase
         .from('sales')
-        .update({
+        .insert({
+          user_id: profile.id,
           product_name: customerName,
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
+          selling_price: 0,
           total: grandTotal,
           created_at: saleDate,
+          payment_method: paymentMethod,
         })
-        .eq('id', selectedSale.id)
         .select()
         .single()
       saleData = data
@@ -164,14 +184,14 @@ export default function Sales() {
     } else {
       const { data, error } = await supabase
         .from('sales')
-        .insert({
-          user_id: profile.id,
+        .update({
           product_name: customerName,
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
-          selling_price: 0,
           total: grandTotal,
           created_at: saleDate,
+          payment_method: paymentMethod,
         })
+        .eq('id', selectedSale.id)
         .select()
         .single()
       saleData = data
@@ -312,9 +332,14 @@ export default function Sales() {
     doc.text('--------------------------------', 40, 20, { align: 'center' })
     doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 5, 26)
     doc.text(`Customer: ${receiptSale.product_name}`, 5, 32)
-    doc.text('--------------------------------', 40, 36, { align: 'center' })
-
-    let y = 42
+    const paymentLabel = receiptSale.payment_method === 'cash' ? 'Cash' :
+      receiptSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
+      receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
+      receiptSale.payment_method === 'cheque' ? 'Cheque' :
+      receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'
+    doc.text(`Payment: ${paymentLabel}`, 5, 38)
+    doc.text('--------------------------------', 40, 42, { align: 'center' })
+    let y = 48
     receiptItems.forEach((item, i) => {
       doc.text(`${i + 1}. ${item.product_name}`, 5, y)
       doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
@@ -455,6 +480,7 @@ export default function Sales() {
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Customer</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Total</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Payment</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Date</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
                   </tr>
@@ -464,6 +490,15 @@ export default function Sales() {
                     <tr key={sale.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
                       <td className="px-6 py-4 text-white font-medium">{sale.product_name}</td>
                       <td className="px-6 py-4 text-green-400 font-medium">RWF {sale.total?.toLocaleString()}</td>
+                      <td className="px-6 py-4">
+                        <span className="text-gray-300 text-xs">
+                          {sale.payment_method === 'cash' ? '💵 Cash' :
+                           sale.payment_method === 'mtn' ? '📱 MTN' :
+                           sale.payment_method === 'bank' ? '🏦 Bank' :
+                           sale.payment_method === 'cheque' ? '📄 Cheque' :
+                           sale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
+                        </span>
+                      </td>
                       <td className="px-6 py-4 text-gray-400">{new Date(sale.created_at).toLocaleDateString()}</td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
@@ -515,6 +550,8 @@ export default function Sales() {
               >
                 <option value="cash">💵 Cash</option>
                 <option value="mtn">📱 MTN Mobile Money</option>
+                <option value="bank">🏦 Bank Transfer</option>
+                <option value="cheque">📄 Cheque</option>
                 <option value="credit">💳 Credit (Add to Credits Given)</option>
               </select>
             </div>
@@ -673,8 +710,14 @@ export default function Sales() {
                   <span className="text-white">{new Date(receiptSale.created_at).toLocaleDateString()}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Customer</span>
-                  <span className="text-white">{receiptSale.product_name}</span>
+                  <span className="text-gray-400">Payment</span>
+                  <span className="text-white">
+                    {receiptSale.payment_method === 'cash' ? '💵 Cash' :
+                     receiptSale.payment_method === 'mtn' ? '📱 MTN Mobile Money' :
+                     receiptSale.payment_method === 'bank' ? '🏦 Bank Transfer' :
+                     receiptSale.payment_method === 'cheque' ? '📄 Cheque' :
+                     receiptSale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
+                  </span>
                 </div>
                 <div className="border-t border-gray-700 pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
