@@ -163,6 +163,7 @@ export default function Sales() {
     setError('')
 
     let saleData, saleError
+    if (saving) return
 
     if (selectedSale) {
       const { data, error } = await supabase
@@ -184,22 +185,30 @@ export default function Sales() {
     } else {
       const { data, error } = await supabase
         .from('sales')
-        .update({
+        .insert({
+          user_id: profile.id,
           product_name: customerName,
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
+          selling_price: 0,
           total: grandTotal,
-          created_at: saleDate,
           payment_method: paymentMethod,
         })
-        .eq('id', selectedSale.id)
         .select()
         .single()
+
+      // Update date separately if not today
+      if (saleDate !== new Date().toISOString().split('T')[0] && data) {
+        await supabase
+          .from('sales')
+          .update({ created_at: saleDate })
+          .eq('id', data.id)
+      }
       saleData = data
       saleError = error
     }
 
     if (saleError) {
-      setError('Failed to save sale')
+      setError('Failed to save sale: ' + saleError.message)
       setSaving(false)
       return
     }
@@ -215,15 +224,19 @@ export default function Sales() {
       total: item.total,
     }))
     await supabase.from('sale_items').insert(itemsToInsert)
-
+    
     // Reduce product quantities for new sales only
     if (!selectedSale) {
       for (const item of validItems) {
-        const product = products.find(p => p.id === item.product_id)
-        if (product) {
+        const { data: freshProduct } = await supabase
+          .from('products')
+          .select('quantity')
+          .eq('id', item.product_id)
+          .single()
+        if (freshProduct) {
           await supabase
             .from('products')
-            .update({ quantity: product.quantity - parseInt(item.quantity_sold) })
+            .update({ quantity: freshProduct.quantity - parseInt(item.quantity_sold) })
             .eq('id', item.product_id)
         }
       }
@@ -275,17 +288,19 @@ export default function Sales() {
       .select('*')
       .eq('sale_id', pendingDelete.id)
 
+    console.log('Sale items to restore:', items)
+
     if (items && items.length > 0) {
       for (const item of items) {
-        const { data: product } = await supabase
+        const { data: freshProduct } = await supabase
           .from('products')
           .select('quantity')
           .eq('id', item.product_id)
           .single()
-        if (product) {
+        if (freshProduct) {
           await supabase
             .from('products')
-            .update({ quantity: product.quantity + item.quantity_sold })
+            .update({ quantity: freshProduct.quantity + item.quantity_sold })
             .eq('id', item.product_id)
         }
       }

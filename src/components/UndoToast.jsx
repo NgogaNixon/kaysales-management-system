@@ -4,11 +4,15 @@ export default function UndoToast({ message, onUndo, onExpire, duration = 5000 }
   const [progress, setProgress] = useState(100)
 
   useEffect(() => {
+    let expired = false
     const interval = setInterval(() => {
       setProgress(prev => {
         if (prev <= 0) {
           clearInterval(interval)
-          onExpire()
+          if (!expired) {
+            expired = true
+            onExpire()
+          }
           return 0
         }
         return prev - (100 / (duration / 100))
