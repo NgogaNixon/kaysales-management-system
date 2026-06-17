@@ -26,6 +26,7 @@ export default function Sales() {
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
   const [selectedSale, setSelectedSale] = useState(null)
+  const [pendingEditSale, setPendingEditSale] = useState(null)
   const [receiptSale, setReceiptSale] = useState(null)
   const [receiptItems, setReceiptItems] = useState([])
   const [search, setSearch] = useState('')
@@ -68,6 +69,7 @@ export default function Sales() {
 
   const openAdd = () => {
     setSelectedSale(null)
+    setPendingEditSale(null)
     setCustomerName('')
     setPaymentMethod('cash')
     setSaleDate(new Date().toISOString().split('T')[0])
@@ -78,12 +80,12 @@ export default function Sales() {
 
   const openEdit = async (sale) => {
     setSelectedSale(sale)
+    setPendingEditSale(sale)
     setCustomerName(sale.product_name)
     setPaymentMethod(sale.payment_method || 'cash')
     setSaleDate(sale.created_at ? sale.created_at.split('T')[0] : new Date().toISOString().split('T')[0])
     setError('')
 
-    // Load existing sale items
     const { data: existingItems } = await supabase
       .from('sale_items')
       .select('*')
@@ -149,7 +151,9 @@ export default function Sales() {
 
   const grandTotal = saleItems.reduce((sum, item) => sum + (item.total || 0), 0)
 
-  const handleSave = async () => {
+  const handleSave = async (saleToEdit = null) => {
+    const editSale = saleToEdit || pendingEditSale || selectedSale
+
     if (!customerName) {
       setError('Customer name is required')
       return
@@ -159,52 +163,115 @@ export default function Sales() {
       setError('Please add at least one product')
       return
     }
+
     setSaving(true)
     setError('')
 
     let saleData, saleError
-    if (saving) return
 
-    if (selectedSale) {
+    if (editSale) {
+      // UPDATE existing sale
       const { data, error } = await supabase
         .from('sales')
-        .insert({
-          user_id: profile.id,
+        .update({
           product_name: customerName,
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
-          selling_price: 0,
           total: grandTotal,
-          created_at: saleDate,
           payment_method: paymentMethod,
         })
+        .eq('id', editSale.id)
         .select()
         .single()
       saleData = data
       saleError = error
-      await supabase.from('sale_items').delete().eq('sale_id', selectedSale.id)
-    } else {
-      const { data, error } = await supabase
-        .from('sales')
-        .insert({
-          user_id: profile.id,
-          product_name: customerName,
-          quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
-          selling_price: 0,
-          total: grandTotal,
-          payment_method: paymentMethod,
-        })
-        .select()
-        .single()
 
-      // Update date separately if not today
-      if (saleDate !== new Date().toISOString().split('T')[0] && data) {
-        await supabase
-          .from('sales')
-          .update({ created_at: saleDate })
-          .eq('id', data.id)
+      if (!saleError && saleData) {
+        // Update date if changed
+        if (saleDate !== editSale.created_at?.split('T')[0]) {
+          await supabase.from('sales').update({ created_at: saleDate }).eq('id', editSale.id)
+        }
+        // Delete old items and insert new ones
+        await supabase.from('sale_items').delete().eq('sale_id', editSale.id)
+        const itemsToInsert = validItems.map(item => ({
+          sale_id: editSale.id,
+          user_id: profile.id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          quantity_sold: parseInt(item.quantity_sold),
+          selling_price: parseInt(item.selling_price),
+          total: item.total,
+        }))
+        await supabase.from('sale_items').insert(itemsToInsert)
       }
+    } else {
+      // INSERT new sale
+      const { data, error } = await supabase
+        .from('sales')
+        .insert({
+          user_id: profile.id,
+          product_name: customerName,
+          quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
+          selling_price: 0,
+          total: grandTotal,
+          payment_method: paymentMethod,
+          payment_status: paymentMethod === 'credit' ? 'pending' : 'paid',
+        })
+        .select()
+        .single()
       saleData = data
       saleError = error
+
+      if (!saleError && saleData) {
+        // Update date if not today
+        if (saleDate !== new Date().toISOString().split('T')[0]) {
+          await supabase.from('sales').update({ created_at: saleDate }).eq('id', saleData.id)
+        }
+
+        // Insert sale items
+        const itemsToInsert = validItems.map(item => ({
+          sale_id: saleData.id,
+          user_id: profile.id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          quantity_sold: parseInt(item.quantity_sold),
+          selling_price: parseInt(item.selling_price),
+          total: item.total,
+        }))
+        await supabase.from('sale_items').insert(itemsToInsert)
+
+        // Reduce product quantities
+        for (const item of validItems) {
+          const { data: freshProduct } = await supabase
+            .from('products')
+            .select('quantity')
+            .eq('id', item.product_id)
+            .single()
+          if (freshProduct) {
+            await supabase
+              .from('products')
+              .update({ quantity: freshProduct.quantity - parseInt(item.quantity_sold) })
+              .eq('id', item.product_id)
+          }
+        }
+
+        console.log('Sale data before credit insert:', saleData)
+        // If credit payment, add to credits given
+        if (paymentMethod === 'credit') {
+          for (const item of validItems) {
+            await supabase.from('credits_given').insert({
+              user_id: profile.id,
+              customer_name: customerName,
+              product_name: item.product_name,
+              quantity: parseInt(item.quantity_sold),
+              amount: item.total,
+              date: saleDate,
+              notes: 'Auto-added from sale on credit',
+              status: 'unpaid',
+              sale_id: saleData.id,
+            })
+          }
+        }
+      }
     }
 
     if (saleError) {
@@ -213,63 +280,19 @@ export default function Sales() {
       return
     }
 
-    // Insert sale items
-    const itemsToInsert = validItems.map(item => ({
-      sale_id: saleData.id,
-      user_id: profile.id,
-      product_id: item.product_id,
-      product_name: item.product_name,
-      quantity_sold: parseInt(item.quantity_sold),
-      selling_price: parseInt(item.selling_price),
-      total: item.total,
-    }))
-    await supabase.from('sale_items').insert(itemsToInsert)
-    
-    // Reduce product quantities for new sales only
-    if (!selectedSale) {
-      for (const item of validItems) {
-        const { data: freshProduct } = await supabase
-          .from('products')
-          .select('quantity')
-          .eq('id', item.product_id)
-          .single()
-        if (freshProduct) {
-          await supabase
-            .from('products')
-            .update({ quantity: freshProduct.quantity - parseInt(item.quantity_sold) })
-            .eq('id', item.product_id)
-        }
-      }
-
-      // If payment method is credit, add to credits given
-      if (paymentMethod === 'credit') {
-        for (const item of validItems) {
-          await supabase.from('credits_given').insert({
-            user_id: profile.id,
-            customer_name: customerName,
-            product_name: item.product_name,
-            quantity: parseInt(item.quantity_sold),
-            amount: item.total,
-            date: saleDate,
-            notes: 'Auto-added from sale on credit',
-            status: 'unpaid',
-          })
-        }
-      }
-    }
-
     await logActivity(
       profile.id,
       profile.email,
       profile.full_name,
-      selectedSale ? 'Edit Sale' : 'Add Sale',
-      `${selectedSale ? 'Updated' : 'Added'} sale for customer: ${customerName} - RWF ${grandTotal.toLocaleString()} - Payment: ${paymentMethod}`
+      editSale ? 'Edit Sale' : 'Add Sale',
+      `${editSale ? 'Updated' : 'Added'} sale for: ${customerName} - RWF ${grandTotal.toLocaleString()} - Payment: ${paymentMethod}`
     )
 
     setSaving(false)
     setShowModal(false)
     setShowOTP(false)
     setSelectedSale(null)
+    setPendingEditSale(null)
     fetchSales()
     fetchProducts()
   }
@@ -288,8 +311,7 @@ export default function Sales() {
       .select('*')
       .eq('sale_id', pendingDelete.id)
 
-    console.log('Sale items to restore:', items)
-
+    // Restore product quantities
     if (items && items.length > 0) {
       for (const item of items) {
         const { data: freshProduct } = await supabase
@@ -314,7 +336,7 @@ export default function Sales() {
       profile.email,
       profile.full_name,
       'Delete Sale',
-      `Deleted sale for customer: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
+      `Deleted sale for: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
     )
 
     setPendingDelete(null)
@@ -347,13 +369,13 @@ export default function Sales() {
     doc.text('--------------------------------', 40, 20, { align: 'center' })
     doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 5, 26)
     doc.text(`Customer: ${receiptSale.product_name}`, 5, 32)
-    const paymentLabel = receiptSale.payment_method === 'cash' ? 'Cash' :
-      receiptSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
+    const paymentLabel = receiptSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
       receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
       receiptSale.payment_method === 'cheque' ? 'Cheque' :
       receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'
     doc.text(`Payment: ${paymentLabel}`, 5, 38)
     doc.text('--------------------------------', 40, 42, { align: 'center' })
+
     let y = 48
     receiptItems.forEach((item, i) => {
       doc.text(`${i + 1}. ${item.product_name}`, 5, y)
@@ -373,10 +395,10 @@ export default function Sales() {
 
   const handleExport = () => {
     const exportFiltered = sales.filter(s => {
-      const saleDate2 = new Date(s.created_at)
-      const matchesFrom = exportFrom ? saleDate2 >= new Date(exportFrom) : true
-      const matchesTo = exportTo ? saleDate2 <= new Date(exportTo + 'T23:59:59') : true
-      return matchesFrom && matchesTo
+      const d = new Date(s.created_at)
+      const from = exportFrom ? d >= new Date(exportFrom) : true
+      const to = exportTo ? d <= new Date(exportTo + 'T23:59:59') : true
+      return from && to
     })
     const exportRevenue = exportFiltered.reduce((sum, s) => sum + (s.total || 0), 0)
 
@@ -384,6 +406,7 @@ export default function Sales() {
       const data = exportFiltered.map(s => ({
         Customer: s.product_name,
         'Total (RWF)': s.total,
+        Payment: s.payment_method || 'cash',
         Date: new Date(s.created_at).toLocaleDateString(),
       }))
       const ws = XLSX.utils.json_to_sheet(data)
@@ -401,10 +424,11 @@ export default function Sales() {
       doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 39)
       autoTable(doc, {
         startY: 48,
-        head: [['Customer', 'Total (RWF)', 'Date']],
+        head: [['Customer', 'Total (RWF)', 'Payment', 'Date']],
         body: exportFiltered.map(s => [
           s.product_name,
           s.total?.toLocaleString(),
+          s.payment_method || 'cash',
           new Date(s.created_at).toLocaleDateString(),
         ]),
         styles: { fontSize: 9 },
@@ -419,10 +443,10 @@ export default function Sales() {
 
   const filtered = sales.filter(s => {
     const matchesSearch = s.product_name?.toLowerCase().includes(search.toLowerCase())
-    const saleDate2 = new Date(s.created_at)
-    const matchesFrom = dateFrom ? saleDate2 >= new Date(dateFrom) : true
-    const matchesTo = dateTo ? saleDate2 <= new Date(dateTo + 'T23:59:59') : true
-    return matchesSearch && matchesFrom && matchesTo
+    const d = new Date(s.created_at)
+    const from = dateFrom ? d >= new Date(dateFrom) : true
+    const to = dateTo ? d <= new Date(dateTo + 'T23:59:59') : true
+    return matchesSearch && from && to
   })
 
   const totalRevenue = filtered.reduce((sum, s) => sum + (s.total || 0), 0)
@@ -451,23 +475,13 @@ export default function Sales() {
             onChange={(e) => setSearch(e.target.value)}
             className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500"
           />
-          <input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-          />
-          <input
-            type="date"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-          />
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
           <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
           <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
         </div>
 
-        {/* Total Revenue */}
+        {/* Revenue Summary */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
           <div>
             <p className="text-gray-400 text-sm">Total Revenue</p>
@@ -496,6 +510,7 @@ export default function Sales() {
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Customer</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Total</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Payment</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Date</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
                   </tr>
@@ -505,13 +520,20 @@ export default function Sales() {
                     <tr key={sale.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
                       <td className="px-6 py-4 text-white font-medium">{sale.product_name}</td>
                       <td className="px-6 py-4 text-green-400 font-medium">RWF {sale.total?.toLocaleString()}</td>
+                      <td className="px-6 py-4 text-gray-300 text-xs">
+                        {sale.payment_method === 'cash' ? '💵 Cash' :
+                         sale.payment_method === 'mtn' ? '📱 MTN' :
+                         sale.payment_method === 'bank' ? '🏦 Bank' :
+                         sale.payment_method === 'cheque' ? '📄 Cheque' :
+                         sale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
+                      </td>
                       <td className="px-6 py-4">
-                        <span className="text-gray-300 text-xs">
-                          {sale.payment_method === 'cash' ? '💵 Cash' :
-                           sale.payment_method === 'mtn' ? '📱 MTN' :
-                           sale.payment_method === 'bank' ? '🏦 Bank' :
-                           sale.payment_method === 'cheque' ? '📄 Cheque' :
-                           sale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          sale.payment_status === 'paid' ? 'bg-green-900 text-green-300' :
+                          sale.payment_status === 'pending' ? 'bg-yellow-900 text-yellow-300' :
+                          'bg-green-900 text-green-300'
+                        }`}>
+                          {sale.payment_status === 'pending' ? '⏳ Pending' : '✅ Paid'}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-gray-400">{new Date(sale.created_at).toLocaleDateString()}</td>
@@ -532,9 +554,9 @@ export default function Sales() {
 
       </div>
 
-      {/* Add/Edit Sale Modal */}
+      {/* Add/Edit Modal */}
       {showModal && (
-        <Modal title={selectedSale ? 'Edit Sale' : 'Record Sale'} onClose={() => setShowModal(false)}>
+        <Modal title={pendingEditSale ? 'Edit Sale' : 'Record Sale'} onClose={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }}>
           <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <div>
@@ -627,10 +649,10 @@ export default function Sales() {
               </div>
             )}
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+              <button onClick={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
               <button
                 onClick={() => {
-                  if (selectedSale) {
+                  if (pendingEditSale) {
                     setOtpAction('edit')
                     setShowModal(false)
                     setShowOTP(true)
@@ -641,7 +663,7 @@ export default function Sales() {
                 disabled={saving}
                 className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
               >
-                {saving ? 'Saving...' : selectedSale ? 'Update Sale' : 'Record Sale'}
+                {saving ? 'Saving...' : pendingEditSale ? 'Update Sale' : 'Record Sale'}
               </button>
             </div>
           </div>
@@ -657,19 +679,18 @@ export default function Sales() {
         />
       )}
 
-      {/* OTP Verify */}
+      {/* OTP / Password Verify */}
       {showOTP && (
         <OTPVerify
-          email={profile?.email}
           actionLabel={otpAction === 'delete'
             ? `Delete sale for: ${selectedSale?.product_name}`
-            : `Edit sale for: ${selectedSale?.product_name}`}
+            : `Edit sale for: ${pendingEditSale?.product_name}`}
           onVerified={() => {
             setShowOTP(false)
             if (otpAction === 'delete') {
               handleDelete()
             } else {
-              handleSave()
+              handleSave(pendingEditSale)
             }
           }}
           onCancel={() => setShowOTP(false)}
@@ -705,13 +726,13 @@ export default function Sales() {
 
       {/* Receipt Modal */}
       {showReceipt && receiptSale && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
               <h2 className="text-lg font-bold text-white">Sales Receipt</h2>
               <button onClick={() => setShowReceipt(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
-            <div className="px-6 py-4">
+            <div className="px-6 py-4 overflow-y-auto flex-1">
               <div className="text-center mb-4">
                 <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
                   <span className="text-white font-bold">K</span>
@@ -725,18 +746,27 @@ export default function Sales() {
                   <span className="text-white">{new Date(receiptSale.created_at).toLocaleDateString()}</span>
                 </div>
                 <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Customer</span>
+                  <span className="text-white">{receiptSale.product_name}</span>
+                </div>
+                <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Payment</span>
                   <span className="text-white">
-                    {receiptSale.payment_method === 'cash' ? '💵 Cash' :
-                     receiptSale.payment_method === 'mtn' ? '📱 MTN Mobile Money' :
+                    {receiptSale.payment_method === 'mtn' ? '📱 MTN Mobile Money' :
                      receiptSale.payment_method === 'bank' ? '🏦 Bank Transfer' :
                      receiptSale.payment_method === 'cheque' ? '📄 Cheque' :
                      receiptSale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
                   </span>
                 </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Status</span>
+                  <span className={receiptSale.payment_status === 'pending' ? 'text-yellow-400' : 'text-green-400'}>
+                    {receiptSale.payment_status === 'pending' ? '⏳ Pending' : '✅ Paid'}
+                  </span>
+                </div>
                 <div className="border-t border-gray-700 pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
-                  {receiptItems.map((item, i) => (
+                  {receiptItems.length > 0 ? receiptItems.map((item, i) => (
                     <div key={i} className="mb-2">
                       <p className="text-white text-sm">{item.product_name}</p>
                       <div className="flex justify-between text-xs text-gray-400">
@@ -744,7 +774,9 @@ export default function Sales() {
                         <span className="text-green-400">RWF {item.total?.toLocaleString()}</span>
                       </div>
                     </div>
-                  ))}
+                  )) : (
+                    <p className="text-gray-500 text-sm">No items found</p>
+                  )}
                 </div>
                 <div className="border-t border-gray-700 pt-2 flex justify-between">
                   <span className="text-white font-bold">GRAND TOTAL</span>

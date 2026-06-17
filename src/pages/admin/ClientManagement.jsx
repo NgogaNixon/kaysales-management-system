@@ -192,25 +192,25 @@ const [clientToDelete, setClientToDelete] = useState(null)
                           {new Date(client.created_at).toLocaleDateString()}
                         </td>
                        <td className="px-6 py-4">
-                          <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex flex-col sm:flex-row gap-2" onClick={(e) => e.stopPropagation()}>
                             {!client.approved ? (
                               <button
                                 onClick={() => handleApprove(client.id)}
-                                className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
+                                className="px-3 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition whitespace-nowrap"
                               >
                                 Approve
                               </button>
                             ) : (
                               <button
                                 onClick={() => handleRevoke(client.id)}
-                                className="px-3 py-1 bg-orange-700 hover:bg-orange-600 text-white rounded-lg text-xs transition"
+                                className="px-3 py-1.5 bg-orange-700 hover:bg-orange-600 text-white rounded-lg text-xs transition whitespace-nowrap"
                               >
                                 Revoke
                               </button>
                             )}
                             <button
                               onClick={() => { setClientToDelete(client); setShowDeleteConfirm(true) }}
-                              className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
+                              className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition whitespace-nowrap"
                             >
                               Delete
                             </button>

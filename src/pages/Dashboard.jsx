@@ -271,12 +271,12 @@ export default function Dashboard() {
       {/* Receipt Modal */}
       {selectedSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl max-h-screen flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
               <h2 className="text-lg font-bold text-white">Sales Receipt</h2>
               <button onClick={() => setSelectedSale(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
-            <div className="px-6 py-4">
+            <div className="px-6 py-4 overflow-y-auto">
               <div className="text-center mb-4">
                 <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
                   <span className="text-white font-bold">K</span>

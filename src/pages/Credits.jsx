@@ -1,6 +1,4 @@
 import { useEffect, useState } from 'react'
-import { logActivity } from '../lib/activityLogger'
-import OTPVerify from '../components/OTPVerify'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -9,6 +7,8 @@ import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
+import OTPVerify from '../components/OTPVerify'
+import { logActivity } from '../lib/activityLogger'
 
 export default function Credits() {
   const { profile } = useAuth()
@@ -20,14 +20,16 @@ export default function Credits() {
   const [showModal, setShowModal] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [showExportModal, setShowExportModal] = useState(false)
+  const [showPayModal, setShowPayModal] = useState(false)
+  const [showOTP, setShowOTP] = useState(false)
   const [exportType, setExportType] = useState('')
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
   const [selectedCredit, setSelectedCredit] = useState(null)
   const [selectedCustomer, setSelectedCustomer] = useState(null)
+  const [payMethod, setPayMethod] = useState('cash')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  const [showOTP, setShowOTP] = useState(false)
   const [customerName, setCustomerName] = useState('')
   const [date, setDate] = useState('')
   const [notes, setNotes] = useState('')
@@ -77,7 +79,7 @@ export default function Credits() {
     setCreditItems([{
       product_name: credit.product_name || '',
       quantity: credit.quantity || '',
-      unit_price: '',
+      unit_price: credit.quantity && credit.amount ? Math.round(credit.amount / credit.quantity) : '',
       amount: credit.amount || '',
     }])
     setError('')
@@ -87,6 +89,12 @@ export default function Credits() {
   const openDelete = (credit) => {
     setSelectedCredit(credit)
     setShowConfirm(true)
+  }
+
+  const openPayModal = (credit) => {
+    setSelectedCredit(credit)
+    setPayMethod('cash')
+    setShowPayModal(true)
   }
 
   const addItem = () => {
@@ -132,6 +140,14 @@ export default function Credits() {
         notes,
         status,
       }).eq('id', selectedCredit.id)
+
+      // If linked to a sale, update sale customer name too
+      if (activeTab === 'given' && selectedCredit.sale_id) {
+        await supabase
+          .from('sales')
+          .update({ product_name: customerName })
+          .eq('id', selectedCredit.sale_id)
+      }
     } else {
       for (const item of validItems) {
         await supabase.from(table).insert({
@@ -154,14 +170,59 @@ export default function Credits() {
       selectedCredit ? 'Edit Credit' : 'Add Credit',
       `${selectedCredit ? 'Updated' : 'Added'} credit for: ${customerName}`
     )
+
     setSaving(false)
     setShowModal(false)
     fetchCredits()
+
+    // Refresh customer modal if open
+    if (selectedCustomer) {
+      const updatedData = activeTab === 'given' ? creditsGiven : creditsTaken
+      const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
+      const updatedItems = updatedData.filter(c => c[nameF] === selectedCustomer.name)
+      if (updatedItems.length > 0) {
+        const totalAmount = updatedItems.reduce((sum, c) => sum + (c.amount || 0), 0)
+        const unpaidAmount = updatedItems.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
+        setSelectedCustomer({ ...selectedCustomer, items: updatedItems, totalAmount, unpaidAmount })
+      }
+    }
   }
 
   const handleDelete = async () => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+
+    // If linked to a sale, delete that sale and restore stock
+    if (activeTab === 'given' && selectedCredit.sale_id) {
+      // Get sale items to restore stock
+      const { data: saleItems } = await supabase
+        .from('sale_items')
+        .select('*')
+        .eq('sale_id', selectedCredit.sale_id)
+
+      if (saleItems && saleItems.length > 0) {
+        for (const item of saleItems) {
+          const { data: freshProduct } = await supabase
+            .from('products')
+            .select('quantity')
+            .eq('id', item.product_id)
+            .single()
+          if (freshProduct) {
+            await supabase
+              .from('products')
+              .update({ quantity: freshProduct.quantity + item.quantity_sold })
+              .eq('id', item.product_id)
+          }
+        }
+      }
+
+      // Delete sale items
+      await supabase.from('sale_items').delete().eq('sale_id', selectedCredit.sale_id)
+      // Delete linked sale
+      await supabase.from('sales').delete().eq('id', selectedCredit.sale_id)
+    }
+
     await supabase.from(table).delete().eq('id', selectedCredit.id)
+
     await logActivity(
       profile.id,
       profile.email,
@@ -169,26 +230,63 @@ export default function Credits() {
       'Delete Credit',
       `Deleted credit for: ${activeTab === 'given' ? selectedCredit.customer_name : selectedCredit.supplier_name} - RWF ${selectedCredit.amount?.toLocaleString()}`
     )
+
     setShowConfirm(false)
+    setShowOTP(false)
     setSelectedCustomer(null)
     fetchCredits()
   }
 
-  const handleStatusToggle = async (credit) => {
+  const handleMarkPaid = async () => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
-    const newStatus = credit.status === 'paid' ? 'unpaid' : 'paid'
-    await supabase.from(table).update({ status: newStatus }).eq('id', credit.id)
+    const now = new Date().toISOString()
+    const newStatus = selectedCredit.status === 'paid' ? 'unpaid' : 'paid'
+
+    console.log('Marking credit paid. selectedCredit:', selectedCredit)
+    console.log('activeTab:', activeTab, 'sale_id:', selectedCredit.sale_id, 'newStatus:', newStatus)
+
+    await supabase.from(table).update({
+      status: newStatus,
+      paid_at: newStatus === 'paid' ? now : null,
+      paid_method: newStatus === 'paid' ? payMethod : null,
+    }).eq('id', selectedCredit.id)
+
+    // If credit given is marked paid, update linked sale
+    if (activeTab === 'given' && selectedCredit.sale_id && newStatus === 'paid') {
+      console.log('Updating linked sale:', selectedCredit.sale_id)
+      const { data: updateResult, error: updateError } = await supabase
+        .from('sales')
+        .update({
+          payment_status: 'paid',
+          payment_method: payMethod,
+        })
+        .eq('id', selectedCredit.sale_id)
+        .select()
+      console.log('Sale update result:', updateResult, 'error:', updateError)
+    } else {
+      console.log('Skipped sale update - condition not met')
+    }
+
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      newStatus === 'paid' ? 'Mark Credit Paid' : 'Mark Credit Unpaid',
+      `Marked credit as ${newStatus} for: ${activeTab === 'given' ? selectedCredit.customer_name : selectedCredit.supplier_name} - RWF ${selectedCredit.amount?.toLocaleString()} - Method: ${payMethod}`
+    )
+
+    setShowPayModal(false)
     await fetchCredits()
 
-    // Update selected customer modal if open
+    // Refresh customer modal
     if (selectedCustomer) {
       const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
-      const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
+      const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
       const updatedItems = currentData.map(c =>
-        c.id === credit.id ? { ...c, status: newStatus } : c
-      ).filter(c => (activeTab === 'given' ? c.customer_name : c.supplier_name) === selectedCustomer.name)
+        c.id === selectedCredit.id ? { ...c, status: newStatus, paid_at: now, paid_method: payMethod } : c
+      ).filter(c => c[nameF] === selectedCustomer.name)
 
-      if (updatedItems.length === 0 || updatedItems.every(c => c.status === 'paid')) {
+      if (updatedItems.every(c => c.status === 'paid') && statusFilter === 'unpaid') {
         setSelectedCustomer(null)
       } else {
         const totalAmount = updatedItems.reduce((sum, c) => sum + (c.amount || 0), 0)
@@ -218,6 +316,8 @@ export default function Credits() {
         'Amount (RWF)': c.amount,
         Date: c.date ? new Date(c.date).toLocaleDateString() : '—',
         Status: c.status || 'unpaid',
+        'Paid At': c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
+        'Payment Method': c.paid_method || '—',
         Notes: c.notes || '—',
       }))
       const ws = XLSX.utils.json_to_sheet(data)
@@ -235,7 +335,7 @@ export default function Credits() {
       doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, 39)
       autoTable(doc, {
         startY: 48,
-        head: [[activeTab === 'given' ? 'Customer' : 'Supplier', 'Product', 'Qty', 'Amount (RWF)', 'Date', 'Status']],
+        head: [[activeTab === 'given' ? 'Customer' : 'Supplier', 'Product', 'Qty', 'Amount (RWF)', 'Date', 'Status', 'Paid At']],
         body: exportFiltered.map(c => [
           c[nameField],
           c.product_name || '—',
@@ -243,6 +343,7 @@ export default function Credits() {
           c.amount?.toLocaleString(),
           c.date ? new Date(c.date).toLocaleDateString() : '—',
           c.status || 'unpaid',
+          c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
         ]),
         styles: { fontSize: 9 },
         headStyles: { fillColor: [29, 78, 216] },
@@ -254,7 +355,6 @@ export default function Credits() {
     setExportTo('')
   }
 
-  // Group credits by customer
   const currentCredits = activeTab === 'given' ? creditsGiven : creditsTaken
   const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
 
@@ -277,6 +377,13 @@ export default function Credits() {
   const totalTaken = creditsTaken.reduce((sum, c) => sum + (c.amount || 0), 0)
   const unpaidGiven = creditsGiven.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
   const unpaidTaken = creditsTaken.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
+
+  const getPaymentLabel = (method) => {
+    if (method === 'mtn') return '📱 MTN Mobile Money'
+    if (method === 'bank') return '🏦 Bank Transfer'
+    if (method === 'cheque') return '📄 Cheque'
+    return '💵 Cash'
+  }
 
   return (
     <Layout>
@@ -311,7 +418,7 @@ export default function Credits() {
           ))}
         </div>
 
-        {/* Tabs & Status Filter */}
+        {/* Tabs & Filter */}
         <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
           <div className="flex gap-2">
             <button onClick={() => setActiveTab('given')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'given' ? 'bg-yellow-500 text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
@@ -346,8 +453,7 @@ export default function Credits() {
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">{activeTab === 'given' ? 'Customer' : 'Supplier'}</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Items</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Total Qty</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Total Amount</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Total</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Unpaid</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Action</th>
@@ -358,7 +464,6 @@ export default function Credits() {
                     <tr key={group.name} className="border-t border-gray-800 hover:bg-gray-800 transition cursor-pointer" onClick={() => setSelectedCustomer(group)}>
                       <td className="px-6 py-4 text-white font-medium">{group.name}</td>
                       <td className="px-6 py-4 text-gray-300">{group.items.length} item{group.items.length > 1 ? 's' : ''}</td>
-                      <td className="px-6 py-4 text-gray-300">{group.items.reduce((sum, i) => sum + (parseInt(i.quantity) || 0), 0)}</td>
                       <td className={`px-6 py-4 font-medium ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
                         RWF {group.totalAmount.toLocaleString()}
                       </td>
@@ -388,18 +493,16 @@ export default function Credits() {
 
       {/* Customer Details Modal */}
       {selectedCustomer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl mx-4 shadow-2xl max-h-screen overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl shadow-2xl max-h-full flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
               <div>
                 <h2 className="text-lg font-bold text-white">{selectedCustomer.name}</h2>
-                <p className="text-gray-400 text-xs">
-                  {selectedCustomer.items.length} item{selectedCustomer.items.length > 1 ? 's' : ''} · RWF {selectedCustomer.totalAmount.toLocaleString()} total
-                </p>
+                <p className="text-gray-400 text-xs">{selectedCustomer.items.length} item{selectedCustomer.items.length > 1 ? 's' : ''} · RWF {selectedCustomer.totalAmount.toLocaleString()} total</p>
               </div>
               <button onClick={() => setSelectedCustomer(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
-            <div className="px-6 py-4 space-y-3">
+            <div className="px-6 py-4 space-y-3 overflow-y-auto flex-1">
 
               {/* Summary */}
               <div className="grid grid-cols-2 gap-3">
@@ -411,9 +514,7 @@ export default function Credits() {
                 </div>
                 <div className="bg-gray-800 rounded-lg p-3">
                   <p className="text-gray-400 text-xs">Unpaid Amount</p>
-                  <p className="text-red-400 text-xl font-bold">
-                    RWF {selectedCustomer.unpaidAmount.toLocaleString()}
-                  </p>
+                  <p className="text-red-400 text-xl font-bold">RWF {selectedCustomer.unpaidAmount.toLocaleString()}</p>
                 </div>
               </div>
 
@@ -427,7 +528,7 @@ export default function Credits() {
                         {credit.status === 'paid' ? '✅ Paid' : '❌ Unpaid'}
                       </span>
                     </div>
-                   <div className="grid grid-cols-2 gap-2 text-sm mb-3">
+                    <div className="grid grid-cols-2 gap-2 text-sm mb-2">
                       <div>
                         <p className="text-gray-400 text-xs">Quantity</p>
                         <p className="text-white">{credit.quantity || '—'}</p>
@@ -451,14 +552,41 @@ export default function Credits() {
                         <p className="text-white">{credit.date ? new Date(credit.date).toLocaleDateString() : '—'}</p>
                       </div>
                     </div>
-                    {credit.notes && <p className="text-gray-400 text-xs mb-3">📝 {credit.notes}</p>}
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleStatusToggle(credit)}
-                        className={`px-3 py-1 rounded-lg text-xs transition font-medium ${credit.status === 'paid' ? 'bg-red-900 text-red-300 hover:bg-red-800' : 'bg-green-700 text-white hover:bg-green-600'}`}
-                      >
-                        {credit.status === 'paid' ? 'Mark Unpaid' : '✅ Mark Paid'}
-                      </button>
+                    {credit.status === 'paid' && credit.paid_at && (
+                      <div className="bg-green-900 rounded-lg p-2 mb-2">
+                        <p className="text-green-300 text-xs">✅ Paid on: {new Date(credit.paid_at).toLocaleString()}</p>
+                        <p className="text-green-300 text-xs">Payment: {getPaymentLabel(credit.paid_method)}</p>
+                      </div>
+                    )}
+                    {credit.notes && <p className="text-gray-400 text-xs mb-2">📝 {credit.notes}</p>}
+                    <div className="flex gap-2 flex-wrap">
+                      {credit.status !== 'paid' ? (
+                        <button
+                          onClick={() => openPayModal(credit)}
+                          className="px-3 py-1 bg-green-700 text-white rounded-lg text-xs transition hover:bg-green-600"
+                        >
+                          ✅ Mark Paid
+                        </button>
+                      ) : (
+                        <button
+                      onClick={async () => {
+                        const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+                        await supabase.from(table).update({
+                          status: 'unpaid',
+                          paid_at: null,
+                          paid_method: null,
+                        }).eq('id', credit.id)
+                        if (activeTab === 'given' && credit.sale_id) {
+                          await supabase.from('sales').update({ payment_status: 'pending' }).eq('id', credit.sale_id)
+                        }
+                        fetchCredits()
+                        setSelectedCustomer(null)
+                      }}
+                      className="px-3 py-1 bg-gray-700 text-gray-300 rounded-lg text-xs transition hover:bg-gray-600"
+                    >
+                      Mark Unpaid
+                    </button>
+                      )}
                       <button onClick={() => { setSelectedCustomer(null); openEdit(credit) }} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
                       <button onClick={() => { openDelete(credit) }} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                     </div>
@@ -469,6 +597,44 @@ export default function Credits() {
               <button onClick={() => setSelectedCustomer(null)} className="w-full py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pay Modal */}
+      {showPayModal && selectedCredit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <h2 className="text-lg font-bold text-white">✅ Mark as Paid</h2>
+              <button onClick={() => setShowPayModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <div className="bg-gray-800 rounded-lg p-3">
+                <p className="text-gray-400 text-xs">Customer</p>
+                <p className="text-white font-medium">{selectedCredit.customer_name || selectedCredit.supplier_name}</p>
+                <p className="text-gray-400 text-xs mt-1">Amount</p>
+                <p className="text-green-400 font-bold">RWF {selectedCredit.amount?.toLocaleString()}</p>
+              </div>
+              <div>
+                <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
+                <select
+                  value={payMethod}
+                  onChange={(e) => setPayMethod(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="cash">💵 Cash</option>
+                  <option value="mtn">📱 MTN Mobile Money</option>
+                  <option value="bank">🏦 Bank Transfer</option>
+                  <option value="cheque">📄 Cheque</option>
+                </select>
+              </div>
+              <p className="text-gray-400 text-xs">Payment time will be recorded as: <span className="text-white">{new Date().toLocaleString()}</span></p>
+              <div className="flex gap-3">
+                <button onClick={() => setShowPayModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={handleMarkPaid} className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">Confirm Paid</button>
+              </div>
             </div>
           </div>
         </div>
@@ -585,9 +751,10 @@ export default function Credits() {
         </Modal>
       )}
 
+      {/* Confirm Delete */}
       {showConfirm && !showOTP && (
         <ConfirmDialog
-          message="Are you sure you want to delete this credit entry?"
+          message={`Are you sure you want to delete this credit?${selectedCredit?.sale_id ? ' The linked sale will also be deleted and stock restored.' : ''}`}
           onConfirm={() => { setShowConfirm(false); setShowOTP(true) }}
           onCancel={() => setShowConfirm(false)}
         />
@@ -595,7 +762,6 @@ export default function Credits() {
 
       {showOTP && (
         <OTPVerify
-          email={profile?.email}
           actionLabel={`Delete credit for: ${selectedCredit?.customer_name || selectedCredit?.supplier_name}`}
           onVerified={handleDelete}
           onCancel={() => setShowOTP(false)}
@@ -604,8 +770,8 @@ export default function Credits() {
 
       {/* Export Modal */}
       {showExportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
               <h2 className="text-lg font-bold text-white">{exportType === 'excel' ? '📊 Export Excel' : '📄 Export PDF'}</h2>
               <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
