@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { logActivity } from '../lib/activityLogger'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useError } from '../context/ErrorContext'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -9,6 +10,8 @@ import OTPVerify from '../components/OTPVerify'
 
 export default function Products() {
   const { profile } = useAuth()
+  const { showError } = useError()
+  const showProfit = profile?.show_profit === true
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
@@ -22,40 +25,54 @@ export default function Products() {
     category: '',
     quantity: '',
     selling_price: '',
+    buying_price: '',
+    low_stock_threshold: '3',
   })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
+ useEffect(() => {
     if (profile?.id) fetchProducts()
+  }, [profile])
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (profile?.id) fetchProducts()
+    }
+    window.addEventListener('focus', handleFocus)
+    return () => window.removeEventListener('focus', handleFocus)
   }, [profile])
 
   const fetchProducts = async () => {
     setLoading(true)
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('products')
       .select('*')
       .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
+      .order('name', { ascending: true })
+    if (error) showError('Failed to load products. Please refresh.')
     setProducts(data || [])
     setLoading(false)
   }
 
   const openAdd = () => {
     setSelectedProduct(null)
-    setForm({ name: '', category: '', quantity: '', selling_price: '' })
+    setForm({ name: '', category: '', quantity: '', selling_price: '', buying_price: '' })
     setError('')
     setShowModal(true)
   }
 
   const openEdit = (product) => {
     setSelectedProduct(product)
-    setForm({
-      name: product.name,
-      category: product.category || '',
-      quantity: product.quantity,
-      selling_price: product.selling_price,
-    })
+    const data = {
+      name: form.name,
+      category: form.category,
+      quantity: parseInt(form.quantity),
+      buying_price: parseInt(form.buying_price) || 0,
+      selling_price: parseInt(form.selling_price),
+      low_stock_threshold: parseInt(form.low_stock_threshold) || 3,
+      user_id: profile.id,
+    }
     setError('')
     setShowModal(true)
   }
@@ -68,6 +85,29 @@ export default function Products() {
   const handleSave = async () => {
     if (!form.name || !form.category || !form.quantity || !form.selling_price) {
       setError('Name, category, quantity and selling price are required')
+      showError('Name, category, quantity and selling price are required')
+      return
+    }
+
+    if (parseInt(form.quantity) < 0) {
+      setError('Quantity cannot be negative')
+      showError('Quantity cannot be negative')
+      return
+    }
+
+    if (parseInt(form.selling_price) < 0) {
+      setError('Selling price cannot be negative')
+      showError('Selling price cannot be negative')
+      return
+    }
+    // Check for duplicate product name
+    const duplicate = products.find(p =>
+      p.name.toLowerCase() === form.name.toLowerCase() &&
+      (!selectedProduct || p.id !== selectedProduct.id)
+    )
+    if (duplicate) {
+      setError(`A product named "${form.name}" already exists`)
+      showError(`A product named "${form.name}" already exists`)
       return
     }
 
@@ -76,6 +116,7 @@ export default function Products() {
       const existingCategories = [...new Set(products.map(p => p.category).filter(Boolean))]
       if (existingCategories.length >= 2 && !existingCategories.includes(form.category)) {
         setError('Standard plan only allows 2 stock categories. Upgrade to Premium for more.')
+        showError('Standard plan only allows 2 stock categories. Upgrade to Premium for more.')
         return
       }
     }
@@ -87,15 +128,25 @@ export default function Products() {
       name: form.name,
       category: form.category,
       quantity: parseInt(form.quantity),
-      buying_price: 0,
+      buying_price: parseInt(form.buying_price) || 0,
       selling_price: parseInt(form.selling_price),
       user_id: profile.id,
     }
 
     if (selectedProduct) {
-      await supabase.from('products').update(data).eq('id', selectedProduct.id)
+      const { error } = await supabase.from('products').update(data).eq('id', selectedProduct.id)
+      if (error) {
+        showError('Failed to update product. Please try again.')
+        setSaving(false)
+        return
+      }
     } else {
-      await supabase.from('products').insert(data)
+      const { error } = await supabase.from('products').insert(data)
+      if (error) {
+        showError('Failed to add product. Please try again.')
+        setSaving(false)
+        return
+      }
     }
 
     await logActivity(
@@ -113,7 +164,13 @@ export default function Products() {
   }
 
   const handleDelete = async () => {
-    await supabase.from('products').delete().eq('id', selectedProduct.id)
+    const { error } = await supabase.from('products').delete().eq('id', selectedProduct.id)
+    if (error) {
+      showError('Failed to delete product. Please try again.')
+      setShowOTP(false)
+      return
+    }
+
     await logActivity(
       profile.id,
       profile.email,
@@ -131,7 +188,7 @@ export default function Products() {
     p.category?.toLowerCase().includes(search.toLowerCase())
   )
 
-  const lowStock = products.filter(p => p.quantity < 3)
+  const lowStock = products.filter(p => p.quantity < (p.low_stock_threshold || 3))
   const isStandard = profile?.plan_type === 'standard'
 
   return (
@@ -158,6 +215,26 @@ export default function Products() {
             </button>
           </div>
         </div>
+
+        {/* Stock Inventory Value - Esther only */}
+        {showProfit && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-blue-900 border border-blue-700 rounded-xl p-4">
+              <span className="text-2xl">📦</span>
+              <p className="text-blue-300 text-xl font-bold mt-2">
+                RWF {products.reduce((sum, p) => sum + ((p.buying_price || 0) * (p.quantity || 0)), 0).toLocaleString()}
+              </p>
+              <p className="text-blue-400 text-sm mt-1">Total Stock Value (Cost)</p>
+            </div>
+            <div className="bg-green-900 border border-green-700 rounded-xl p-4">
+              <span className="text-2xl">💰</span>
+              <p className="text-green-300 text-xl font-bold mt-2">
+                RWF {products.reduce((sum, p) => sum + ((p.selling_price || 0) * (p.quantity || 0)), 0).toLocaleString()}
+              </p>
+              <p className="text-green-400 text-sm mt-1">Total Stock Value (Selling Price)</p>
+            </div>
+          </div>
+        )}
 
         {/* Low Stock Alert */}
         {lowStock.length > 0 && (
@@ -226,11 +303,11 @@ export default function Products() {
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                           product.quantity === 0
                             ? 'bg-red-900 text-red-300'
-                            : product.quantity < 3
+                            : product.quantity < (product.low_stock_threshold || 3)
                             ? 'bg-orange-900 text-orange-300'
                             : 'bg-green-900 text-green-300'
                         }`}>
-                          {product.quantity === 0 ? '❌ Out of Stock' : product.quantity < 3 ? '⚠️ Low Stock' : '✅ In Stock'}
+                          {product.quantity === 0 ? '❌ Out of Stock' : product.quantity < (product.low_stock_threshold || 3) ? '⚠️ Low Stock' : '✅ In Stock'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
@@ -293,6 +370,29 @@ export default function Products() {
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
+            {showProfit && (
+              <div>
+                <label className="text-gray-400 text-sm mb-1 block">Buying Price / Cost (RWF)</label>
+                <input
+                  type="number"
+                  value={form.buying_price}
+                  onChange={(e) => setForm({ ...form, buying_price: e.target.value })}
+                  className="w-full bg-gray-800 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+                />
+              </div>
+            )}
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Low Stock Alert Threshold</label>
+              <input
+                type="number"
+                value={form.low_stock_threshold}
+                onChange={(e) => setForm({ ...form, low_stock_threshold: e.target.value })}
+                className="w-full bg-gray-800 border border-orange-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-orange-500"
+                placeholder="Default is 3"
+                min="1"
+              />
+              <p className="text-gray-500 text-xs mt-1">Alert will show when stock falls below this number</p>
+            </div>
             <div className="flex gap-3 pt-2">
               <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
                 Cancel
@@ -326,10 +426,9 @@ export default function Products() {
         />
       )}
 
-      {/* OTP Verify */}
+      {/* OTP / Password Verify */}
       {showOTP && (
         <OTPVerify
-          email={profile?.email}
           actionLabel={otpAction === 'delete'
             ? `Delete product: ${selectedProduct?.name}`
             : `Edit product: ${selectedProduct?.name}`}

@@ -9,6 +9,7 @@ export default function ActivityLog() {
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [selectedLog, setSelectedLog] = useState(null)
 
   useEffect(() => {
     fetchLogs()
@@ -27,7 +28,8 @@ export default function ActivityLog() {
   const filtered = logs.filter(log => {
     const matchesSearch = log.user_name?.toLowerCase().includes(search.toLowerCase()) ||
       log.user_email?.toLowerCase().includes(search.toLowerCase()) ||
-      log.action?.toLowerCase().includes(search.toLowerCase())
+      log.action?.toLowerCase().includes(search.toLowerCase()) ||
+      log.ip_address?.toLowerCase().includes(search.toLowerCase())
     const matchesFilter = filter === 'all' || log.action?.toLowerCase().includes(filter)
     const logDate = new Date(log.created_at)
     const matchesFrom = dateFrom ? logDate >= new Date(dateFrom) : true
@@ -40,6 +42,12 @@ export default function ActivityLog() {
     if (action?.includes('edit') || action?.includes('Edit') || action?.includes('update') || action?.includes('Update')) return 'bg-yellow-900 text-yellow-300'
     if (action?.includes('add') || action?.includes('Add') || action?.includes('create') || action?.includes('Create')) return 'bg-green-900 text-green-300'
     return 'bg-blue-900 text-blue-300'
+  }
+
+  const getDeviceIcon = (deviceType) => {
+    if (deviceType === 'Mobile') return '📱'
+    if (deviceType === 'Tablet') return '📟'
+    return '💻'
   }
 
   return (
@@ -72,7 +80,7 @@ export default function ActivityLog() {
         <div className="flex flex-col sm:flex-row gap-3">
           <input
             type="text"
-            placeholder="Search by user or action..."
+            placeholder="Search by user, action or IP..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500"
@@ -122,8 +130,10 @@ export default function ActivityLog() {
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">User</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Action</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Details</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Browser</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Device</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">IP Address</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Date & Time</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">More</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -139,9 +149,28 @@ export default function ActivityLog() {
                         </span>
                       </td>
                       <td className="px-6 py-4 text-gray-300 max-w-xs truncate">{log.details || '—'}</td>
-                      <td className="px-6 py-4 text-gray-400 text-xs">{log.browser}</td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-1">
+                          <span>{getDeviceIcon(log.device_type)}</span>
+                          <div>
+                            <p className="text-gray-300 text-xs">{log.device_type || '—'}</p>
+                            <p className="text-gray-500 text-xs">{log.os || log.browser || '—'}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-blue-400 text-xs font-mono">{log.ip_address || '—'}</span>
+                      </td>
                       <td className="px-6 py-4 text-gray-400 text-xs">
                         {new Date(log.created_at).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4">
+                        <button
+                          onClick={() => setSelectedLog(log)}
+                          className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-xs transition"
+                        >
+                          Details
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -152,6 +181,82 @@ export default function ActivityLog() {
         </div>
 
       </div>
+
+      {/* Log Detail Modal */}
+      {selectedLog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg shadow-2xl max-h-full overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <h2 className="text-lg font-bold text-white">Activity Details</h2>
+              <button onClick={() => setSelectedLog(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+
+              <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+                <h3 className="text-gray-400 text-xs uppercase tracking-wider">User Info</h3>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Name</span>
+                  <span className="text-white font-medium">{selectedLog.user_name}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Email</span>
+                  <span className="text-white">{selectedLog.user_email}</span>
+                </div>
+              </div>
+
+              <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+                <h3 className="text-gray-400 text-xs uppercase tracking-wider">Action</h3>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Type</span>
+                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${getActionColor(selectedLog.action)}`}>
+                    {selectedLog.action}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Details</span>
+                  <span className="text-white text-right max-w-xs">{selectedLog.details || '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Date & Time</span>
+                  <span className="text-white">{new Date(selectedLog.created_at).toLocaleString()}</span>
+                </div>
+              </div>
+
+              <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+                <h3 className="text-gray-400 text-xs uppercase tracking-wider">Device & Location</h3>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">IP Address</span>
+                  <span className="text-blue-400 font-mono">{selectedLog.ip_address || '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Device Type</span>
+                  <span className="text-white">{getDeviceIcon(selectedLog.device_type)} {selectedLog.device_type || '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">OS</span>
+                  <span className="text-white">{selectedLog.os || '—'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Browser</span>
+                  <span className="text-white">{selectedLog.browser || '—'}</span>
+                </div>
+                <div className="text-sm">
+                  <p className="text-gray-400 mb-1">Full User Agent</p>
+                  <p className="text-gray-500 text-xs break-all bg-gray-900 p-2 rounded">{selectedLog.device || '—'}</p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setSelectedLog(null)}
+                className="w-full py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </Layout>
   )
 }

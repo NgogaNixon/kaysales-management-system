@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useError } from '../context/ErrorContext'
 import Layout from '../components/Layout'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
@@ -9,10 +10,15 @@ import autoTable from 'jspdf-autotable'
 
 export default function Dashboard() {
   const { profile } = useAuth()
+  const { showError } = useError()
   const navigate = useNavigate()
+  const showProfit = profile?.show_profit === true
   const [stats, setStats] = useState({
     totalSales: 0,
     totalRevenue: 0,
+    totalProfit: 0,
+    stockValueCost: 0,
+    stockValueSelling: 0,
     totalProducts: 0,
     lowStockProducts: [],
     recentSales: [],
@@ -30,35 +36,53 @@ export default function Dashboard() {
     }
   }, [profile])
 
+  useEffect(() => {
+    const handleFocus = () => {
+      if (profile?.id) {
+        fetchDashboardData()
+        fetchSubscription()
+      }
+    }
+    window.addEventListener('focus', handleFocus)
+    return () => window.removeEventListener('focus', handleFocus)
+  }, [profile])
+
   const fetchSubscription = async () => {
     const { data } = await supabase
       .from('subscriptions')
       .select('*')
       .eq('user_id', profile.id)
-      .single()
-    setSubscription(data)
+      .maybeSingle()
+    setSubscription(data || null)
   }
 
   const fetchDashboardData = async () => {
     setLoading(true)
 
-    const { data: salesData } = await supabase
-      .from('sales')
-      .select('*')
-      .eq('user_id', profile.id)
+    const [
+      { data: salesData, error: salesError },
+      { data: productsData, error: productsError }
+    ] = await Promise.all([
+      supabase.from('sales').select('*').eq('user_id', profile.id),
+      supabase.from('products').select('*').eq('user_id', profile.id)
+    ])
 
-    const { data: productsData } = await supabase
-      .from('products')
-      .select('*')
-      .eq('user_id', profile.id)
+    if (salesError) showError('Failed to load sales data. Please refresh.')
+    if (productsError) showError('Failed to load products data. Please refresh.')
 
     const totalRevenue = salesData?.reduce((sum, s) => sum + (s.total || 0), 0) || 0
-    const lowStock = productsData?.filter(p => p.quantity < 3) || []
+    const totalProfit = salesData?.reduce((sum, s) => sum + (s.profit || 0), 0) || 0
+    const stockValueCost = productsData?.reduce((sum, p) => sum + ((p.buying_price || 0) * (p.quantity || 0)), 0) || 0
+    const stockValueSelling = productsData?.reduce((sum, p) => sum + ((p.selling_price || 0) * (p.quantity || 0)), 0) || 0
+    const lowStock = productsData?.filter(p => p.quantity < (p.low_stock_threshold || 3)) || []
     const recentSales = salesData?.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 10) || []
 
     setStats({
       totalSales: salesData?.length || 0,
       totalRevenue,
+      totalProfit,
+      stockValueCost,
+      stockValueSelling,
       totalProducts: productsData?.length || 0,
       lowStockProducts: lowStock,
       recentSales,
@@ -78,77 +102,90 @@ export default function Dashboard() {
   const openSaleReceipt = async (sale) => {
     setSelectedSale(sale)
     setLoadingReceipt(true)
-    const { data: items } = await supabase
+    const { data: items, error } = await supabase
       .from('sale_items')
       .select('*')
       .eq('sale_id', sale.id)
+    if (error) showError('Failed to load receipt items.')
     setReceiptItems(items || [])
     setLoadingReceipt(false)
   }
 
   const printReceipt = () => {
-    const doc = new jsPDF({ format: [80, 200], unit: 'mm' })
-    doc.setFontSize(12)
-    doc.text('KaySales Management System', 40, 10, { align: 'center' })
-    doc.setFontSize(9)
-    doc.text('Sales Receipt', 40, 16, { align: 'center' })
-    doc.text('--------------------------------', 40, 20, { align: 'center' })
-    doc.text(`Date: ${new Date(selectedSale.created_at).toLocaleDateString()}`, 5, 26)
-    doc.text(`Customer: ${selectedSale.product_name}`, 5, 32)
-    doc.text('--------------------------------', 40, 36, { align: 'center' })
+    try {
+      const doc = new jsPDF({ format: [80, 200], unit: 'mm' })
+      doc.setFontSize(12)
+      doc.text('KaySales Management System', 40, 10, { align: 'center' })
+      doc.setFontSize(9)
+      doc.text('Sales Receipt', 40, 16, { align: 'center' })
+      doc.text('--------------------------------', 40, 20, { align: 'center' })
+      doc.text(`Date: ${new Date(selectedSale.created_at).toLocaleDateString()}`, 5, 26)
+      doc.text(`Customer: ${selectedSale.product_name}`, 5, 32)
+      doc.text('--------------------------------', 40, 36, { align: 'center' })
 
-    let y = 42
-    receiptItems.forEach((item, i) => {
-      doc.text(`${i + 1}. ${item.product_name}`, 5, y)
-      doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
-      doc.text(`   Total: RWF ${item.total?.toLocaleString()}`, 5, y + 10)
-      y += 16
-    })
+      let y = 42
+      receiptItems.forEach((item, i) => {
+        doc.text(`${i + 1}. ${item.product_name}`, 5, y)
+        doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
+        doc.text(`   Total: RWF ${item.total?.toLocaleString()}`, 5, y + 10)
+        y += 16
+      })
 
-    doc.text('--------------------------------', 40, y, { align: 'center' })
-    doc.setFontSize(11)
-    doc.text(`GRAND TOTAL: RWF ${selectedSale.total?.toLocaleString()}`, 40, y + 7, { align: 'center' })
-    doc.setFontSize(8)
-    doc.text('Thank you for your business!', 40, y + 14, { align: 'center' })
-    doc.text('Powered by KaySales', 40, y + 19, { align: 'center' })
-    doc.save(`Receipt_${selectedSale.product_name}_${new Date(selectedSale.created_at).toLocaleDateString()}.pdf`)
+      doc.text('--------------------------------', 40, y, { align: 'center' })
+      doc.setFontSize(11)
+      doc.text(`GRAND TOTAL: RWF ${selectedSale.total?.toLocaleString()}`, 40, y + 7, { align: 'center' })
+      doc.setFontSize(8)
+      doc.text('Thank you for your business!', 40, y + 14, { align: 'center' })
+      doc.text('Powered by KaySales', 40, y + 19, { align: 'center' })
+      doc.save(`Receipt_${selectedSale.product_name}_${new Date(selectedSale.created_at).toLocaleDateString()}.pdf`)
+    } catch (e) {
+      showError('Failed to generate receipt PDF.')
+    }
   }
 
   const exportExcel = () => {
-    const data = stats.recentSales.map(s => ({
-      Customer: s.product_name,
-      'Total (RWF)': s.total,
-      Date: new Date(s.created_at).toLocaleDateString(),
-    }))
-    const ws = XLSX.utils.json_to_sheet(data)
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Sales')
-    XLSX.writeFile(wb, 'KaySales_Dashboard_Report.xlsx')
+    try {
+      const data = stats.recentSales.map(s => ({
+        Customer: s.product_name,
+        'Total (RWF)': s.total,
+        Date: new Date(s.created_at).toLocaleDateString(),
+      }))
+      const ws = XLSX.utils.json_to_sheet(data)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'Sales')
+      XLSX.writeFile(wb, 'KaySales_Dashboard_Report.xlsx')
+    } catch (e) {
+      showError('Failed to export Excel report.')
+    }
   }
 
   const exportPDF = () => {
-    const doc = new jsPDF()
-    doc.setFontSize(16)
-    doc.text('KaySales Management System', 14, 15)
-    doc.setFontSize(12)
-    doc.text('Dashboard Report', 14, 25)
-    doc.setFontSize(10)
-    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-    doc.text(`Total Revenue: RWF ${stats.totalRevenue.toLocaleString()}`, 14, 39)
-    doc.text(`Total Sales: ${stats.totalSales}`, 14, 46)
+    try {
+      const doc = new jsPDF()
+      doc.setFontSize(16)
+      doc.text('KaySales Management System', 14, 15)
+      doc.setFontSize(12)
+      doc.text('Dashboard Report', 14, 25)
+      doc.setFontSize(10)
+      doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
+      doc.text(`Total Revenue: RWF ${stats.totalRevenue.toLocaleString()}`, 14, 39)
+      doc.text(`Total Sales: ${stats.totalSales}`, 14, 46)
 
-    autoTable(doc, {
-      startY: 55,
-      head: [['Customer', 'Total (RWF)', 'Date']],
-      body: stats.recentSales.map(s => [
-        s.product_name,
-        s.total?.toLocaleString(),
-        new Date(s.created_at).toLocaleDateString(),
-      ]),
-      styles: { fontSize: 9 },
-      headStyles: { fillColor: [29, 78, 216] },
-    })
-    doc.save('KaySales_Dashboard_Report.pdf')
+      autoTable(doc, {
+        startY: 55,
+        head: [['Customer', 'Total (RWF)', 'Date']],
+        body: stats.recentSales.map(s => [
+          s.product_name,
+          s.total?.toLocaleString(),
+          new Date(s.created_at).toLocaleDateString(),
+        ]),
+        styles: { fontSize: 9 },
+        headStyles: { fillColor: [29, 78, 216] },
+      })
+      doc.save('KaySales_Dashboard_Report.pdf')
+    } catch (e) {
+      showError('Failed to export PDF report.')
+    }
   }
 
   if (loading) {
@@ -197,6 +234,27 @@ export default function Dashboard() {
             <button className={`px-4 py-2 rounded-lg font-bold text-sm ${daysRemaining <= 3 ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-gray-900'} transition`}>
               Top Up Now
             </button>
+          </div>
+        )}
+
+        {/* Special Cards */}
+        {showProfit && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="bg-purple-900 border border-purple-700 rounded-xl p-4">
+              <span className="text-2xl">💎</span>
+              <p className="text-purple-300 text-2xl font-bold mt-2">RWF {stats.totalProfit.toLocaleString()}</p>
+              <p className="text-purple-400 text-sm mt-1">Total Profit</p>
+            </div>
+            <div className="bg-blue-900 border border-blue-700 rounded-xl p-4">
+              <span className="text-2xl">📦</span>
+              <p className="text-blue-300 text-2xl font-bold mt-2">RWF {stats.stockValueCost.toLocaleString()}</p>
+              <p className="text-blue-400 text-sm mt-1">Stock Value (Cost)</p>
+            </div>
+            <div className="bg-green-900 border border-green-700 rounded-xl p-4">
+              <span className="text-2xl">💰</span>
+              <p className="text-green-300 text-2xl font-bold mt-2">RWF {stats.stockValueSelling.toLocaleString()}</p>
+              <p className="text-green-400 text-sm mt-1">Stock Value (Selling Price)</p>
+            </div>
           </div>
         )}
 
@@ -270,13 +328,13 @@ export default function Dashboard() {
 
       {/* Receipt Modal */}
       {selectedSale && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl max-h-screen flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
               <h2 className="text-lg font-bold text-white">Sales Receipt</h2>
               <button onClick={() => setSelectedSale(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
-            <div className="px-6 py-4 overflow-y-auto">
+            <div className="px-6 py-4 overflow-y-auto flex-1">
               <div className="text-center mb-4">
                 <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
                   <span className="text-white font-bold">K</span>
@@ -292,6 +350,21 @@ export default function Dashboard() {
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Customer</span>
                   <span className="text-white">{selectedSale.product_name}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Payment</span>
+                  <span className="text-white">
+                    {selectedSale.payment_method === 'mtn' ? '📱 MTN Mobile Money' :
+                     selectedSale.payment_method === 'bank' ? '🏦 Bank Transfer' :
+                     selectedSale.payment_method === 'cheque' ? '📄 Cheque' :
+                     selectedSale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Status</span>
+                  <span className={selectedSale.payment_status === 'pending' ? 'text-yellow-400' : 'text-green-400'}>
+                    {selectedSale.payment_status === 'pending' ? '⏳ Pending' : '✅ Paid'}
+                  </span>
                 </div>
                 <div className="border-t border-gray-700 pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>

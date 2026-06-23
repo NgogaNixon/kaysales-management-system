@@ -10,7 +10,7 @@ export default function ClientManagement() {
   const [search, setSearch] = useState('')
   const [selectedClient, setSelectedClient] = useState(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-const [clientToDelete, setClientToDelete] = useState(null)
+  const [clientToDelete, setClientToDelete] = useState(null)
 
   useEffect(() => {
     fetchData()
@@ -53,8 +53,8 @@ const [clientToDelete, setClientToDelete] = useState(null)
     await supabase.from('profiles').update({ approved: false }).eq('id', userId)
     fetchData()
   }
+
   const handleDeleteClient = async (userId) => {
-    // Delete all client data in order
     await supabase.from('sale_items').delete().eq('user_id', userId)
     await supabase.from('sales').delete().eq('user_id', userId)
     await supabase.from('products').delete().eq('user_id', userId)
@@ -70,6 +70,14 @@ const [clientToDelete, setClientToDelete] = useState(null)
 
   const handlePlanChange = async (userId, plan) => {
     await supabase.from('profiles').update({ plan_type: plan }).eq('id', userId)
+    fetchData()
+  }
+
+  const handleToggleShowProfit = async (userId, currentValue) => {
+    await supabase.from('profiles').update({ show_profit: !currentValue }).eq('id', userId)
+    if (selectedClient?.id === userId) {
+      setSelectedClient({ ...selectedClient, show_profit: !currentValue })
+    }
     fetchData()
   }
 
@@ -148,6 +156,7 @@ const [clientToDelete, setClientToDelete] = useState(null)
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Name</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Email</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Plan</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Profit View</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Subscription</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Joined</th>
@@ -176,6 +185,18 @@ const [clientToDelete, setClientToDelete] = useState(null)
                             <option value="premium">Premium</option>
                           </select>
                         </td>
+                        <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => handleToggleShowProfit(client.id, client.show_profit)}
+                            className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
+                              client.show_profit ? 'bg-purple-600' : 'bg-gray-600'
+                            }`}
+                          >
+                            <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
+                              client.show_profit ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        </td>
                         <td className="px-6 py-4">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             client.approved ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'
@@ -191,7 +212,7 @@ const [clientToDelete, setClientToDelete] = useState(null)
                         <td className="px-6 py-4 text-gray-400">
                           {new Date(client.created_at).toLocaleDateString()}
                         </td>
-                       <td className="px-6 py-4">
+                        <td className="px-6 py-4">
                           <div className="flex flex-col sm:flex-row gap-2" onClick={(e) => e.stopPropagation()}>
                             {!client.approved ? (
                               <button
@@ -254,6 +275,19 @@ const [clientToDelete, setClientToDelete] = useState(null)
                     <span className={`text-sm font-medium ${selectedClient.plan_type === 'premium' ? 'text-purple-400' : 'text-blue-400'}`}>
                       {selectedClient.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
                     </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400 text-sm">Profit View</span>
+                    <button
+                      onClick={() => handleToggleShowProfit(selectedClient.id, selectedClient.show_profit)}
+                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
+                        selectedClient.show_profit ? 'bg-purple-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
+                        selectedClient.show_profit ? 'translate-x-6' : 'translate-x-1'
+                      }`} />
+                    </button>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-400 text-sm">Status</span>
@@ -354,7 +388,8 @@ const [clientToDelete, setClientToDelete] = useState(null)
           </div>
         </div>
       )}
-{/* Delete Client Confirmation */}
+
+      {/* Delete Client Confirmation */}
       {showDeleteConfirm && clientToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
           <div className="bg-gray-900 border border-red-700 rounded-2xl w-full max-w-md mx-4 shadow-2xl p-6">
@@ -386,6 +421,5 @@ const [clientToDelete, setClientToDelete] = useState(null)
         </div>
       )}
     </Layout>
-    
   )
 }

@@ -9,6 +9,9 @@ export default function Subscriptions() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [activeTab, setActiveTab] = useState('payments')
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [addForm, setAddForm] = useState({ user_id: '', plan_type: 'standard', expiry_days: '30' })
+  const [addSaving, setAddSaving] = useState(false)
 
   useEffect(() => {
     fetchData()
@@ -125,6 +128,50 @@ export default function Subscriptions() {
     fetchData()
   }
 
+  const handleAddSubscription = async () => {
+    if (!addForm.user_id) return
+    setAddSaving(true)
+
+    const expiryDate = new Date()
+    expiryDate.setDate(expiryDate.getDate() + parseInt(addForm.expiry_days || 30))
+
+    const { data: existingSub } = await supabase
+      .from('subscriptions')
+      .select('*')
+      .eq('user_id', addForm.user_id)
+      .maybeSingle()
+
+    if (existingSub) {
+      await supabase
+        .from('subscriptions')
+        .update({
+          plan_type: addForm.plan_type,
+          payment_status: 'paid',
+          expiry_date: expiryDate.toISOString(),
+        })
+        .eq('user_id', addForm.user_id)
+    } else {
+      await supabase
+        .from('subscriptions')
+        .insert({
+          user_id: addForm.user_id,
+          plan_type: addForm.plan_type,
+          payment_status: 'paid',
+          expiry_date: expiryDate.toISOString(),
+        })
+    }
+
+    await supabase
+      .from('profiles')
+      .update({ approved: true, plan_type: addForm.plan_type })
+      .eq('id', addForm.user_id)
+
+    setAddSaving(false)
+    setShowAddModal(false)
+    setAddForm({ user_id: '', plan_type: 'standard', expiry_days: '30' })
+    fetchData()
+  }
+
   const filtered = subscriptions.filter(s => {
     if (filter === 'paid') return s.payment_status === 'paid'
     if (filter === 'pending') return s.payment_status === 'pending'
@@ -142,9 +189,17 @@ export default function Subscriptions() {
       <div className="p-6 space-y-6">
 
         {/* Header */}
-        <div>
-          <h1 className="text-2xl font-bold text-white">💳 Subscriptions</h1>
-          <p className="text-gray-400 text-sm mt-1">Manage payments and subscriptions</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white">💳 Subscriptions</h1>
+            <p className="text-gray-400 text-sm mt-1">Manage payments and subscriptions</p>
+          </div>
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm"
+          >
+            + Add Subscription
+          </button>
         </div>
 
         {/* Stats */}
@@ -391,6 +446,70 @@ export default function Subscriptions() {
         )}
 
       </div>
+    {/* Add Subscription Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <h2 className="text-lg font-bold text-white">+ Add Subscription</h2>
+              <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <div>
+                <label className="text-gray-400 text-sm mb-1 block">Select Client *</label>
+                <select
+                  value={addForm.user_id}
+                  onChange={(e) => setAddForm({ ...addForm, user_id: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="">Choose a client...</option>
+                  {clients.map(c => (
+                    <option key={c.id} value={c.id}>{c.full_name} — {c.email}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-gray-400 text-sm mb-1 block">Plan</label>
+                <select
+                  value={addForm.plan_type}
+                  onChange={(e) => setAddForm({ ...addForm, plan_type: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="standard">📦 Standard</option>
+                  <option value="premium">⭐ Premium</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-gray-400 text-sm mb-1 block">Duration (days)</label>
+                <input
+                  type="number"
+                  value={addForm.expiry_days}
+                  onChange={(e) => setAddForm({ ...addForm, expiry_days: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                  placeholder="30"
+                  min="1"
+                />
+                <p className="text-gray-500 text-xs mt-1">
+                  Expires on: {new Date(Date.now() + (parseInt(addForm.expiry_days) || 30) * 86400000).toLocaleDateString()}
+                </p>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setShowAddModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAddSubscription}
+                  disabled={addSaving || !addForm.user_id}
+                  className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium disabled:opacity-50"
+                >
+                  {addSaving ? 'Saving...' : 'Add Subscription'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </Layout>
   )
 }

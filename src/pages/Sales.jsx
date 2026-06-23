@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useError } from '../context/ErrorContext'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -13,6 +14,8 @@ import autoTable from 'jspdf-autotable'
 
 export default function Sales() {
   const { profile } = useAuth()
+  const { showError } = useError()
+  const showProfit = profile?.show_profit === true
   const [sales, setSales] = useState([])
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -35,7 +38,10 @@ export default function Sales() {
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0])
-  const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
+  const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+  const [extraFees, setExtraFees] = useState('')
+  const [productSearch, setProductSearch] = useState({})
+  const [showProductDropdown, setShowProductDropdown] = useState({})
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(null)
@@ -43,29 +49,42 @@ export default function Sales() {
 
   useEffect(() => {
     if (profile?.id) {
-      fetchSales()
-      fetchProducts()
+      fetchSalesAndProducts()
     }
   }, [profile])
 
-  const fetchSales = async () => {
+  useEffect(() => {
+    const handleFocus = () => {
+      if (profile?.id) fetchSalesAndProducts()
+    }
+    window.addEventListener('focus', handleFocus)
+    return () => window.removeEventListener('focus', handleFocus)
+  }, [profile])
+
+  useEffect(() => {
+    const handleClickOutside = () => setShowProductDropdown({})
+    document.addEventListener('click', handleClickOutside)
+    return () => document.removeEventListener('click', handleClickOutside)
+  }, [])
+
+  const fetchSalesAndProducts = async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from('sales')
-      .select('*')
-      .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
-    setSales(data || [])
+    const [
+      { data: salesData, error: salesError },
+      { data: productsData, error: productsError }
+    ] = await Promise.all([
+      supabase.from('sales').select('*').eq('user_id', profile.id).order('created_at', { ascending: false }),
+      supabase.from('products').select('*').eq('user_id', profile.id)
+    ])
+    if (salesError) showError('Failed to load sales. Please refresh.')
+    if (productsError) showError('Failed to load products. Please refresh.')
+    setSales(salesData || [])
+    setProducts(productsData || [])
     setLoading(false)
   }
 
-  const fetchProducts = async () => {
-    const { data } = await supabase
-      .from('products')
-      .select('*')
-      .eq('user_id', profile.id)
-    setProducts(data || [])
-  }
+  const fetchSales = fetchSalesAndProducts
+  const fetchProducts = fetchSalesAndProducts
 
   const openAdd = () => {
     setSelectedSale(null)
@@ -73,7 +92,10 @@ export default function Sales() {
     setCustomerName('')
     setPaymentMethod('cash')
     setSaleDate(new Date().toISOString().split('T')[0])
-    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
+    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+    setExtraFees('')
+    setProductSearch({})
+    setShowProductDropdown({})
     setError('')
     setShowModal(true)
   }
@@ -97,10 +119,14 @@ export default function Sales() {
         product_name: item.product_name,
         quantity_sold: item.quantity_sold,
         selling_price: item.selling_price,
+        buying_price: item.buying_price || '',
         total: item.total,
       })))
+      setProductSearch(
+        existingItems.reduce((acc, item, i) => ({ ...acc, [i]: item.product_name }), {})
+      )
     } else {
-      setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
+      setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
     }
 
     setShowModal(true)
@@ -120,6 +146,7 @@ export default function Sales() {
         product_id: productId,
         product_name: product.name,
         selling_price: product.selling_price,
+        buying_price: product.buying_price || '',
         total: product.selling_price * (parseInt(updated[index].quantity_sold) || 0)
       }
     }
@@ -129,6 +156,16 @@ export default function Sales() {
   const handleQuantityChange = (index, qty) => {
     const updated = [...saleItems]
     const price = parseInt(updated[index].selling_price) || 0
+    const product = products.find(p => p.id === updated[index].product_id)
+    const maxQty = product ? product.quantity : Infinity
+    if (parseInt(qty) > maxQty) {
+      setError(`Only ${maxQty} units of "${product.name}" in stock`)
+      showError(`Only ${maxQty} units of "${product.name}" in stock`)
+      updated[index] = { ...updated[index], quantity_sold: qty, total: price * (parseInt(qty) || 0) }
+      setSaleItems(updated)
+      return
+    }
+    setError('')
     updated[index] = { ...updated[index], quantity_sold: qty, total: price * (parseInt(qty) || 0) }
     setSaleItems(updated)
   }
@@ -140,8 +177,14 @@ export default function Sales() {
     setSaleItems(updated)
   }
 
+  const handleBuyingPriceChange = (index, price) => {
+    const updated = [...saleItems]
+    updated[index] = { ...updated[index], buying_price: price }
+    setSaleItems(updated)
+  }
+
   const addItem = () => {
-    setSaleItems([...saleItems, { product_id: '', product_name: '', quantity_sold: '', selling_price: '', total: 0 }])
+    setSaleItems([...saleItems, { product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
   }
 
   const removeItem = (index) => {
@@ -150,18 +193,52 @@ export default function Sales() {
   }
 
   const grandTotal = saleItems.reduce((sum, item) => sum + (item.total || 0), 0)
+  const totalProfit = saleItems.reduce((sum, item) => {
+    const qty = parseInt(item.quantity_sold) || 0
+    const sellPrice = parseInt(item.selling_price) || 0
+    const buyPrice = parseInt(item.buying_price) || 0
+    return sum + ((sellPrice - buyPrice) * qty)
+  }, 0) - (parseInt(extraFees) || 0)
 
   const handleSave = async (saleToEdit = null) => {
     const editSale = saleToEdit || pendingEditSale || selectedSale
 
     if (!customerName) {
       setError('Customer name is required')
+      showError('Customer name is required')
       return
     }
     const validItems = saleItems.filter(i => i.product_id && i.quantity_sold && i.selling_price)
     if (validItems.length === 0) {
       setError('Please add at least one product')
+      showError('Please add at least one product')
       return
+    }
+
+    // Stock validation — fetch fresh from DB
+    for (const item of validItems) {
+      const { data: freshProduct } = await supabase
+        .from('products')
+        .select('quantity, name')
+        .eq('id', item.product_id)
+        .single()
+
+      let availableStock = freshProduct?.quantity || 0
+      if (editSale) {
+        const { data: oldItems } = await supabase
+          .from('sale_items')
+          .select('*')
+          .eq('sale_id', editSale.id)
+        const oldItem = oldItems?.find(o => o.product_id === item.product_id)
+        if (oldItem) availableStock += oldItem.quantity_sold
+      }
+
+      if (freshProduct && parseInt(item.quantity_sold) > availableStock) {
+        setError(`"${freshProduct.name}" only has ${availableStock} units available`)
+        showError(`"${freshProduct.name}" only has ${availableStock} units available`)
+        setSaving(false)
+        return
+      }
     }
 
     setSaving(true)
@@ -170,7 +247,6 @@ export default function Sales() {
     let saleData, saleError
 
     if (editSale) {
-      // UPDATE existing sale
       const { data, error } = await supabase
         .from('sales')
         .update({
@@ -178,6 +254,7 @@ export default function Sales() {
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
           total: grandTotal,
           payment_method: paymentMethod,
+          payment_status: paymentMethod === 'credit' ? 'pending' : 'paid',
         })
         .eq('id', editSale.id)
         .select()
@@ -186,12 +263,34 @@ export default function Sales() {
       saleError = error
 
       if (!saleError && saleData) {
-        // Update date if changed
         if (saleDate !== editSale.created_at?.split('T')[0]) {
           await supabase.from('sales').update({ created_at: saleDate }).eq('id', editSale.id)
         }
-        // Delete old items and insert new ones
+
+        // Restore old stock
+        const { data: oldItems } = await supabase
+          .from('sale_items')
+          .select('*')
+          .eq('sale_id', editSale.id)
+
+        if (oldItems && oldItems.length > 0) {
+          for (const oldItem of oldItems) {
+            const { data: freshProduct } = await supabase
+              .from('products')
+              .select('quantity')
+              .eq('id', oldItem.product_id)
+              .single()
+            if (freshProduct) {
+              await supabase
+                .from('products')
+                .update({ quantity: freshProduct.quantity + oldItem.quantity_sold })
+                .eq('id', oldItem.product_id)
+            }
+          }
+        }
+
         await supabase.from('sale_items').delete().eq('sale_id', editSale.id)
+
         const itemsToInsert = validItems.map(item => ({
           sale_id: editSale.id,
           user_id: profile.id,
@@ -199,12 +298,53 @@ export default function Sales() {
           product_name: item.product_name,
           quantity_sold: parseInt(item.quantity_sold),
           selling_price: parseInt(item.selling_price),
+          buying_price: parseInt(item.buying_price) || 0,
           total: item.total,
         }))
         await supabase.from('sale_items').insert(itemsToInsert)
+
+        // Deduct new stock
+        for (const item of validItems) {
+          const { data: freshProduct } = await supabase
+            .from('products')
+            .select('quantity')
+            .eq('id', item.product_id)
+            .single()
+          if (freshProduct) {
+            await supabase
+              .from('products')
+              .update({ quantity: freshProduct.quantity - parseInt(item.quantity_sold) })
+              .eq('id', item.product_id)
+          }
+        }
+
+        if (showProfit) {
+          await supabase.from('sales').update({
+            extra_fees: parseInt(extraFees) || 0,
+            profit: totalProfit,
+          }).eq('id', editSale.id)
+        }
+
+        if (paymentMethod === 'credit') {
+          await supabase.from('credits_given').delete().eq('sale_id', editSale.id)
+          for (const item of validItems) {
+            await supabase.from('credits_given').insert({
+              user_id: profile.id,
+              customer_name: customerName,
+              product_name: item.product_name,
+              quantity: parseInt(item.quantity_sold),
+              amount: item.total,
+              date: saleDate,
+              notes: 'Auto-added from sale on credit',
+              status: 'unpaid',
+              sale_id: editSale.id,
+            })
+          }
+        } else {
+          await supabase.from('credits_given').delete().eq('sale_id', editSale.id)
+        }
       }
     } else {
-      // INSERT new sale
       const { data, error } = await supabase
         .from('sales')
         .insert({
@@ -222,12 +362,10 @@ export default function Sales() {
       saleError = error
 
       if (!saleError && saleData) {
-        // Update date if not today
         if (saleDate !== new Date().toISOString().split('T')[0]) {
           await supabase.from('sales').update({ created_at: saleDate }).eq('id', saleData.id)
         }
 
-        // Insert sale items
         const itemsToInsert = validItems.map(item => ({
           sale_id: saleData.id,
           user_id: profile.id,
@@ -235,11 +373,18 @@ export default function Sales() {
           product_name: item.product_name,
           quantity_sold: parseInt(item.quantity_sold),
           selling_price: parseInt(item.selling_price),
+          buying_price: parseInt(item.buying_price) || 0,
           total: item.total,
         }))
         await supabase.from('sale_items').insert(itemsToInsert)
 
-        // Reduce product quantities
+        if (showProfit) {
+          await supabase.from('sales').update({
+            extra_fees: parseInt(extraFees) || 0,
+            profit: totalProfit,
+          }).eq('id', saleData.id)
+        }
+
         for (const item of validItems) {
           const { data: freshProduct } = await supabase
             .from('products')
@@ -254,8 +399,6 @@ export default function Sales() {
           }
         }
 
-        console.log('Sale data before credit insert:', saleData)
-        // If credit payment, add to credits given
         if (paymentMethod === 'credit') {
           for (const item of validItems) {
             await supabase.from('credits_given').insert({
@@ -275,6 +418,7 @@ export default function Sales() {
     }
 
     if (saleError) {
+      showError('Failed to save sale. Please try again.')
       setError('Failed to save sale: ' + saleError.message)
       setSaving(false)
       return
@@ -293,8 +437,7 @@ export default function Sales() {
     setShowOTP(false)
     setSelectedSale(null)
     setPendingEditSale(null)
-    fetchSales()
-    fetchProducts()
+    await fetchSalesAndProducts()
   }
 
   const handleDelete = async () => {
@@ -311,7 +454,6 @@ export default function Sales() {
       .select('*')
       .eq('sale_id', pendingDelete.id)
 
-    // Restore product quantities
     if (items && items.length > 0) {
       for (const item of items) {
         const { data: freshProduct } = await supabase
@@ -341,8 +483,7 @@ export default function Sales() {
 
     setPendingDelete(null)
     setShowUndoToast(false)
-    fetchSales()
-    fetchProducts()
+    await fetchSalesAndProducts()
   }
 
   const handleUndo = () => {
@@ -351,94 +492,113 @@ export default function Sales() {
   }
 
   const generateReceipt = async (sale) => {
-    const { data: items } = await supabase
-      .from('sale_items')
-      .select('*')
-      .eq('sale_id', sale.id)
-    setReceiptSale(sale)
+    const [
+      { data: items },
+      { data: freshSale }
+    ] = await Promise.all([
+      supabase.from('sale_items').select('*').eq('sale_id', sale.id),
+      supabase.from('sales').select('*').eq('id', sale.id).single()
+    ])
+    setReceiptSale(freshSale || sale)
     setReceiptItems(items || [])
     setShowReceipt(true)
   }
 
   const printReceipt = () => {
-    const doc = new jsPDF({ format: [80, 200], unit: 'mm' })
-    doc.setFontSize(12)
-    doc.text('KaySales Management System', 40, 10, { align: 'center' })
-    doc.setFontSize(9)
-    doc.text('Sales Receipt', 40, 16, { align: 'center' })
-    doc.text('--------------------------------', 40, 20, { align: 'center' })
-    doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 5, 26)
-    doc.text(`Customer: ${receiptSale.product_name}`, 5, 32)
-    const paymentLabel = receiptSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
-      receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
-      receiptSale.payment_method === 'cheque' ? 'Cheque' :
-      receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'
-    doc.text(`Payment: ${paymentLabel}`, 5, 38)
-    doc.text('--------------------------------', 40, 42, { align: 'center' })
+    try {
+      const doc = new jsPDF({ format: [80, 200], unit: 'mm' })
+      doc.setFontSize(12)
+      doc.text('KaySales Management System', 40, 10, { align: 'center' })
+      doc.setFontSize(9)
+      doc.text('Sales Receipt', 40, 16, { align: 'center' })
+      doc.text('--------------------------------', 40, 20, { align: 'center' })
+      doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 5, 26)
+      doc.text(`Customer: ${receiptSale.product_name}`, 5, 32)
+      const paymentLabel = receiptSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
+        receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
+        receiptSale.payment_method === 'cheque' ? 'Cheque' :
+        receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'
+      doc.text(`Payment: ${paymentLabel}`, 5, 38)
+      doc.text('--------------------------------', 40, 42, { align: 'center' })
 
-    let y = 48
-    receiptItems.forEach((item, i) => {
-      doc.text(`${i + 1}. ${item.product_name}`, 5, y)
-      doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
-      doc.text(`   Total: RWF ${item.total?.toLocaleString()}`, 5, y + 10)
-      y += 16
-    })
+      let y = 48
+      receiptItems.forEach((item, i) => {
+        doc.text(`${i + 1}. ${item.product_name}`, 5, y)
+        doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
+        doc.text(`   Total: RWF ${item.total?.toLocaleString()}`, 5, y + 10)
+        y += 16
+      })
 
-    doc.text('--------------------------------', 40, y, { align: 'center' })
-    doc.setFontSize(11)
-    doc.text(`GRAND TOTAL: RWF ${receiptSale.total?.toLocaleString()}`, 40, y + 7, { align: 'center' })
-    doc.setFontSize(8)
-    doc.text('Thank you for your business!', 40, y + 14, { align: 'center' })
-    doc.text('Powered by KaySales', 40, y + 19, { align: 'center' })
-    doc.save(`Receipt_${receiptSale.product_name}_${new Date(receiptSale.created_at).toLocaleDateString()}.pdf`)
+      doc.text('--------------------------------', 40, y, { align: 'center' })
+      if (receiptSale.extra_fees > 0) {
+        doc.text(`Extra Fees: - RWF ${receiptSale.extra_fees?.toLocaleString()}`, 5, y + 5)
+        y += 6
+      }
+      doc.setFontSize(11)
+      doc.text(`GRAND TOTAL: RWF ${receiptSale.total?.toLocaleString()}`, 40, y + 7, { align: 'center' })
+      if (showProfit && receiptSale.profit != null) {
+        doc.setFontSize(9)
+        doc.text(`Profit: RWF ${receiptSale.profit?.toLocaleString()}`, 40, y + 14, { align: 'center' })
+      }
+      doc.setFontSize(8)
+      doc.text('Thank you for your business!', 40, y + 20, { align: 'center' })
+      doc.text('Powered by KaySales', 40, y + 25, { align: 'center' })
+      doc.save(`Receipt_${receiptSale.product_name}_${new Date(receiptSale.created_at).toLocaleDateString()}.pdf`)
+    } catch (e) {
+      showError('Failed to generate receipt PDF.')
+    }
   }
 
   const handleExport = () => {
-    const exportFiltered = sales.filter(s => {
-      const d = new Date(s.created_at)
-      const from = exportFrom ? d >= new Date(exportFrom) : true
-      const to = exportTo ? d <= new Date(exportTo + 'T23:59:59') : true
-      return from && to
-    })
-    const exportRevenue = exportFiltered.reduce((sum, s) => sum + (s.total || 0), 0)
-
-    if (exportType === 'excel') {
-      const data = exportFiltered.map(s => ({
-        Customer: s.product_name,
-        'Total (RWF)': s.total,
-        Payment: s.payment_method || 'cash',
-        Date: new Date(s.created_at).toLocaleDateString(),
-      }))
-      const ws = XLSX.utils.json_to_sheet(data)
-      const wb = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(wb, ws, 'Sales')
-      XLSX.writeFile(wb, `KaySales_Sales_${exportFrom || 'all'}_to_${exportTo || 'all'}.xlsx`)
-    } else {
-      const doc = new jsPDF()
-      doc.setFontSize(16)
-      doc.text('KaySales Management System', 14, 15)
-      doc.setFontSize(12)
-      doc.text('Sales Report', 14, 25)
-      doc.setFontSize(10)
-      doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-      doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 39)
-      autoTable(doc, {
-        startY: 48,
-        head: [['Customer', 'Total (RWF)', 'Payment', 'Date']],
-        body: exportFiltered.map(s => [
-          s.product_name,
-          s.total?.toLocaleString(),
-          s.payment_method || 'cash',
-          new Date(s.created_at).toLocaleDateString(),
-        ]),
-        styles: { fontSize: 9 },
-        headStyles: { fillColor: [29, 78, 216] },
+    try {
+      const exportFiltered = sales.filter(s => {
+        const d = new Date(s.created_at)
+        const from = exportFrom ? d >= new Date(exportFrom) : true
+        const to = exportTo ? d <= new Date(exportTo + 'T23:59:59') : true
+        return from && to
       })
-      doc.save(`KaySales_Sales_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
+      const exportRevenue = exportFiltered.reduce((sum, s) => sum + (s.total || 0), 0)
+
+      if (exportType === 'excel') {
+        const data = exportFiltered.map(s => ({
+          Customer: s.product_name,
+          'Total (RWF)': s.total,
+          Payment: s.payment_method || 'cash',
+          Date: new Date(s.created_at).toLocaleDateString(),
+        }))
+        const ws = XLSX.utils.json_to_sheet(data)
+        const wb = XLSX.utils.book_new()
+        XLSX.utils.book_append_sheet(wb, ws, 'Sales')
+        XLSX.writeFile(wb, `KaySales_Sales_${exportFrom || 'all'}_to_${exportTo || 'all'}.xlsx`)
+      } else {
+        const doc = new jsPDF()
+        doc.setFontSize(16)
+        doc.text('KaySales Management System', 14, 15)
+        doc.setFontSize(12)
+        doc.text('Sales Report', 14, 25)
+        doc.setFontSize(10)
+        doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
+        doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 39)
+        autoTable(doc, {
+          startY: 48,
+          head: [['Customer', 'Total (RWF)', 'Payment', 'Date']],
+          body: exportFiltered.map(s => [
+            s.product_name,
+            s.total?.toLocaleString(),
+            s.payment_method || 'cash',
+            new Date(s.created_at).toLocaleDateString(),
+          ]),
+          styles: { fontSize: 9 },
+          headStyles: { fillColor: [29, 78, 216] },
+        })
+        doc.save(`KaySales_Sales_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
+      }
+      setShowExportModal(false)
+      setExportFrom('')
+      setExportTo('')
+    } catch (e) {
+      showError('Failed to export. Please try again.')
     }
-    setShowExportModal(false)
-    setExportFrom('')
-    setExportTo('')
   }
 
   const filtered = sales.filter(s => {
@@ -510,7 +670,6 @@ export default function Sales() {
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Customer</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Total</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Payment</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Date</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
                   </tr>
@@ -526,15 +685,6 @@ export default function Sales() {
                          sale.payment_method === 'bank' ? '🏦 Bank' :
                          sale.payment_method === 'cheque' ? '📄 Cheque' :
                          sale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          sale.payment_status === 'paid' ? 'bg-green-900 text-green-300' :
-                          sale.payment_status === 'pending' ? 'bg-yellow-900 text-yellow-300' :
-                          'bg-green-900 text-green-300'
-                        }`}>
-                          {sale.payment_status === 'pending' ? '⏳ Pending' : '✅ Paid'}
-                        </span>
                       </td>
                       <td className="px-6 py-4 text-gray-400">{new Date(sale.created_at).toLocaleDateString()}</td>
                       <td className="px-6 py-4">
@@ -600,23 +750,56 @@ export default function Sales() {
             <div className="space-y-3">
               <label className="text-gray-400 text-sm block">Products *</label>
               {saleItems.map((item, index) => (
-                <div key={index} className="bg-gray-800 rounded-lg p-3 space-y-2">
+                <div key={index} className="bg-gray-800 rounded-lg p-3 space-y-2" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400 text-xs">Item {index + 1}</span>
                     {saleItems.length > 1 && (
                       <button onClick={() => removeItem(index)} className="text-red-400 hover:text-red-300 text-xs">Remove</button>
                     )}
                   </div>
-                  <select
-                    value={item.product_id}
-                    onChange={(e) => handleProductChange(index, e.target.value)}
-                    className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">Select product</option>
-                    {products.map(p => (
-                      <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity})</option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={productSearch[index] !== undefined ? productSearch[index] : (item.product_name || '')}
+                      onChange={(e) => {
+                        setProductSearch({ ...productSearch, [index]: e.target.value })
+                        setShowProductDropdown({ ...showProductDropdown, [index]: true })
+                      }}
+                      onFocus={() => setShowProductDropdown({ ...showProductDropdown, [index]: true })}
+                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      placeholder="Search product..."
+                    />
+                    {showProductDropdown[index] && (
+                      <div className="absolute z-50 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-40 overflow-y-auto shadow-xl">
+                        {products
+                          .filter(p => p.name.toLowerCase().includes((productSearch[index] || '').toLowerCase()))
+                          .length === 0 ? (
+                          <p className="text-gray-400 text-xs px-3 py-2">No products found</p>
+                        ) : (
+                          products
+                            .filter(p => p.name.toLowerCase().includes((productSearch[index] || '').toLowerCase()))
+                            .map(p => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                onClick={() => {
+                                  handleProductChange(index, p.id)
+                                  setProductSearch({ ...productSearch, [index]: p.name })
+                                  setShowProductDropdown({ ...showProductDropdown, [index]: false })
+                                  setError('')
+                                }}
+                                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-700 transition flex justify-between items-center"
+                              >
+                                <span className="text-white">{p.name}</span>
+                                <span className={`text-xs ${p.quantity < (p.low_stock_threshold || 3) ? 'text-orange-400' : 'text-gray-400'}`}>
+                                  Stock: {p.quantity}
+                                </span>
+                              </button>
+                            ))
+                        )}
+                      </div>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <input
                       type="number"
@@ -630,9 +813,18 @@ export default function Sales() {
                       value={item.selling_price}
                       onChange={(e) => handlePriceChange(index, e.target.value)}
                       className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      placeholder="Price (RWF)"
+                      placeholder="Selling Price (RWF)"
                     />
                   </div>
+                  {showProfit && (
+                    <input
+                      type="number"
+                      value={item.buying_price}
+                      onChange={(e) => handleBuyingPriceChange(index, e.target.value)}
+                      className="w-full bg-gray-700 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+                      placeholder="Buying Price / Cost (RWF)"
+                    />
+                  )}
                   {item.total > 0 && (
                     <p className="text-green-400 text-sm font-medium">Subtotal: RWF {item.total.toLocaleString()}</p>
                   )}
@@ -642,10 +834,30 @@ export default function Sales() {
                 + Add Another Product
               </button>
             </div>
+            {showProfit && (
+              <div>
+                <label className="text-gray-400 text-sm mb-1 block">Extra Fees (RWF)</label>
+                <input
+                  type="number"
+                  value={extraFees}
+                  onChange={(e) => setExtraFees(e.target.value)}
+                  className="w-full bg-gray-800 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+                  placeholder="Transport, packaging, etc."
+                />
+              </div>
+            )}
             {grandTotal > 0 && (
               <div className="bg-gray-800 rounded-lg px-4 py-3">
                 <p className="text-gray-400 text-sm">Grand Total</p>
                 <p className="text-green-400 text-xl font-bold">RWF {grandTotal.toLocaleString()}</p>
+                {showProfit && (
+                  <>
+                    <p className="text-gray-400 text-sm mt-2">Estimated Profit</p>
+                    <p className={`text-lg font-bold ${totalProfit >= 0 ? 'text-purple-400' : 'text-red-400'}`}>
+                      RWF {totalProfit.toLocaleString()}
+                    </p>
+                  </>
+                )}
               </div>
             )}
             <div className="flex gap-3 pt-2">
@@ -685,15 +897,20 @@ export default function Sales() {
           actionLabel={otpAction === 'delete'
             ? `Delete sale for: ${selectedSale?.product_name}`
             : `Edit sale for: ${pendingEditSale?.product_name}`}
-          onVerified={() => {
-            setShowOTP(false)
+          onVerified={async () => {
             if (otpAction === 'delete') {
+              setShowOTP(false)
               handleDelete()
             } else {
-              handleSave(pendingEditSale)
+              const saleToEdit = pendingEditSale
+              setShowOTP(false)
+              await handleSave(saleToEdit)
             }
           }}
-          onCancel={() => setShowOTP(false)}
+          onCancel={() => {
+            setShowOTP(false)
+            setPendingEditSale(null)
+          }}
         />
       )}
 
@@ -764,6 +981,26 @@ export default function Sales() {
                     {receiptSale.payment_status === 'pending' ? '⏳ Pending' : '✅ Paid'}
                   </span>
                 </div>
+                {receiptSale.payment_method === 'credit' && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">🕐 Credit Taken On</span>
+                    <span className="text-yellow-400 text-xs">{new Date(receiptSale.created_at).toLocaleString()}</span>
+                  </div>
+                )}
+                {receiptSale.payment_method === 'credit' && receiptSale.payment_status === 'paid' && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">✅ Credit Paid On</span>
+                    <span className="text-green-400 text-xs">
+                      {receiptSale.paid_at ? new Date(receiptSale.paid_at).toLocaleString() : '—'}
+                    </span>
+                  </div>
+                )}
+                {receiptSale.payment_method === 'credit' && receiptSale.payment_status === 'pending' && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">✅ Credit Paid On</span>
+                    <span className="text-gray-500 text-xs">Not yet paid</span>
+                  </div>
+                )}
                 <div className="border-t border-gray-700 pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
                   {receiptItems.length > 0 ? receiptItems.map((item, i) => (
@@ -778,10 +1015,24 @@ export default function Sales() {
                     <p className="text-gray-500 text-sm">No items found</p>
                   )}
                 </div>
+                {receiptSale.extra_fees > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Extra Fees</span>
+                    <span className="text-red-400">- RWF {receiptSale.extra_fees?.toLocaleString()}</span>
+                  </div>
+                )}
                 <div className="border-t border-gray-700 pt-2 flex justify-between">
                   <span className="text-white font-bold">GRAND TOTAL</span>
                   <span className="text-green-400 font-bold text-lg">RWF {receiptSale.total?.toLocaleString()}</span>
                 </div>
+                {showProfit && receiptSale.profit != null && (
+                  <div className="flex justify-between text-sm pt-1">
+                    <span className="text-gray-400">Profit</span>
+                    <span className={receiptSale.profit >= 0 ? 'text-purple-400 font-medium' : 'text-red-400 font-medium'}>
+                      RWF {receiptSale.profit?.toLocaleString()}
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="text-center mt-4 text-gray-500 text-xs">
                 <p>Thank you for your business!</p>

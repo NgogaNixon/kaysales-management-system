@@ -4,6 +4,7 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useError } from '../context/ErrorContext'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -12,6 +13,7 @@ import { logActivity } from '../lib/activityLogger'
 
 export default function Credits() {
   const { profile } = useAuth()
+  const { showError } = useError()
   const [activeTab, setActiveTab] = useState('given')
   const [statusFilter, setStatusFilter] = useState('unpaid')
   const [creditsGiven, setCreditsGiven] = useState([])
@@ -40,25 +42,30 @@ export default function Credits() {
     if (profile?.id) fetchCredits()
   }, [profile])
 
+  useEffect(() => {
+    const handleFocus = () => {
+      if (profile?.id) fetchCredits()
+    }
+    window.addEventListener('focus', handleFocus)
+    return () => window.removeEventListener('focus', handleFocus)
+  }, [profile])
+
   const fetchCredits = async () => {
     setLoading(true)
-    const { data: given } = await supabase
-      .from('credits_given')
-      .select('*')
-      .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
-
-    const { data: taken } = await supabase
-      .from('credits_taken')
-      .select('*')
-      .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
-
+    const [
+      { data: given, error: givenError },
+      { data: taken, error: takenError }
+    ] = await Promise.all([
+      supabase.from('credits_given').select('*').eq('user_id', profile.id).order('created_at', { ascending: false }),
+      supabase.from('credits_taken').select('*').eq('user_id', profile.id).order('created_at', { ascending: false })
+    ])
+    if (givenError || takenError) showError('Failed to load credits. Please refresh.')
     setCreditsGiven(given || [])
     setCreditsTaken(taken || [])
     setLoading(false)
   }
 
+  // Only used for Credits Taken manual entry
   const openAdd = () => {
     setSelectedCredit(null)
     setCustomerName('')
@@ -117,11 +124,13 @@ export default function Credits() {
   const handleSave = async () => {
     if (!customerName) {
       setError('Name is required')
+      showError('Name is required')
       return
     }
     const validItems = creditItems.filter(i => i.amount)
     if (validItems.length === 0) {
       setError('Please add at least one item with an amount')
+      showError('Please add at least one item with an amount')
       return
     }
     setSaving(true)
@@ -131,7 +140,7 @@ export default function Credits() {
     const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
 
     if (selectedCredit) {
-      await supabase.from(table).update({
+      const { error } = await supabase.from(table).update({
         [nameField]: customerName,
         product_name: validItems[0].product_name,
         quantity: parseInt(validItems[0].quantity) || 0,
@@ -141,7 +150,12 @@ export default function Credits() {
         status,
       }).eq('id', selectedCredit.id)
 
-      // If linked to a sale, update sale customer name too
+      if (error) {
+        showError('Failed to update credit. Please try again.')
+        setSaving(false)
+        return
+      }
+
       if (activeTab === 'given' && selectedCredit.sale_id) {
         await supabase
           .from('sales')
@@ -150,7 +164,7 @@ export default function Credits() {
       }
     } else {
       for (const item of validItems) {
-        await supabase.from(table).insert({
+        const { error } = await supabase.from(table).insert({
           [nameField]: customerName,
           product_name: item.product_name,
           quantity: parseInt(item.quantity) || 0,
@@ -160,6 +174,11 @@ export default function Credits() {
           status,
           user_id: profile.id,
         })
+        if (error) {
+          showError('Failed to add credit. Please try again.')
+          setSaving(false)
+          return
+        }
       }
     }
 
@@ -174,26 +193,12 @@ export default function Credits() {
     setSaving(false)
     setShowModal(false)
     fetchCredits()
-
-    // Refresh customer modal if open
-    if (selectedCustomer) {
-      const updatedData = activeTab === 'given' ? creditsGiven : creditsTaken
-      const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
-      const updatedItems = updatedData.filter(c => c[nameF] === selectedCustomer.name)
-      if (updatedItems.length > 0) {
-        const totalAmount = updatedItems.reduce((sum, c) => sum + (c.amount || 0), 0)
-        const unpaidAmount = updatedItems.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
-        setSelectedCustomer({ ...selectedCustomer, items: updatedItems, totalAmount, unpaidAmount })
-      }
-    }
   }
 
   const handleDelete = async () => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
 
-    // If linked to a sale, delete that sale and restore stock
     if (activeTab === 'given' && selectedCredit.sale_id) {
-      // Get sale items to restore stock
       const { data: saleItems } = await supabase
         .from('sale_items')
         .select('*')
@@ -215,13 +220,16 @@ export default function Credits() {
         }
       }
 
-      // Delete sale items
       await supabase.from('sale_items').delete().eq('sale_id', selectedCredit.sale_id)
-      // Delete linked sale
       await supabase.from('sales').delete().eq('id', selectedCredit.sale_id)
     }
 
-    await supabase.from(table).delete().eq('id', selectedCredit.id)
+    const { error } = await supabase.from(table).delete().eq('id', selectedCredit.id)
+    if (error) {
+      showError('Failed to delete credit. Please try again.')
+      setShowOTP(false)
+      return
+    }
 
     await logActivity(
       profile.id,
@@ -242,29 +250,34 @@ export default function Credits() {
     const now = new Date().toISOString()
     const newStatus = selectedCredit.status === 'paid' ? 'unpaid' : 'paid'
 
-    console.log('Marking credit paid. selectedCredit:', selectedCredit)
-    console.log('activeTab:', activeTab, 'sale_id:', selectedCredit.sale_id, 'newStatus:', newStatus)
-
-    await supabase.from(table).update({
+    const { error } = await supabase.from(table).update({
       status: newStatus,
       paid_at: newStatus === 'paid' ? now : null,
       paid_method: newStatus === 'paid' ? payMethod : null,
     }).eq('id', selectedCredit.id)
 
-    // If credit given is marked paid, update linked sale
+    if (error) {
+      showError('Failed to update payment status. Please try again.')
+      return
+    }
+
     if (activeTab === 'given' && selectedCredit.sale_id && newStatus === 'paid') {
-      console.log('Updating linked sale:', selectedCredit.sale_id)
-      const { data: updateResult, error: updateError } = await supabase
+      await supabase
         .from('sales')
         .update({
           payment_status: 'paid',
           payment_method: payMethod,
+          paid_at: now,
         })
         .eq('id', selectedCredit.sale_id)
-        .select()
-      console.log('Sale update result:', updateResult, 'error:', updateError)
-    } else {
-      console.log('Skipped sale update - condition not met')
+    } else if (activeTab === 'given' && selectedCredit.sale_id && newStatus === 'unpaid') {
+      await supabase
+        .from('sales')
+        .update({
+          payment_status: 'pending',
+          paid_at: null,
+        })
+        .eq('id', selectedCredit.sale_id)
     }
 
     await logActivity(
@@ -278,13 +291,15 @@ export default function Credits() {
     setShowPayModal(false)
     await fetchCredits()
 
-    // Refresh customer modal
     if (selectedCustomer) {
-      const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
       const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
-      const updatedItems = currentData.map(c =>
-        c.id === selectedCredit.id ? { ...c, status: newStatus, paid_at: now, paid_method: payMethod } : c
-      ).filter(c => c[nameF] === selectedCustomer.name)
+      const { data: freshCredits } = await supabase
+        .from(table)
+        .select('*')
+        .eq('user_id', profile.id)
+        .order('created_at', { ascending: false })
+
+      const updatedItems = (freshCredits || []).filter(c => c[nameF] === selectedCustomer.name)
 
       if (updatedItems.every(c => c.status === 'paid') && statusFilter === 'unpaid') {
         setSelectedCustomer(null)
@@ -297,62 +312,66 @@ export default function Credits() {
   }
 
   const handleExport = () => {
-    const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
-    const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
-    const exportFiltered = currentData.filter(c => {
-      const creditDate = new Date(c.date || c.created_at)
-      const matchesFrom = exportFrom ? creditDate >= new Date(exportFrom) : true
-      const matchesTo = exportTo ? creditDate <= new Date(exportTo + 'T23:59:59') : true
-      return matchesFrom && matchesTo
-    })
-    const totalAmount = exportFiltered.reduce((sum, c) => sum + (c.amount || 0), 0)
-    const label = activeTab === 'given' ? 'Credits Given' : 'Credits Taken'
-
-    if (exportType === 'excel') {
-      const data = exportFiltered.map(c => ({
-        [activeTab === 'given' ? 'Customer' : 'Supplier']: c[nameField],
-        Product: c.product_name || '—',
-        Quantity: c.quantity || '—',
-        'Amount (RWF)': c.amount,
-        Date: c.date ? new Date(c.date).toLocaleDateString() : '—',
-        Status: c.status || 'unpaid',
-        'Paid At': c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
-        'Payment Method': c.paid_method || '—',
-        Notes: c.notes || '—',
-      }))
-      const ws = XLSX.utils.json_to_sheet(data)
-      const wb = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(wb, ws, label)
-      XLSX.writeFile(wb, `KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.xlsx`)
-    } else {
-      const doc = new jsPDF()
-      doc.setFontSize(16)
-      doc.text('KaySales Management System', 14, 15)
-      doc.setFontSize(12)
-      doc.text(`${label} Report`, 14, 25)
-      doc.setFontSize(10)
-      doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-      doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, 39)
-      autoTable(doc, {
-        startY: 48,
-        head: [[activeTab === 'given' ? 'Customer' : 'Supplier', 'Product', 'Qty', 'Amount (RWF)', 'Date', 'Status', 'Paid At']],
-        body: exportFiltered.map(c => [
-          c[nameField],
-          c.product_name || '—',
-          c.quantity || '—',
-          c.amount?.toLocaleString(),
-          c.date ? new Date(c.date).toLocaleDateString() : '—',
-          c.status || 'unpaid',
-          c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
-        ]),
-        styles: { fontSize: 9 },
-        headStyles: { fillColor: [29, 78, 216] },
+    try {
+      const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
+      const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
+      const exportFiltered = currentData.filter(c => {
+        const creditDate = new Date(c.date || c.created_at)
+        const matchesFrom = exportFrom ? creditDate >= new Date(exportFrom) : true
+        const matchesTo = exportTo ? creditDate <= new Date(exportTo + 'T23:59:59') : true
+        return matchesFrom && matchesTo
       })
-      doc.save(`KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
+      const totalAmount = exportFiltered.reduce((sum, c) => sum + (c.amount || 0), 0)
+      const label = activeTab === 'given' ? 'Credits Given' : 'Credits Taken'
+
+      if (exportType === 'excel') {
+        const data = exportFiltered.map(c => ({
+          [activeTab === 'given' ? 'Customer' : 'Supplier']: c[nameField],
+          Product: c.product_name || '—',
+          Quantity: c.quantity || '—',
+          'Amount (RWF)': c.amount,
+          'Credit Taken On': c.date ? new Date(c.date).toLocaleString() : '—',
+          Status: c.status || 'unpaid',
+          'Credit Paid On': c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
+          'Payment Method': c.paid_method || '—',
+          Notes: c.notes || '—',
+        }))
+        const ws = XLSX.utils.json_to_sheet(data)
+        const wb = XLSX.utils.book_new()
+        XLSX.utils.book_append_sheet(wb, ws, label)
+        XLSX.writeFile(wb, `KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.xlsx`)
+      } else {
+        const doc = new jsPDF()
+        doc.setFontSize(16)
+        doc.text('KaySales Management System', 14, 15)
+        doc.setFontSize(12)
+        doc.text(`${label} Report`, 14, 25)
+        doc.setFontSize(10)
+        doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
+        doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, 39)
+        autoTable(doc, {
+          startY: 48,
+          head: [[activeTab === 'given' ? 'Customer' : 'Supplier', 'Product', 'Qty', 'Amount (RWF)', 'Credit Taken On', 'Status', 'Credit Paid On']],
+          body: exportFiltered.map(c => [
+            c[nameField],
+            c.product_name || '—',
+            c.quantity || '—',
+            c.amount?.toLocaleString(),
+            c.date ? new Date(c.date).toLocaleString() : '—',
+            c.status || 'unpaid',
+            c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
+          ]),
+          styles: { fontSize: 9 },
+          headStyles: { fillColor: [29, 78, 216] },
+        })
+        doc.save(`KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
+      }
+      setShowExportModal(false)
+      setExportFrom('')
+      setExportTo('')
+    } catch (e) {
+      showError('Failed to export. Please try again.')
     }
-    setShowExportModal(false)
-    setExportFrom('')
-    setExportTo('')
   }
 
   const currentCredits = activeTab === 'given' ? creditsGiven : creditsTaken
@@ -398,7 +417,6 @@ export default function Credits() {
           <div className="flex gap-2">
             <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
             <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
-            <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm">+ Add Credit</button>
           </div>
         </div>
 
@@ -420,13 +438,16 @@ export default function Credits() {
 
         {/* Tabs & Filter */}
         <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button onClick={() => setActiveTab('given')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'given' ? 'bg-yellow-500 text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
               📤 Credits Given ({creditsGiven.length})
             </button>
             <button onClick={() => setActiveTab('taken')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'taken' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
               📥 Credits Taken ({creditsTaken.length})
             </button>
+            {activeTab === 'taken' && (
+              <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm">+ Add Credit</button>
+            )}
           </div>
           <div className="flex gap-2">
             {['all', 'unpaid', 'paid'].map(f => (
@@ -444,7 +465,9 @@ export default function Credits() {
           ) : groupedList.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500 mb-3">No credits found</p>
-              <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">Add First Credit</button>
+              {activeTab === 'taken' && (
+                <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">Add First Credit</button>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -503,8 +526,6 @@ export default function Credits() {
               <button onClick={() => setSelectedCustomer(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-3 overflow-y-auto flex-1">
-
-              {/* Summary */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-gray-800 rounded-lg p-3">
                   <p className="text-gray-400 text-xs">Total Amount</p>
@@ -518,7 +539,6 @@ export default function Credits() {
                 </div>
               </div>
 
-              {/* Items */}
               <div className="space-y-2">
                 {selectedCustomer.items.map((credit) => (
                   <div key={credit.id} className="bg-gray-800 rounded-lg p-4">
@@ -548,14 +568,19 @@ export default function Credits() {
                         </p>
                       </div>
                       <div>
-                        <p className="text-gray-400 text-xs">Date</p>
-                        <p className="text-white">{credit.date ? new Date(credit.date).toLocaleDateString() : '—'}</p>
+                        <p className="text-gray-400 text-xs">🕐 Credit Taken On</p>
+                        <p className="text-yellow-400 text-xs">{credit.date ? new Date(credit.date).toLocaleString() : '—'}</p>
                       </div>
                     </div>
                     {credit.status === 'paid' && credit.paid_at && (
                       <div className="bg-green-900 rounded-lg p-2 mb-2">
-                        <p className="text-green-300 text-xs">✅ Paid on: {new Date(credit.paid_at).toLocaleString()}</p>
+                        <p className="text-green-300 text-xs">✅ Credit Paid On: {new Date(credit.paid_at).toLocaleString()}</p>
                         <p className="text-green-300 text-xs">Payment: {getPaymentLabel(credit.paid_method)}</p>
+                      </div>
+                    )}
+                    {credit.status !== 'paid' && (
+                      <div className="bg-gray-700 rounded-lg p-2 mb-2">
+                        <p className="text-gray-400 text-xs">✅ Credit Paid On: Not yet paid</p>
                       </div>
                     )}
                     {credit.notes && <p className="text-gray-400 text-xs mb-2">📝 {credit.notes}</p>}
@@ -569,23 +594,30 @@ export default function Credits() {
                         </button>
                       ) : (
                         <button
-                      onClick={async () => {
-                        const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
-                        await supabase.from(table).update({
-                          status: 'unpaid',
-                          paid_at: null,
-                          paid_method: null,
-                        }).eq('id', credit.id)
-                        if (activeTab === 'given' && credit.sale_id) {
-                          await supabase.from('sales').update({ payment_status: 'pending' }).eq('id', credit.sale_id)
-                        }
-                        fetchCredits()
-                        setSelectedCustomer(null)
-                      }}
-                      className="px-3 py-1 bg-gray-700 text-gray-300 rounded-lg text-xs transition hover:bg-gray-600"
-                    >
-                      Mark Unpaid
-                    </button>
+                          onClick={async () => {
+                            const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+                            const { error } = await supabase.from(table).update({
+                              status: 'unpaid',
+                              paid_at: null,
+                              paid_method: null,
+                            }).eq('id', credit.id)
+                            if (error) {
+                              showError('Failed to mark as unpaid. Please try again.')
+                              return
+                            }
+                            if (activeTab === 'given' && credit.sale_id) {
+                              await supabase.from('sales').update({
+                                payment_status: 'pending',
+                                paid_at: null,
+                              }).eq('id', credit.sale_id)
+                            }
+                            fetchCredits()
+                            setSelectedCustomer(null)
+                          }}
+                          className="px-3 py-1 bg-gray-700 text-gray-300 rounded-lg text-xs transition hover:bg-gray-600"
+                        >
+                          Mark Unpaid
+                        </button>
                       )}
                       <button onClick={() => { setSelectedCustomer(null); openEdit(credit) }} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
                       <button onClick={() => { openDelete(credit) }} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
@@ -616,6 +648,8 @@ export default function Credits() {
                 <p className="text-white font-medium">{selectedCredit.customer_name || selectedCredit.supplier_name}</p>
                 <p className="text-gray-400 text-xs mt-1">Amount</p>
                 <p className="text-green-400 font-bold">RWF {selectedCredit.amount?.toLocaleString()}</p>
+                <p className="text-gray-400 text-xs mt-1">🕐 Credit Taken On</p>
+                <p className="text-yellow-400 text-xs">{selectedCredit.date ? new Date(selectedCredit.date).toLocaleString() : '—'}</p>
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
@@ -630,7 +664,7 @@ export default function Credits() {
                   <option value="cheque">📄 Cheque</option>
                 </select>
               </div>
-              <p className="text-gray-400 text-xs">Payment time will be recorded as: <span className="text-white">{new Date().toLocaleString()}</span></p>
+              <p className="text-gray-400 text-xs">✅ Credit Paid On will be recorded as: <span className="text-white">{new Date().toLocaleString()}</span></p>
               <div className="flex gap-3">
                 <button onClick={() => setShowPayModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
                 <button onClick={handleMarkPaid} className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">Confirm Paid</button>
@@ -640,22 +674,22 @@ export default function Credits() {
         </div>
       )}
 
-      {/* Add/Edit Modal */}
+      {/* Add/Edit Modal — only for Credits Taken */}
       {showModal && (
         <Modal
-          title={selectedCredit ? `Edit Credit ${activeTab === 'given' ? 'Given' : 'Taken'}` : `Add Credit ${activeTab === 'given' ? 'Given' : 'Taken'}`}
+          title={selectedCredit ? `Edit Credit Taken` : `Add Credit Taken`}
           onClose={() => setShowModal(false)}
         >
           <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <div>
-              <label className="text-gray-400 text-sm mb-1 block">{activeTab === 'given' ? 'Customer Name *' : 'Supplier Name *'}</label>
+              <label className="text-gray-400 text-sm mb-1 block">Supplier Name *</label>
               <input
                 type="text"
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder={activeTab === 'given' ? 'Customer name' : 'Supplier name'}
+                placeholder="Supplier name"
               />
             </div>
 
@@ -717,9 +751,7 @@ export default function Credits() {
             {grandTotal > 0 && (
               <div className="bg-gray-800 rounded-lg px-4 py-3">
                 <p className="text-gray-400 text-sm">Total Amount</p>
-                <p className={`text-xl font-bold ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
-                  RWF {grandTotal.toLocaleString()}
-                </p>
+                <p className="text-red-400 text-xl font-bold">RWF {grandTotal.toLocaleString()}</p>
               </div>
             )}
 

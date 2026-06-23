@@ -168,13 +168,13 @@ export default function Layout({ children }) {
         </header>
 
         {/* Mobile Content */}
-        <div className="flex-1 pb-20 overflow-y-auto">
+        <div className="flex-1 pb-24 overflow-y-auto">
           {children}
         </div>
 
         {/* Mobile Bottom Navigation */}
-        <nav className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 z-50 safe-bottom">
-          <div className="flex items-center justify-around px-2 py-2">
+        <nav className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 z-50">
+          <div className="flex items-center justify-around px-2 py-2 pb-safe" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom))' }}>
             {navItems.map((item) => (
               <button
                 key={item.path}
