@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { logActivity } from '../lib/activityLogger'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -7,19 +7,25 @@ import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
+import * as XLSX from 'xlsx'
 
 export default function Products() {
   const { profile } = useAuth()
   const { showError } = useError()
   const showProfit = profile?.show_profit === true
+  const fileInputRef = useRef(null)
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [showOTP, setShowOTP] = useState(false)
+  const [showImportModal, setShowImportModal] = useState(false)
   const [otpAction, setOtpAction] = useState('')
   const [selectedProduct, setSelectedProduct] = useState(null)
   const [search, setSearch] = useState('')
+  const [importPreview, setImportPreview] = useState([])
+  const [importErrors, setImportErrors] = useState([])
+  const [importing, setImporting] = useState(false)
   const [form, setForm] = useState({
     name: '',
     category: '',
@@ -31,7 +37,7 @@ export default function Products() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
- useEffect(() => {
+  useEffect(() => {
     if (profile?.id) fetchProducts()
   }, [profile])
 
@@ -57,22 +63,21 @@ export default function Products() {
 
   const openAdd = () => {
     setSelectedProduct(null)
-    setForm({ name: '', category: '', quantity: '', selling_price: '', buying_price: '' })
+    setForm({ name: '', category: '', quantity: '', selling_price: '', buying_price: '', low_stock_threshold: '3' })
     setError('')
     setShowModal(true)
   }
 
   const openEdit = (product) => {
     setSelectedProduct(product)
-    const data = {
-      name: form.name,
-      category: form.category,
-      quantity: parseInt(form.quantity),
-      buying_price: parseInt(form.buying_price) || 0,
-      selling_price: parseInt(form.selling_price),
-      low_stock_threshold: parseInt(form.low_stock_threshold) || 3,
-      user_id: profile.id,
-    }
+    setForm({
+      name: product.name,
+      category: product.category || '',
+      quantity: product.quantity,
+      selling_price: product.selling_price,
+      buying_price: product.buying_price || '',
+      low_stock_threshold: product.low_stock_threshold || '3',
+    })
     setError('')
     setShowModal(true)
   }
@@ -100,7 +105,8 @@ export default function Products() {
       showError('Selling price cannot be negative')
       return
     }
-    // Check for duplicate product name
+
+    // Check duplicate name
     const duplicate = products.find(p =>
       p.name.toLowerCase() === form.name.toLowerCase() &&
       (!selectedProduct || p.id !== selectedProduct.id)
@@ -130,6 +136,7 @@ export default function Products() {
       quantity: parseInt(form.quantity),
       buying_price: parseInt(form.buying_price) || 0,
       selling_price: parseInt(form.selling_price),
+      low_stock_threshold: parseInt(form.low_stock_threshold) || 3,
       user_id: profile.id,
     }
 
@@ -170,7 +177,6 @@ export default function Products() {
       setShowOTP(false)
       return
     }
-
     await logActivity(
       profile.id,
       profile.email,
@@ -180,6 +186,136 @@ export default function Products() {
     )
     setShowOTP(false)
     setShowConfirm(false)
+    fetchProducts()
+  }
+
+  // Download template
+  const downloadTemplate = () => {
+    const templateData = [
+      {
+        Name: 'Example Product',
+        Category: 'Electronics',
+        Quantity: 50,
+        'Selling Price (RWF)': 10000,
+        'Buying Price (RWF)': 7000,
+        'Low Stock Threshold': 5,
+      }
+    ]
+    const ws = XLSX.utils.json_to_sheet(templateData)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Products')
+    XLSX.writeFile(wb, 'KaySales_Products_Template.xlsx')
+  }
+
+  // Handle file upload
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try {
+        const wb = XLSX.read(evt.target.result, { type: 'binary' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json(ws)
+
+        const errors = []
+        const preview = rows.map((row, i) => {
+          const name = (row['Name'] || row['name'] || '').toString().trim()
+          const category = (row['Category'] || row['category'] || '').toString().trim()
+          const quantity = parseInt(row['Quantity'] || row['quantity']) || 0
+          const selling_price = parseInt(row['Selling Price (RWF)'] || row['selling_price']) || 0
+          const buying_price = parseInt(row['Buying Price (RWF)'] || row['buying_price']) || 0
+          const low_stock_threshold = parseInt(row['Low Stock Threshold'] || row['low_stock_threshold']) || 3
+
+          // Required field checks
+          if (!name) errors.push(`Row ${i + 2}: Name is required`)
+          if (!category) errors.push(`Row ${i + 2}: Category is required`)
+          if (!selling_price) errors.push(`Row ${i + 2}: Selling Price is required`)
+
+          // Negative value checks
+          if (quantity < 0) errors.push(`Row ${i + 2}: Quantity cannot be negative`)
+          if (selling_price < 0) errors.push(`Row ${i + 2}: Selling Price cannot be negative`)
+          if (buying_price < 0) errors.push(`Row ${i + 2}: Buying Price cannot be negative`)
+          if (low_stock_threshold < 1) errors.push(`Row ${i + 2}: Low Stock Threshold must be at least 1`)
+
+          // Selling price must be greater than buying price
+          if (selling_price > 0 && buying_price > 0 && buying_price > selling_price) {
+            errors.push(`Row ${i + 2}: Buying Price (${buying_price.toLocaleString()}) cannot be greater than Selling Price (${selling_price.toLocaleString()})`)
+          }
+
+          // Check duplicate with existing products
+          const isDuplicate = products.find(p => p.name.toLowerCase() === name.toLowerCase())
+          if (isDuplicate) errors.push(`Row ${i + 2}: "${name}" already exists in your products`)
+
+          // Check duplicate within the file itself
+          const isDuplicateInFile = rows.findIndex((r, j) =>
+            j < i && (r['Name'] || r['name'] || '').toString().trim().toLowerCase() === name.toLowerCase()
+          ) !== -1
+          if (isDuplicateInFile) errors.push(`Row ${i + 2}: "${name}" appears more than once in the file`)
+
+          return { name, category, quantity, selling_price, buying_price, low_stock_threshold, rowIndex: i + 2 }
+        })
+
+        setImportPreview(preview)
+        setImportErrors(errors)
+        setShowImportModal(true)
+      } catch (e) {
+        showError('Failed to read Excel file. Make sure it is a valid .xlsx file.')
+      }
+    }
+    reader.readAsBinaryString(file)
+    e.target.value = ''
+  }
+
+  // Confirm import
+  const handleImport = async () => {
+    if (importErrors.length > 0) return
+    setImporting(true)
+
+    const validRows = importPreview.filter(r => r.name && r.category && r.selling_price)
+
+    const isStandard = profile?.plan_type === 'standard'
+    if (isStandard) {
+      const existingCategories = [...new Set(products.map(p => p.category).filter(Boolean))]
+      const newCategories = [...new Set(validRows.map(r => r.category))]
+      const allCategories = [...new Set([...existingCategories, ...newCategories])]
+      if (allCategories.length > 2) {
+        showError('Standard plan only allows 2 stock categories. Upgrade to Premium for more.')
+        setImporting(false)
+        return
+      }
+    }
+
+    const toInsert = validRows.map(row => ({
+      name: row.name,
+      category: row.category,
+      quantity: row.quantity,
+      selling_price: row.selling_price,
+      buying_price: row.buying_price,
+      low_stock_threshold: row.low_stock_threshold,
+      user_id: profile.id,
+    }))
+
+    const { error } = await supabase.from('products').insert(toInsert)
+    if (error) {
+      showError('Failed to import products. Please try again.')
+      setImporting(false)
+      return
+    }
+
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      'Bulk Import Products',
+      `Imported ${toInsert.length} products via Excel`
+    )
+
+    setImporting(false)
+    setShowImportModal(false)
+    setImportPreview([])
+    setImportErrors([])
     fetchProducts()
   }
 
@@ -196,17 +332,36 @@ export default function Products() {
       <div className="p-6 space-y-6">
 
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold text-white">📦 Products</h1>
             <p className="text-gray-400 text-sm mt-1">Manage your stock and inventory</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
             {isStandard && (
               <span className="text-xs text-yellow-400 bg-yellow-900 px-3 py-2 rounded-lg">
-                Standard Plan — up to 2 categories
+                Standard — up to 2 categories
               </span>
             )}
+            <button
+              onClick={downloadTemplate}
+              className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition font-medium text-sm"
+            >
+              📥 Template
+            </button>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-4 py-2 bg-green-700 text-white rounded-lg hover:bg-green-600 transition font-medium text-sm"
+            >
+              📤 Import Excel
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
             <button
               onClick={openAdd}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm"
@@ -216,7 +371,7 @@ export default function Products() {
           </div>
         </div>
 
-        {/* Stock Inventory Value - Esther only */}
+        {/* Stock Inventory Value - showProfit only */}
         {showProfit && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="bg-blue-900 border border-blue-700 rounded-xl p-4">
@@ -294,7 +449,7 @@ export default function Products() {
                       <td className="px-6 py-4 text-white font-medium">{product.name}</td>
                       <td className="px-6 py-4 text-gray-300">{product.category || '—'}</td>
                       <td className="px-6 py-4">
-                        <span className={`font-bold ${product.quantity < 3 ? 'text-orange-400' : 'text-white'}`}>
+                        <span className={`font-bold ${product.quantity < (product.low_stock_threshold || 3) ? 'text-orange-400' : 'text-white'}`}>
                           {product.quantity}
                         </span>
                       </td>
@@ -415,6 +570,84 @@ export default function Products() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {/* Import Preview Modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl shadow-2xl max-h-full flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
+              <div>
+                <h2 className="text-lg font-bold text-white">📤 Import Preview</h2>
+                <p className="text-gray-400 text-xs">{importPreview.length} products found in file</p>
+              </div>
+              <button onClick={() => { setShowImportModal(false); setImportPreview([]); setImportErrors([]) }} className="text-gray-400 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="px-6 py-4 overflow-y-auto flex-1 space-y-4">
+
+              {/* Errors */}
+              {importErrors.length > 0 && (
+                <div className="bg-red-900 border border-red-700 rounded-xl p-4">
+                  <p className="text-red-300 font-bold text-sm mb-2">⚠️ Fix these errors before importing:</p>
+                  {importErrors.map((err, i) => (
+                    <p key={i} className="text-red-400 text-xs">{err}</p>
+                  ))}
+                </div>
+              )}
+
+              {/* Success count */}
+              {importErrors.length === 0 && (
+                <div className="bg-green-900 border border-green-700 rounded-xl p-3">
+                  <p className="text-green-300 text-sm">✅ {importPreview.length} products ready to import</p>
+                </div>
+              )}
+
+              {/* Preview table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-800">
+                    <tr>
+                      <th className="text-left text-gray-400 px-3 py-2">Name</th>
+                      <th className="text-left text-gray-400 px-3 py-2">Category</th>
+                      <th className="text-left text-gray-400 px-3 py-2">Qty</th>
+                      <th className="text-left text-gray-400 px-3 py-2">Selling Price</th>
+                      <th className="text-left text-gray-400 px-3 py-2">Buying Price</th>
+                      <th className="text-left text-gray-400 px-3 py-2">Threshold</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importPreview.map((row, i) => (
+                      <tr key={i} className="border-t border-gray-800">
+                        <td className="px-3 py-2 text-white">{row.name || <span className="text-red-400">Missing</span>}</td>
+                        <td className="px-3 py-2 text-gray-300">{row.category || <span className="text-red-400">Missing</span>}</td>
+                        <td className="px-3 py-2 text-white">{row.quantity}</td>
+                        <td className="px-3 py-2 text-green-400">RWF {row.selling_price?.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-gray-300">RWF {row.buying_price?.toLocaleString() || '0'}</td>
+                        <td className="px-3 py-2 text-orange-400">{row.low_stock_threshold}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => { setShowImportModal(false); setImportPreview([]); setImportErrors([]) }}
+                  className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleImport}
+                  disabled={importing || importErrors.length > 0}
+                  className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium disabled:opacity-50"
+                >
+                  {importing ? 'Importing...' : `Import ${importPreview.length} Products`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Confirm Delete */}

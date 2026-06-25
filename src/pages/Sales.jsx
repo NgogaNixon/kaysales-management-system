@@ -449,41 +449,91 @@ export default function Sales() {
   const confirmDelete = async () => {
     if (!pendingDelete) return
 
-    const { data: items } = await supabase
-      .from('sale_items')
-      .select('*')
-      .eq('sale_id', pendingDelete.id)
+    try {
+      const { data: items, error: itemsError } = await supabase
+        .from('sale_items')
+        .select('*')
+        .eq('sale_id', pendingDelete.id)
 
-    if (items && items.length > 0) {
-      for (const item of items) {
-        const { data: freshProduct } = await supabase
-          .from('products')
-          .select('quantity')
-          .eq('id', item.product_id)
-          .single()
-        if (freshProduct) {
-          await supabase
+      if (itemsError) {
+        showError('Failed to load sale items for stock restore. Delete cancelled.')
+        setPendingDelete(null)
+        setShowUndoToast(false)
+        return
+      }
+
+      if (items && items.length > 0) {
+        for (const item of items) {
+          const { data: freshProduct, error: productError } = await supabase
             .from('products')
-            .update({ quantity: freshProduct.quantity + item.quantity_sold })
+            .select('quantity')
             .eq('id', item.product_id)
+            .single()
+
+          if (productError) {
+            showError(`Failed to restore stock for "${item.product_name}". Delete cancelled.`)
+            setPendingDelete(null)
+            setShowUndoToast(false)
+            return
+          }
+
+          if (freshProduct) {
+            const { error: updateError } = await supabase
+              .from('products')
+              .update({ quantity: freshProduct.quantity + item.quantity_sold })
+              .eq('id', item.product_id)
+
+            if (updateError) {
+              showError(`Failed to restore stock for "${item.product_name}". Delete cancelled.`)
+              setPendingDelete(null)
+              setShowUndoToast(false)
+              return
+            }
+          }
         }
       }
+
+      const { error: deleteItemsError } = await supabase
+        .from('sale_items')
+        .delete()
+        .eq('sale_id', pendingDelete.id)
+
+      if (deleteItemsError) {
+        showError('Failed to delete sale items. Please try again.')
+        setPendingDelete(null)
+        setShowUndoToast(false)
+        return
+      }
+
+      const { error: deleteSaleError } = await supabase
+        .from('sales')
+        .delete()
+        .eq('id', pendingDelete.id)
+
+      if (deleteSaleError) {
+        showError('Failed to delete sale. Stock has been restored. Please try again.')
+        setPendingDelete(null)
+        setShowUndoToast(false)
+        return
+      }
+
+      await logActivity(
+        profile.id,
+        profile.email,
+        profile.full_name,
+        'Delete Sale',
+        `Deleted sale for: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
+      )
+
+      setPendingDelete(null)
+      setShowUndoToast(false)
+      await fetchSalesAndProducts()
+
+    } catch (e) {
+      showError('Something went wrong during delete. Please refresh and try again.')
+      setPendingDelete(null)
+      setShowUndoToast(false)
     }
-
-    await supabase.from('sale_items').delete().eq('sale_id', pendingDelete.id)
-    await supabase.from('sales').delete().eq('id', pendingDelete.id)
-
-    await logActivity(
-      profile.id,
-      profile.email,
-      profile.full_name,
-      'Delete Sale',
-      `Deleted sale for: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
-    )
-
-    setPendingDelete(null)
-    setShowUndoToast(false)
-    await fetchSalesAndProducts()
   }
 
   const handleUndo = () => {

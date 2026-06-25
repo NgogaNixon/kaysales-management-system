@@ -174,19 +174,22 @@ export default function Layout({ children }) {
 
         {/* Mobile Bottom Navigation */}
         <nav className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 z-50">
-          <div className="flex items-center justify-around px-2 py-2 pb-safe" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom))' }}>
+          <div
+            className="flex items-center gap-1 px-2 py-2 overflow-x-auto scrollbar-hide"
+            style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom))' }}
+          >
             {navItems.map((item) => (
               <button
                 key={item.path}
                 onClick={() => navigate(item.path)}
-                className={`flex flex-col items-center gap-1 px-3 py-1 rounded-lg transition ${
+                className={`flex flex-col items-center gap-1 px-3 py-1 rounded-lg transition flex-shrink-0 min-w-[60px] ${
                   isActive(item.path)
                     ? isAdmin ? 'text-yellow-400' : 'text-blue-400'
                     : 'text-gray-500'
                 }`}
               >
                 <span className="text-xl">{item.icon}</span>
-                <span className="text-xs font-medium">{t(item.labelKey)}</span>
+                <span className="text-xs font-medium truncate w-full text-center">{t(item.labelKey)}</span>
               </button>
             ))}
           </div>
