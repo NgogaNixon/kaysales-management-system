@@ -49,8 +49,8 @@ export default function Products() {
     return () => window.removeEventListener('focus', handleFocus)
   }, [profile])
 
-  const fetchProducts = async () => {
-    setLoading(true)
+  const fetchProducts = async (showLoader = true) => {
+    if (showLoader) setLoading(true)
     const { data, error } = await supabase
       .from('products')
       .select('*')

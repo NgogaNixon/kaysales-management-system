@@ -67,8 +67,8 @@ export default function Sales() {
     return () => document.removeEventListener('click', handleClickOutside)
   }, [])
 
-  const fetchSalesAndProducts = async () => {
-    setLoading(true)
+  const fetchSalesAndProducts = async (showLoader = true) => {
+    if (showLoader) setLoading(true)
     const [
       { data: salesData, error: salesError },
       { data: productsData, error: productsError }
@@ -86,6 +86,14 @@ export default function Sales() {
   const fetchSales = fetchSalesAndProducts
   const fetchProducts = fetchSalesAndProducts
 
+  const updateSaleInState = (updatedSale) => {
+    setSales(prev => prev.map(s => s.id === updatedSale.id ? updatedSale : s))
+  }
+
+  const removeSaleFromState = (saleId) => {
+    setSales(prev => prev.filter(s => s.id !== saleId))
+  }
+
   const openAdd = () => {
     setSelectedSale(null)
     setPendingEditSale(null)
@@ -101,17 +109,26 @@ export default function Sales() {
   }
 
   const openEdit = async (sale) => {
-    setSelectedSale(sale)
-    setPendingEditSale(sale)
-    setCustomerName(sale.product_name)
-    setPaymentMethod(sale.payment_method || 'cash')
-    setSaleDate(sale.created_at ? sale.created_at.split('T')[0] : new Date().toISOString().split('T')[0])
+    // Fetch fresh sale data from DB
+    const { data: freshSale } = await supabase
+      .from('sales')
+      .select('*')
+      .eq('id', sale.id)
+      .single()
+
+    const saleData = freshSale || sale
+    setSelectedSale(saleData)
+    setPendingEditSale(saleData)
+    setCustomerName(saleData.product_name)
+    setPaymentMethod(saleData.payment_method || 'cash')
+    setSaleDate(saleData.created_at ? saleData.created_at.split('T')[0] : new Date().toISOString().split('T')[0])
+    setExtraFees(saleData.extra_fees || '')
     setError('')
 
     const { data: existingItems } = await supabase
       .from('sale_items')
       .select('*')
-      .eq('sale_id', sale.id)
+      .eq('sale_id', saleData.id)
 
     if (existingItems && existingItems.length > 0) {
       setSaleItems(existingItems.map(item => ({

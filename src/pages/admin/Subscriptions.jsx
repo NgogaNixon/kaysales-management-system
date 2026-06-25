@@ -12,6 +12,7 @@ export default function Subscriptions() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [addForm, setAddForm] = useState({ user_id: '', plan_type: 'standard', expiry_days: '30' })
   const [addSaving, setAddSaving] = useState(false)
+  const [extendDays, setExtendDays] = useState({})
 
   useEffect(() => {
     fetchData()
@@ -125,6 +126,21 @@ export default function Subscriptions() {
       .from('subscriptions')
       .update({ expiry_date: date })
       .eq('id', subId)
+    fetchData()
+  }
+
+  const handleExtendSubscription = async (sub, days) => {
+    if (!days || parseInt(days) < 1) return
+    const currentExpiry = sub.expiry_date ? new Date(sub.expiry_date) : new Date()
+    const newExpiry = new Date(currentExpiry)
+    newExpiry.setDate(newExpiry.getDate() + parseInt(days))
+    await supabase
+      .from('subscriptions')
+      .update({
+        expiry_date: newExpiry.toISOString(),
+        payment_status: 'paid',
+      })
+      .eq('id', sub.id)
     fetchData()
   }
 
@@ -416,13 +432,33 @@ export default function Subscriptions() {
                               <option value="expired">Expired</option>
                             </select>
                           </td>
-                          <td className="px-6 py-4">
+                          <td className="px-6 py-4 space-y-2">
                             <input
                               type="date"
                               value={sub.expiry_date ? sub.expiry_date.split('T')[0] : ''}
                               onChange={(e) => handleExpiryChange(sub.id, e.target.value)}
-                              className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none"
+                              className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none w-full"
                             />
+                            <div className="flex gap-1">
+                              <input
+                                type="number"
+                                value={extendDays[sub.id] || ''}
+                                onChange={(e) => setExtendDays({ ...extendDays, [sub.id]: e.target.value })}
+                                className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none w-16"
+                                placeholder="Days"
+                                min="1"
+                              />
+                              <button
+                                onClick={() => {
+                                  handleExtendSubscription(sub, extendDays[sub.id])
+                                  setExtendDays({ ...extendDays, [sub.id]: '' })
+                                }}
+                                disabled={!extendDays[sub.id]}
+                                className="px-2 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded text-xs transition disabled:opacity-50"
+                              >
+                                + Extend
+                              </button>
+                            </div>
                           </td>
                           <td className="px-6 py-4">
                             {days === null ? (
