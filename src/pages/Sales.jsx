@@ -38,7 +38,10 @@ export default function Sales() {
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0])
-  const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+  const [saleItems, setSaleItems] = useState([{
+    _key: Date.now(),
+    product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0
+  }])
   const [extraFees, setExtraFees] = useState('')
   const [productSearch, setProductSearch] = useState({})
   const [showProductDropdown, setShowProductDropdown] = useState({})
@@ -48,14 +51,12 @@ export default function Sales() {
   const [showUndoToast, setShowUndoToast] = useState(false)
 
   useEffect(() => {
-    if (profile?.id) {
-      fetchSalesAndProducts()
-    }
+    if (profile?.id) fetchSalesAndProducts()
   }, [profile])
 
   useEffect(() => {
     const handleFocus = () => {
-      if (profile?.id) fetchSalesAndProducts()
+      if (profile?.id) fetchSalesAndProducts(false)
     }
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
@@ -83,24 +84,13 @@ export default function Sales() {
     setLoading(false)
   }
 
-  const fetchSales = fetchSalesAndProducts
-  const fetchProducts = fetchSalesAndProducts
-
-  const updateSaleInState = (updatedSale) => {
-    setSales(prev => prev.map(s => s.id === updatedSale.id ? updatedSale : s))
-  }
-
-  const removeSaleFromState = (saleId) => {
-    setSales(prev => prev.filter(s => s.id !== saleId))
-  }
-
   const openAdd = () => {
     setSelectedSale(null)
     setPendingEditSale(null)
     setCustomerName('')
     setPaymentMethod('cash')
     setSaleDate(new Date().toISOString().split('T')[0])
-    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+    setSaleItems([{ _key: Date.now(), product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
     setExtraFees('')
     setProductSearch({})
     setShowProductDropdown({})
@@ -109,12 +99,8 @@ export default function Sales() {
   }
 
   const openEdit = async (sale) => {
-    // Fetch fresh sale data from DB
     const { data: freshSale } = await supabase
-      .from('sales')
-      .select('*')
-      .eq('id', sale.id)
-      .single()
+      .from('sales').select('*').eq('id', sale.id).single()
 
     const saleData = freshSale || sale
     setSelectedSale(saleData)
@@ -126,12 +112,11 @@ export default function Sales() {
     setError('')
 
     const { data: existingItems } = await supabase
-      .from('sale_items')
-      .select('*')
-      .eq('sale_id', saleData.id)
+      .from('sale_items').select('*').eq('sale_id', saleData.id)
 
     if (existingItems && existingItems.length > 0) {
-      setSaleItems(existingItems.map(item => ({
+      setSaleItems(existingItems.map((item, i) => ({
+        _key: item.id || `existing-${i}-${Date.now()}`,
         product_id: item.product_id || '',
         product_name: item.product_name,
         quantity_sold: item.quantity_sold,
@@ -143,7 +128,7 @@ export default function Sales() {
         existingItems.reduce((acc, item, i) => ({ ...acc, [i]: item.product_name }), {})
       )
     } else {
-      setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+      setSaleItems([{ _key: Date.now(), product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
     }
 
     setShowModal(true)
@@ -201,7 +186,10 @@ export default function Sales() {
   }
 
   const addItem = () => {
-    setSaleItems([...saleItems, { product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+    setSaleItems([...saleItems, {
+      _key: Date.now() + Math.random(),
+      product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0
+    }])
   }
 
   const removeItem = (index) => {
@@ -232,20 +220,15 @@ export default function Sales() {
       return
     }
 
-    // Stock validation — fetch fresh from DB
+    // Stock validation
     for (const item of validItems) {
       const { data: freshProduct } = await supabase
-        .from('products')
-        .select('quantity, name')
-        .eq('id', item.product_id)
-        .single()
+        .from('products').select('quantity, name').eq('id', item.product_id).single()
 
       let availableStock = freshProduct?.quantity || 0
       if (editSale) {
         const { data: oldItems } = await supabase
-          .from('sale_items')
-          .select('*')
-          .eq('sale_id', editSale.id)
+          .from('sale_items').select('*').eq('sale_id', editSale.id)
         const oldItem = oldItems?.find(o => o.product_id === item.product_id)
         if (oldItem) availableStock += oldItem.quantity_sold
       }
@@ -280,27 +263,24 @@ export default function Sales() {
       saleError = error
 
       if (!saleError && saleData) {
+        // Update local state immediately
+        setSales(prev => prev.map(s => s.id === editSale.id ? { ...s, ...saleData } : s))
+
         if (saleDate !== editSale.created_at?.split('T')[0]) {
           await supabase.from('sales').update({ created_at: saleDate }).eq('id', editSale.id)
         }
 
         // Restore old stock
         const { data: oldItems } = await supabase
-          .from('sale_items')
-          .select('*')
-          .eq('sale_id', editSale.id)
+          .from('sale_items').select('*').eq('sale_id', editSale.id)
 
         if (oldItems && oldItems.length > 0) {
           for (const oldItem of oldItems) {
-            const { data: freshProduct } = await supabase
-              .from('products')
-              .select('quantity')
-              .eq('id', oldItem.product_id)
-              .single()
-            if (freshProduct) {
-              await supabase
-                .from('products')
-                .update({ quantity: freshProduct.quantity + oldItem.quantity_sold })
+            const { data: fp } = await supabase
+              .from('products').select('quantity').eq('id', oldItem.product_id).single()
+            if (fp) {
+              await supabase.from('products')
+                .update({ quantity: fp.quantity + oldItem.quantity_sold })
                 .eq('id', oldItem.product_id)
             }
           }
@@ -308,7 +288,7 @@ export default function Sales() {
 
         await supabase.from('sale_items').delete().eq('sale_id', editSale.id)
 
-        const itemsToInsert = validItems.map(item => ({
+        await supabase.from('sale_items').insert(validItems.map(item => ({
           sale_id: editSale.id,
           user_id: profile.id,
           product_id: item.product_id,
@@ -317,20 +297,15 @@ export default function Sales() {
           selling_price: parseInt(item.selling_price),
           buying_price: parseInt(item.buying_price) || 0,
           total: item.total,
-        }))
-        await supabase.from('sale_items').insert(itemsToInsert)
+        })))
 
         // Deduct new stock
         for (const item of validItems) {
-          const { data: freshProduct } = await supabase
-            .from('products')
-            .select('quantity')
-            .eq('id', item.product_id)
-            .single()
-          if (freshProduct) {
-            await supabase
-              .from('products')
-              .update({ quantity: freshProduct.quantity - parseInt(item.quantity_sold) })
+          const { data: fp } = await supabase
+            .from('products').select('quantity').eq('id', item.product_id).single()
+          if (fp) {
+            await supabase.from('products')
+              .update({ quantity: fp.quantity - parseInt(item.quantity_sold) })
               .eq('id', item.product_id)
           }
         }
@@ -383,7 +358,7 @@ export default function Sales() {
           await supabase.from('sales').update({ created_at: saleDate }).eq('id', saleData.id)
         }
 
-        const itemsToInsert = validItems.map(item => ({
+        await supabase.from('sale_items').insert(validItems.map(item => ({
           sale_id: saleData.id,
           user_id: profile.id,
           product_id: item.product_id,
@@ -392,8 +367,7 @@ export default function Sales() {
           selling_price: parseInt(item.selling_price),
           buying_price: parseInt(item.buying_price) || 0,
           total: item.total,
-        }))
-        await supabase.from('sale_items').insert(itemsToInsert)
+        })))
 
         if (showProfit) {
           await supabase.from('sales').update({
@@ -403,15 +377,11 @@ export default function Sales() {
         }
 
         for (const item of validItems) {
-          const { data: freshProduct } = await supabase
-            .from('products')
-            .select('quantity')
-            .eq('id', item.product_id)
-            .single()
-          if (freshProduct) {
-            await supabase
-              .from('products')
-              .update({ quantity: freshProduct.quantity - parseInt(item.quantity_sold) })
+          const { data: fp } = await supabase
+            .from('products').select('quantity').eq('id', item.product_id).single()
+          if (fp) {
+            await supabase.from('products')
+              .update({ quantity: fp.quantity - parseInt(item.quantity_sold) })
               .eq('id', item.product_id)
           }
         }
@@ -442,9 +412,7 @@ export default function Sales() {
     }
 
     await logActivity(
-      profile.id,
-      profile.email,
-      profile.full_name,
+      profile.id, profile.email, profile.full_name,
       editSale ? 'Edit Sale' : 'Add Sale',
       `${editSale ? 'Updated' : 'Added'} sale for: ${customerName} - RWF ${grandTotal.toLocaleString()} - Payment: ${paymentMethod}`
     )
@@ -454,7 +422,7 @@ export default function Sales() {
     setShowOTP(false)
     setSelectedSale(null)
     setPendingEditSale(null)
-    await fetchSalesAndProducts()
+    fetchSalesAndProducts(false)
   }
 
   const handleDelete = async () => {
@@ -465,87 +433,35 @@ export default function Sales() {
 
   const confirmDelete = async () => {
     if (!pendingDelete) return
-
     try {
-      const { data: items, error: itemsError } = await supabase
-        .from('sale_items')
-        .select('*')
-        .eq('sale_id', pendingDelete.id)
-
-      if (itemsError) {
-        showError('Failed to load sale items for stock restore. Delete cancelled.')
-        setPendingDelete(null)
-        setShowUndoToast(false)
-        return
-      }
+      const { data: items } = await supabase
+        .from('sale_items').select('*').eq('sale_id', pendingDelete.id)
 
       if (items && items.length > 0) {
         for (const item of items) {
-          const { data: freshProduct, error: productError } = await supabase
-            .from('products')
-            .select('quantity')
-            .eq('id', item.product_id)
-            .single()
-
-          if (productError) {
-            showError(`Failed to restore stock for "${item.product_name}". Delete cancelled.`)
-            setPendingDelete(null)
-            setShowUndoToast(false)
-            return
-          }
-
-          if (freshProduct) {
-            const { error: updateError } = await supabase
-              .from('products')
-              .update({ quantity: freshProduct.quantity + item.quantity_sold })
+          const { data: fp } = await supabase
+            .from('products').select('quantity').eq('id', item.product_id).single()
+          if (fp) {
+            await supabase.from('products')
+              .update({ quantity: fp.quantity + item.quantity_sold })
               .eq('id', item.product_id)
-
-            if (updateError) {
-              showError(`Failed to restore stock for "${item.product_name}". Delete cancelled.`)
-              setPendingDelete(null)
-              setShowUndoToast(false)
-              return
-            }
           }
         }
       }
 
-      const { error: deleteItemsError } = await supabase
-        .from('sale_items')
-        .delete()
-        .eq('sale_id', pendingDelete.id)
-
-      if (deleteItemsError) {
-        showError('Failed to delete sale items. Please try again.')
-        setPendingDelete(null)
-        setShowUndoToast(false)
-        return
-      }
-
-      const { error: deleteSaleError } = await supabase
-        .from('sales')
-        .delete()
-        .eq('id', pendingDelete.id)
-
-      if (deleteSaleError) {
-        showError('Failed to delete sale. Stock has been restored. Please try again.')
-        setPendingDelete(null)
-        setShowUndoToast(false)
-        return
-      }
+      await supabase.from('sale_items').delete().eq('sale_id', pendingDelete.id)
+      await supabase.from('sales').delete().eq('id', pendingDelete.id)
 
       await logActivity(
-        profile.id,
-        profile.email,
-        profile.full_name,
+        profile.id, profile.email, profile.full_name,
         'Delete Sale',
         `Deleted sale for: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
       )
 
+      setSales(prev => prev.filter(s => s.id !== pendingDelete.id))
       setPendingDelete(null)
       setShowUndoToast(false)
-      await fetchSalesAndProducts()
-
+      fetchSalesAndProducts(false)
     } catch (e) {
       showError('Something went wrong during delete. Please refresh and try again.')
       setPendingDelete(null)
@@ -559,10 +475,7 @@ export default function Sales() {
   }
 
   const generateReceipt = async (sale) => {
-    const [
-      { data: items },
-      { data: freshSale }
-    ] = await Promise.all([
+    const [{ data: items }, { data: freshSale }] = await Promise.all([
       supabase.from('sale_items').select('*').eq('sale_id', sale.id),
       supabase.from('sales').select('*').eq('id', sale.id).single()
     ])
@@ -587,7 +500,6 @@ export default function Sales() {
         receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'
       doc.text(`Payment: ${paymentLabel}`, 5, 38)
       doc.text('--------------------------------', 40, 42, { align: 'center' })
-
       let y = 48
       receiptItems.forEach((item, i) => {
         doc.text(`${i + 1}. ${item.product_name}`, 5, y)
@@ -595,7 +507,6 @@ export default function Sales() {
         doc.text(`   Total: RWF ${item.total?.toLocaleString()}`, 5, y + 10)
         y += 16
       })
-
       doc.text('--------------------------------', 40, y, { align: 'center' })
       if (receiptSale.extra_fees > 0) {
         doc.text(`Extra Fees: - RWF ${receiptSale.extra_fees?.toLocaleString()}`, 5, y + 5)
@@ -625,7 +536,6 @@ export default function Sales() {
         return from && to
       })
       const exportRevenue = exportFiltered.reduce((sum, s) => sum + (s.total || 0), 0)
-
       if (exportType === 'excel') {
         const data = exportFiltered.map(s => ({
           Customer: s.product_name,
@@ -682,7 +592,6 @@ export default function Sales() {
     <Layout>
       <div className="p-6 space-y-6">
 
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">💰 Sales</h1>
@@ -693,22 +602,14 @@ export default function Sales() {
           </button>
         </div>
 
-        {/* Filters & Export */}
         <div className="flex flex-col sm:flex-row gap-3">
-          <input
-            type="text"
-            placeholder="Search by customer..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500"
-          />
+          <input type="text" placeholder="Search by customer..." value={search} onChange={(e) => setSearch(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500" />
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
           <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
           <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
           <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
         </div>
 
-        {/* Revenue Summary */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
           <div>
             <p className="text-gray-400 text-sm">Total Revenue</p>
@@ -720,7 +621,6 @@ export default function Sales() {
           </div>
         </div>
 
-        {/* Sales Table */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading sales...</p></div>
@@ -734,28 +634,28 @@ export default function Sales() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-800">
                   <tr>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Customer</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Total</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Payment</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Date</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
+                    <th className="text-left text-gray-400 px-4 py-4 font-medium">Customer</th>
+                    <th className="text-left text-gray-400 px-4 py-4 font-medium">Total</th>
+                    <th className="text-left text-gray-400 px-4 py-4 font-medium hidden sm:table-cell">Payment</th>
+                    <th className="text-left text-gray-400 px-4 py-4 font-medium hidden sm:table-cell">Date</th>
+                    <th className="text-left text-gray-400 px-4 py-4 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.map((sale) => (
                     <tr key={sale.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
-                      <td className="px-6 py-4 text-white font-medium">{sale.product_name}</td>
-                      <td className="px-6 py-4 text-green-400 font-medium">RWF {sale.total?.toLocaleString()}</td>
-                      <td className="px-6 py-4 text-gray-300 text-xs">
+                      <td className="px-4 py-3 text-white font-medium">{sale.product_name}</td>
+                      <td className="px-4 py-3 text-green-400 font-medium">RWF {sale.total?.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-gray-300 text-xs hidden sm:table-cell">
                         {sale.payment_method === 'cash' ? '💵 Cash' :
                          sale.payment_method === 'mtn' ? '📱 MTN' :
                          sale.payment_method === 'bank' ? '🏦 Bank' :
                          sale.payment_method === 'cheque' ? '📄 Cheque' :
                          sale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
                       </td>
-                      <td className="px-6 py-4 text-gray-400">{new Date(sale.created_at).toLocaleDateString()}</td>
-                      <td className="px-6 py-4">
-                        <div className="flex gap-2">
+                      <td className="px-4 py-3 text-gray-400 hidden sm:table-cell">{new Date(sale.created_at).toLocaleDateString()}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-1">
                           <button onClick={() => generateReceipt(sale)} className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition">Receipt</button>
                           <button onClick={() => openEdit(sale)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
                           <button onClick={() => openDelete(sale)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
@@ -771,37 +671,24 @@ export default function Sales() {
 
       </div>
 
-      {/* Add/Edit Modal */}
       {showModal && (
         <Modal title={pendingEditSale ? 'Edit Sale' : 'Record Sale'} onClose={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }}>
-          <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
+          <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Customer Name *</label>
-              <input
-                type="text"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder="Customer name"
-              />
+              <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Customer name" />
             </div>
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Sale Date</label>
-              <input
-                type="date"
-                value={saleDate}
-                onChange={(e) => setSaleDate(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-              />
+              <input type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
             </div>
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
-              <select
-                value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-              >
+              <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
                 <option value="cash">💵 Cash</option>
                 <option value="mtn">📱 MTN Mobile Money</option>
                 <option value="bank">🏦 Bank Transfer</option>
@@ -817,7 +704,7 @@ export default function Sales() {
             <div className="space-y-3">
               <label className="text-gray-400 text-sm block">Products *</label>
               {saleItems.map((item, index) => (
-                <div key={index} className="bg-gray-800 rounded-lg p-3 space-y-2" onClick={(e) => e.stopPropagation()}>
+                <div key={item._key} className="bg-gray-800 rounded-lg p-3 space-y-2" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400 text-xs">Item {index + 1}</span>
                     {saleItems.length > 1 && (
@@ -838,17 +725,13 @@ export default function Sales() {
                     />
                     {showProductDropdown[index] && (
                       <div className="absolute z-50 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-40 overflow-y-auto shadow-xl">
-                        {products
-                          .filter(p => p.name.toLowerCase().includes((productSearch[index] || '').toLowerCase()))
-                          .length === 0 ? (
+                        {products.filter(p => p.name.toLowerCase().includes((productSearch[index] || '').toLowerCase())).length === 0 ? (
                           <p className="text-gray-400 text-xs px-3 py-2">No products found</p>
                         ) : (
                           products
                             .filter(p => p.name.toLowerCase().includes((productSearch[index] || '').toLowerCase()))
                             .map(p => (
-                              <button
-                                key={p.id}
-                                type="button"
+                              <button key={p.id} type="button"
                                 onClick={() => {
                                   handleProductChange(index, p.id)
                                   setProductSearch({ ...productSearch, [index]: p.name })
@@ -868,29 +751,14 @@ export default function Sales() {
                     )}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <input
-                      type="number"
-                      value={item.quantity_sold}
-                      onChange={(e) => handleQuantityChange(index, e.target.value)}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      placeholder="Quantity"
-                    />
-                    <input
-                      type="number"
-                      value={item.selling_price}
-                      onChange={(e) => handlePriceChange(index, e.target.value)}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      placeholder="Selling Price (RWF)"
-                    />
+                    <input type="number" value={item.quantity_sold} onChange={(e) => handleQuantityChange(index, e.target.value)}
+                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Quantity" />
+                    <input type="number" value={item.selling_price} onChange={(e) => handlePriceChange(index, e.target.value)}
+                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Selling Price (RWF)" />
                   </div>
                   {showProfit && (
-                    <input
-                      type="number"
-                      value={item.buying_price}
-                      onChange={(e) => handleBuyingPriceChange(index, e.target.value)}
-                      className="w-full bg-gray-700 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
-                      placeholder="Buying Price / Cost (RWF)"
-                    />
+                    <input type="number" value={item.buying_price} onChange={(e) => handleBuyingPriceChange(index, e.target.value)}
+                      className="w-full bg-gray-700 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500" placeholder="Buying Price / Cost (RWF)" />
                   )}
                   {item.total > 0 && (
                     <p className="text-green-400 text-sm font-medium">Subtotal: RWF {item.total.toLocaleString()}</p>
@@ -904,13 +772,8 @@ export default function Sales() {
             {showProfit && (
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">Extra Fees (RWF)</label>
-                <input
-                  type="number"
-                  value={extraFees}
-                  onChange={(e) => setExtraFees(e.target.value)}
-                  className="w-full bg-gray-800 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
-                  placeholder="Transport, packaging, etc."
-                />
+                <input type="number" value={extraFees} onChange={(e) => setExtraFees(e.target.value)}
+                  className="w-full bg-gray-800 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500" placeholder="Transport, packaging, etc." />
               </div>
             )}
             {grandTotal > 0 && (
@@ -928,7 +791,8 @@ export default function Sales() {
               </div>
             )}
             <div className="flex gap-3 pt-2">
-              <button onClick={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+              <button onClick={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }}
+                className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
               <button
                 onClick={() => {
                   if (pendingEditSale) {
@@ -949,7 +813,6 @@ export default function Sales() {
         </Modal>
       )}
 
-      {/* Confirm Delete */}
       {showConfirm && !showOTP && (
         <ConfirmDialog
           message="Are you sure you want to delete this sale?"
@@ -958,7 +821,6 @@ export default function Sales() {
         />
       )}
 
-      {/* OTP / Password Verify */}
       {showOTP && (
         <OTPVerify
           actionLabel={otpAction === 'delete'
@@ -981,7 +843,6 @@ export default function Sales() {
         />
       )}
 
-      {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
@@ -1008,7 +869,6 @@ export default function Sales() {
         </div>
       )}
 
-      {/* Receipt Modal */}
       {showReceipt && receiptSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
@@ -1114,7 +974,6 @@ export default function Sales() {
         </div>
       )}
 
-      {/* Undo Toast */}
       {showUndoToast && pendingDelete && (
         <UndoToast
           message="Sale deleted — stock will be restored"
