@@ -55,9 +55,7 @@ export default function Sales() {
   }, [profile])
 
   useEffect(() => {
-    const handleFocus = () => {
-      if (profile?.id) fetchSalesAndProducts(false)
-    }
+    const handleFocus = () => { if (profile?.id) fetchSalesAndProducts(false) }
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
   }, [profile])
@@ -99,9 +97,7 @@ export default function Sales() {
   }
 
   const openEdit = async (sale) => {
-    const { data: freshSale } = await supabase
-      .from('sales').select('*').eq('id', sale.id).single()
-
+    const { data: freshSale } = await supabase.from('sales').select('*').eq('id', sale.id).single()
     const saleData = freshSale || sale
     setSelectedSale(saleData)
     setPendingEditSale(saleData)
@@ -111,8 +107,7 @@ export default function Sales() {
     setExtraFees(saleData.extra_fees || '')
     setError('')
 
-    const { data: existingItems } = await supabase
-      .from('sale_items').select('*').eq('sale_id', saleData.id)
+    const { data: existingItems } = await supabase.from('sale_items').select('*').eq('sale_id', saleData.id)
 
     if (existingItems && existingItems.length > 0) {
       setSaleItems(existingItems.map((item, i) => ({
@@ -124,9 +119,7 @@ export default function Sales() {
         buying_price: item.buying_price || '',
         total: item.total,
       })))
-      setProductSearch(
-        existingItems.reduce((acc, item, i) => ({ ...acc, [i]: item.product_name }), {})
-      )
+      setProductSearch(existingItems.reduce((acc, item, i) => ({ ...acc, [i]: item.product_name }), {}))
     } else {
       setSaleItems([{ _key: Date.now(), product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
     }
@@ -194,7 +187,13 @@ export default function Sales() {
 
   const removeItem = (index) => {
     if (saleItems.length === 1) return
-    setSaleItems(saleItems.filter((_, i) => i !== index))
+    const newItems = saleItems.filter((_, i) => i !== index)
+    const newProductSearch = {}
+    newItems.forEach((item, newIndex) => {
+      newProductSearch[newIndex] = productSearch[newIndex >= index ? newIndex + 1 : newIndex] || item.product_name || ''
+    })
+    setSaleItems(newItems)
+    setProductSearch(newProductSearch)
   }
 
   const grandTotal = saleItems.reduce((sum, item) => sum + (item.total || 0), 0)
@@ -227,8 +226,7 @@ export default function Sales() {
 
       let availableStock = freshProduct?.quantity || 0
       if (editSale) {
-        const { data: oldItems } = await supabase
-          .from('sale_items').select('*').eq('sale_id', editSale.id)
+        const { data: oldItems } = await supabase.from('sale_items').select('*').eq('sale_id', editSale.id)
         const oldItem = oldItems?.find(o => o.product_id === item.product_id)
         if (oldItem) availableStock += oldItem.quantity_sold
       }
@@ -263,7 +261,6 @@ export default function Sales() {
       saleError = error
 
       if (!saleError && saleData) {
-        // Update local state immediately
         setSales(prev => prev.map(s => s.id === editSale.id ? { ...s, ...saleData } : s))
 
         if (saleDate !== editSale.created_at?.split('T')[0]) {
@@ -271,13 +268,10 @@ export default function Sales() {
         }
 
         // Restore old stock
-        const { data: oldItems } = await supabase
-          .from('sale_items').select('*').eq('sale_id', editSale.id)
-
+        const { data: oldItems } = await supabase.from('sale_items').select('*').eq('sale_id', editSale.id)
         if (oldItems && oldItems.length > 0) {
           for (const oldItem of oldItems) {
-            const { data: fp } = await supabase
-              .from('products').select('quantity').eq('id', oldItem.product_id).single()
+            const { data: fp } = await supabase.from('products').select('quantity').eq('id', oldItem.product_id).single()
             if (fp) {
               await supabase.from('products')
                 .update({ quantity: fp.quantity + oldItem.quantity_sold })
@@ -286,8 +280,8 @@ export default function Sales() {
           }
         }
 
+        // Delete old items and insert new
         await supabase.from('sale_items').delete().eq('sale_id', editSale.id)
-
         await supabase.from('sale_items').insert(validItems.map(item => ({
           sale_id: editSale.id,
           user_id: profile.id,
@@ -301,8 +295,7 @@ export default function Sales() {
 
         // Deduct new stock
         for (const item of validItems) {
-          const { data: fp } = await supabase
-            .from('products').select('quantity').eq('id', item.product_id).single()
+          const { data: fp } = await supabase.from('products').select('quantity').eq('id', item.product_id).single()
           if (fp) {
             await supabase.from('products')
               .update({ quantity: fp.quantity - parseInt(item.quantity_sold) })
@@ -377,8 +370,7 @@ export default function Sales() {
         }
 
         for (const item of validItems) {
-          const { data: fp } = await supabase
-            .from('products').select('quantity').eq('id', item.product_id).single()
+          const { data: fp } = await supabase.from('products').select('quantity').eq('id', item.product_id).single()
           if (fp) {
             await supabase.from('products')
               .update({ quantity: fp.quantity - parseInt(item.quantity_sold) })
@@ -434,13 +426,11 @@ export default function Sales() {
   const confirmDelete = async () => {
     if (!pendingDelete) return
     try {
-      const { data: items } = await supabase
-        .from('sale_items').select('*').eq('sale_id', pendingDelete.id)
+      const { data: items } = await supabase.from('sale_items').select('*').eq('sale_id', pendingDelete.id)
 
       if (items && items.length > 0) {
         for (const item of items) {
-          const { data: fp } = await supabase
-            .from('products').select('quantity').eq('id', item.product_id).single()
+          const { data: fp } = await supabase.from('products').select('quantity').eq('id', item.product_id).single()
           if (fp) {
             await supabase.from('products')
               .update({ quantity: fp.quantity + item.quantity_sold })
@@ -560,8 +550,7 @@ export default function Sales() {
           startY: 48,
           head: [['Customer', 'Total (RWF)', 'Payment', 'Date']],
           body: exportFiltered.map(s => [
-            s.product_name,
-            s.total?.toLocaleString(),
+            s.product_name, s.total?.toLocaleString(),
             s.payment_method || 'cash',
             new Date(s.created_at).toLocaleDateString(),
           ]),
@@ -590,7 +579,7 @@ export default function Sales() {
 
   return (
     <Layout>
-      <div className="p-6 space-y-6">
+      <div className="p-4 sm:p-6 space-y-6">
 
         <div className="flex items-center justify-between">
           <div>
@@ -603,11 +592,17 @@ export default function Sales() {
         </div>
 
         <div className="flex flex-col sm:flex-row gap-3">
-          <input type="text" placeholder="Search by customer..." value={search} onChange={(e) => setSearch(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500" />
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
-          <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
-          <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
+          <input type="text" placeholder="Search by customer..." value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500" />
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+          <button onClick={() => { setExportType('excel'); setShowExportModal(true) }}
+            className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
+          <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }}
+            className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
         </div>
 
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
@@ -655,10 +650,10 @@ export default function Sales() {
                       </td>
                       <td className="px-4 py-3 text-gray-400 hidden sm:table-cell">{new Date(sale.created_at).toLocaleDateString()}</td>
                       <td className="px-4 py-3">
-                        <div className="flex gap-1">
-                          <button onClick={() => generateReceipt(sale)} className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition">Receipt</button>
-                          <button onClick={() => openEdit(sale)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
-                          <button onClick={() => openDelete(sale)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
+                        <div className="flex gap-1 flex-wrap">
+                          <button onClick={() => generateReceipt(sale)} className="px-3 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition font-medium">Receipt</button>
+                          <button onClick={() => openEdit(sale)} className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition font-medium">Edit</button>
+                          <button onClick={() => openDelete(sale)} className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Delete</button>
                         </div>
                       </td>
                     </tr>
@@ -674,21 +669,22 @@ export default function Sales() {
       {showModal && (
         <Modal title={pendingEditSale ? 'Edit Sale' : 'Record Sale'} onClose={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }}>
           <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
-            {error && <p className="text-red-400 text-sm">{error}</p>}
+            {error && <p className="text-red-400 text-sm bg-red-900 bg-opacity-30 px-3 py-2 rounded-lg">{error}</p>}
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Customer Name *</label>
               <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Customer name" />
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                placeholder="Customer name" />
             </div>
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Sale Date</label>
               <input type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
             </div>
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
               <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500">
                 <option value="cash">💵 Cash</option>
                 <option value="mtn">📱 MTN Mobile Money</option>
                 <option value="bank">🏦 Bank Transfer</option>
@@ -706,9 +702,14 @@ export default function Sales() {
               {saleItems.map((item, index) => (
                 <div key={item._key} className="bg-gray-800 rounded-lg p-3 space-y-2" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-between">
-                    <span className="text-gray-400 text-xs">Item {index + 1}</span>
+                    <span className="text-gray-400 text-xs font-medium">Item {index + 1}</span>
                     {saleItems.length > 1 && (
-                      <button onClick={() => removeItem(index)} className="text-red-400 hover:text-red-300 text-xs">Remove</button>
+                      <button
+                        onClick={() => removeItem(index)}
+                        className="text-red-400 hover:text-red-300 text-xs px-2 py-1 bg-red-900 bg-opacity-30 rounded"
+                      >
+                        Remove
+                      </button>
                     )}
                   </div>
                   <div className="relative">
@@ -720,11 +721,11 @@ export default function Sales() {
                         setShowProductDropdown({ ...showProductDropdown, [index]: true })
                       }}
                       onFocus={() => setShowProductDropdown({ ...showProductDropdown, [index]: true })}
-                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
                       placeholder="Search product..."
                     />
                     {showProductDropdown[index] && (
-                      <div className="absolute z-50 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-40 overflow-y-auto shadow-xl">
+                      <div className="absolute z-50 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
                         {products.filter(p => p.name.toLowerCase().includes((productSearch[index] || '').toLowerCase())).length === 0 ? (
                           <p className="text-gray-400 text-xs px-3 py-2">No products found</p>
                         ) : (
@@ -738,10 +739,10 @@ export default function Sales() {
                                   setShowProductDropdown({ ...showProductDropdown, [index]: false })
                                   setError('')
                                 }}
-                                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-700 transition flex justify-between items-center"
+                                className="w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition flex justify-between items-center"
                               >
                                 <span className="text-white">{p.name}</span>
-                                <span className={`text-xs ${p.quantity < (p.low_stock_threshold || 3) ? 'text-orange-400' : 'text-gray-400'}`}>
+                                <span className={`text-xs ml-2 flex-shrink-0 ${p.quantity < (p.low_stock_threshold || 3) ? 'text-orange-400' : 'text-gray-400'}`}>
                                   Stock: {p.quantity}
                                 </span>
                               </button>
@@ -751,21 +752,28 @@ export default function Sales() {
                     )}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <input type="number" value={item.quantity_sold} onChange={(e) => handleQuantityChange(index, e.target.value)}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Quantity" />
-                    <input type="number" value={item.selling_price} onChange={(e) => handlePriceChange(index, e.target.value)}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Selling Price (RWF)" />
+                    <input type="number" value={item.quantity_sold}
+                      onChange={(e) => handleQuantityChange(index, e.target.value)}
+                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      placeholder="Quantity" min="1" />
+                    <input type="number" value={item.selling_price}
+                      onChange={(e) => handlePriceChange(index, e.target.value)}
+                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      placeholder="Selling Price (RWF)" />
                   </div>
                   {showProfit && (
-                    <input type="number" value={item.buying_price} onChange={(e) => handleBuyingPriceChange(index, e.target.value)}
-                      className="w-full bg-gray-700 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500" placeholder="Buying Price / Cost (RWF)" />
+                    <input type="number" value={item.buying_price}
+                      onChange={(e) => handleBuyingPriceChange(index, e.target.value)}
+                      className="w-full bg-gray-700 border border-purple-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+                      placeholder="Buying Price / Cost (RWF)" />
                   )}
                   {item.total > 0 && (
                     <p className="text-green-400 text-sm font-medium">Subtotal: RWF {item.total.toLocaleString()}</p>
                   )}
                 </div>
               ))}
-              <button onClick={addItem} className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
+              <button onClick={addItem}
+                className="w-full py-2.5 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
                 + Add Another Product
               </button>
             </div>
@@ -773,7 +781,8 @@ export default function Sales() {
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">Extra Fees (RWF)</label>
                 <input type="number" value={extraFees} onChange={(e) => setExtraFees(e.target.value)}
-                  className="w-full bg-gray-800 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500" placeholder="Transport, packaging, etc." />
+                  className="w-full bg-gray-800 border border-purple-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+                  placeholder="Transport, packaging, etc." />
               </div>
             )}
             {grandTotal > 0 && (
@@ -792,7 +801,7 @@ export default function Sales() {
             )}
             <div className="flex gap-3 pt-2">
               <button onClick={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }}
-                className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                className="flex-1 py-3 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition font-medium">Cancel</button>
               <button
                 onClick={() => {
                   if (pendingEditSale) {
@@ -804,7 +813,7 @@ export default function Sales() {
                   }
                 }}
                 disabled={saving}
-                className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+                className="flex-1 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
               >
                 {saving ? 'Saving...' : pendingEditSale ? 'Update Sale' : 'Record Sale'}
               </button>
@@ -844,8 +853,8 @@ export default function Sales() {
       )}
 
       {showExportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
               <h2 className="text-lg font-bold text-white">{exportType === 'excel' ? '📊 Export Excel' : '📄 Export PDF'}</h2>
               <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
@@ -854,15 +863,21 @@ export default function Sales() {
               <p className="text-gray-400 text-sm">Select date range. Leave blank to export all records.</p>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">From Date</label>
-                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">To Date</label>
-                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
               </div>
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
-                <button onClick={handleExport} className={`flex-1 py-2 text-white rounded-lg transition font-medium ${exportType === 'excel' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'}`}>Download</button>
+                <button onClick={() => setShowExportModal(false)}
+                  className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={handleExport}
+                  className={`flex-1 py-2 text-white rounded-lg transition font-medium ${exportType === 'excel' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'}`}>
+                  Download
+                </button>
               </div>
             </div>
           </div>
@@ -938,9 +953,7 @@ export default function Sales() {
                         <span className="text-green-400">RWF {item.total?.toLocaleString()}</span>
                       </div>
                     </div>
-                  )) : (
-                    <p className="text-gray-500 text-sm">No items found</p>
-                  )}
+                  )) : <p className="text-gray-500 text-sm">No items found</p>}
                 </div>
                 {receiptSale.extra_fees > 0 && (
                   <div className="flex justify-between text-sm">
@@ -966,8 +979,10 @@ export default function Sales() {
                 <p>Powered by KaySales</p>
               </div>
               <div className="flex gap-3 mt-4">
-                <button onClick={() => setShowReceipt(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Close</button>
-                <button onClick={printReceipt} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">Download PDF</button>
+                <button onClick={() => setShowReceipt(false)}
+                  className="flex-1 py-3 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition font-medium">Close</button>
+                <button onClick={printReceipt}
+                  className="flex-1 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">Download PDF</button>
               </div>
             </div>
           </div>
