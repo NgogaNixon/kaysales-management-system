@@ -80,7 +80,10 @@ export default function ClientManagement() {
     }
     fetchData()
   }
-
+const handleToggleLifetime = async (userId, currentValue) => {
+    await supabase.from('subscriptions').update({ is_lifetime: !currentValue }).eq('user_id', userId)
+    fetchData()
+  }
   const getDaysRemaining = (expiryDate) => {
     if (!expiryDate) return null
     const today = new Date()
@@ -157,6 +160,7 @@ export default function ClientManagement() {
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Email</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Plan</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Profit View</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Lifetime</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Subscription</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Joined</th>
@@ -194,6 +198,18 @@ export default function ClientManagement() {
                           >
                             <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
                               client.show_profit ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        </td>
+                        <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => handleToggleLifetime(client.id, client.subscription?.is_lifetime)}
+                            className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
+                              client.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
+                            }`}
+                          >
+                            <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
+                              client.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
                             }`} />
                           </button>
                         </td>
@@ -286,6 +302,58 @@ export default function ClientManagement() {
                     >
                       <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
                         selectedClient.show_profit ? 'translate-x-6' : 'translate-x-1'
+                      }`} />
+                    </button>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400 text-sm">Lifetime Access</span>
+                    <button
+                      onClick={() => handleToggleLifetime(selectedClient.id, selectedClient.subscription?.is_lifetime)}
+                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
+                        selectedClient.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
+                        selectedClient.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
+                      }`} />
+                    </button>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400 text-sm">Lifetime Access</span>
+                    <button
+                      onClick={() => handleToggleLifetime(selectedClient.id, selectedClient.subscription?.is_lifetime)}
+                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
+                        selectedClient.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
+                        selectedClient.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
+                      }`} />
+                    </button>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400 text-sm">Lifetime Access</span>
+                    <button
+                      onClick={() => handleToggleLifetime(selectedClient.id, selectedClient.subscription?.is_lifetime)}
+                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
+                        selectedClient.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
+                        selectedClient.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
+                      }`} />
+                    </button>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400 text-sm">Lifetime Access</span>
+                    <button
+                      onClick={() => handleToggleLifetime(selectedClient.id, selectedClient.subscription?.is_lifetime)}
+                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
+                        selectedClient.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
+                        selectedClient.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
                       }`} />
                     </button>
                   </div>

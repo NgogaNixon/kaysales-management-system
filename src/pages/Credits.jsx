@@ -4,7 +4,6 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { useError } from '../context/ErrorContext'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -13,13 +12,10 @@ import { logActivity } from '../lib/activityLogger'
 
 export default function Credits() {
   const { profile } = useAuth()
-  const { showError } = useError()
   const [activeTab, setActiveTab] = useState('given')
   const [statusFilter, setStatusFilter] = useState('unpaid')
-  const [search, setSearch] = useState('')
   const [creditsGiven, setCreditsGiven] = useState([])
   const [creditsTaken, setCreditsTaken] = useState([])
-  const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
@@ -38,44 +34,28 @@ export default function Credits() {
   const [date, setDate] = useState('')
   const [notes, setNotes] = useState('')
   const [status, setStatus] = useState('unpaid')
-  const [creditItems, setCreditItems] = useState([{
-    _key: Date.now(),
-    product_id: '', product_name: '', quantity: '', unit_price: '', amount: ''
-  }])
-  const [productSearch, setProductSearch] = useState({})
-  const [showProductDropdown, setShowProductDropdown] = useState({})
+  const [creditItems, setCreditItems] = useState([{ product_name: '', quantity: '', unit_price: '', amount: '' }])
 
   useEffect(() => {
-    if (profile?.id) fetchAll()
+    if (profile?.id) fetchCredits()
   }, [profile])
 
-  useEffect(() => {
-    const handleFocus = () => { if (profile?.id) fetchAll(false) }
-    window.addEventListener('focus', handleFocus)
-    return () => window.removeEventListener('focus', handleFocus)
-  }, [profile])
+  const fetchCredits = async () => {
+    setLoading(true)
+    const { data: given } = await supabase
+      .from('credits_given')
+      .select('*')
+      .eq('user_id', profile.id)
+      .order('created_at', { ascending: false })
 
-  useEffect(() => {
-    const handleClickOutside = () => setShowProductDropdown({})
-    document.addEventListener('click', handleClickOutside)
-    return () => document.removeEventListener('click', handleClickOutside)
-  }, [])
+    const { data: taken } = await supabase
+      .from('credits_taken')
+      .select('*')
+      .eq('user_id', profile.id)
+      .order('created_at', { ascending: false })
 
-  const fetchAll = async (showLoader = true) => {
-    if (showLoader) setLoading(true)
-    const [
-      { data: given, error: givenError },
-      { data: taken, error: takenError },
-      { data: prods }
-    ] = await Promise.all([
-      supabase.from('credits_given').select('*').eq('user_id', profile.id).order('created_at', { ascending: false }),
-      supabase.from('credits_taken').select('*').eq('user_id', profile.id).order('created_at', { ascending: false }),
-      supabase.from('products').select('*').eq('user_id', profile.id).order('name', { ascending: true }),
-    ])
-    if (givenError || takenError) showError('Failed to load credits. Please refresh.')
     setCreditsGiven(given || [])
     setCreditsTaken(taken || [])
-    setProducts(prods || [])
     setLoading(false)
   }
 
@@ -85,9 +65,7 @@ export default function Credits() {
     setDate('')
     setNotes('')
     setStatus('unpaid')
-    setCreditItems([{ _key: Date.now(), product_id: '', product_name: '', quantity: '', unit_price: '', amount: '' }])
-    setProductSearch({})
-    setShowProductDropdown({})
+    setCreditItems([{ product_name: '', quantity: '', unit_price: '', amount: '' }])
     setError('')
     setShowModal(true)
   }
@@ -99,14 +77,11 @@ export default function Credits() {
     setNotes(credit.notes || '')
     setStatus(credit.status || 'unpaid')
     setCreditItems([{
-      _key: credit.id || Date.now(),
-      product_id: credit.product_id || '',
       product_name: credit.product_name || '',
       quantity: credit.quantity || '',
       unit_price: credit.quantity && credit.amount ? Math.round(credit.amount / credit.quantity) : '',
       amount: credit.amount || '',
     }])
-    setProductSearch({ 0: credit.product_name || '' })
     setError('')
     setShowModal(true)
   }
@@ -122,27 +97,8 @@ export default function Credits() {
     setShowPayModal(true)
   }
 
-  const handleProductChange = (index, productId) => {
-    const product = products.find(p => p.id === productId)
-    const updated = [...creditItems]
-    if (product) {
-      const qty = parseInt(updated[index].quantity) || 0
-      updated[index] = {
-        ...updated[index],
-        product_id: productId,
-        product_name: product.name,
-        unit_price: product.selling_price,
-        amount: qty * product.selling_price,
-      }
-    }
-    setCreditItems(updated)
-  }
-
   const addItem = () => {
-    setCreditItems([...creditItems, {
-      _key: Date.now() + Math.random(),
-      product_id: '', product_name: '', quantity: '', unit_price: '', amount: ''
-    }])
+    setCreditItems([...creditItems, { product_name: '', quantity: '', unit_price: '', amount: '' }])
   }
 
   const removeItem = (index) => {
@@ -161,30 +117,13 @@ export default function Credits() {
   const handleSave = async () => {
     if (!customerName) {
       setError('Name is required')
-      showError('Name is required')
       return
     }
     const validItems = creditItems.filter(i => i.amount)
     if (validItems.length === 0) {
       setError('Please add at least one item with an amount')
-      showError('Please add at least one item with an amount')
       return
     }
-
-    // Stock validation for Credits Given only
-    if (activeTab === 'given' && !selectedCredit) {
-      for (const item of validItems) {
-        if (!item.product_id) continue
-        const { data: freshProduct } = await supabase
-          .from('products').select('quantity, name').eq('id', item.product_id).single()
-        if (freshProduct && parseInt(item.quantity) > freshProduct.quantity) {
-          setError(`"${freshProduct.name}" only has ${freshProduct.quantity} units in stock`)
-          showError(`"${freshProduct.name}" only has ${freshProduct.quantity} units in stock`)
-          return
-        }
-      }
-    }
-
     setSaving(true)
     setError('')
 
@@ -192,7 +131,7 @@ export default function Credits() {
     const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
 
     if (selectedCredit) {
-      const updateData = {
+      await supabase.from(table).update({
         [nameField]: customerName,
         product_name: validItems[0].product_name,
         quantity: parseInt(validItems[0].quantity) || 0,
@@ -200,109 +139,94 @@ export default function Credits() {
         date: date || new Date().toISOString(),
         notes,
         status,
-      }
-      if (activeTab === 'given') {
-        updateData.product_id = validItems[0].product_id || null
-      }
+      }).eq('id', selectedCredit.id)
 
-      const { error: updateError } = await supabase.from(table).update(updateData).eq('id', selectedCredit.id)
-      if (updateError) {
-        showError('Failed to update credit. Please try again.')
-        setSaving(false)
-        return
-      }
-
+      // If linked to a sale, update sale customer name too
       if (activeTab === 'given' && selectedCredit.sale_id) {
-        await supabase.from('sales').update({ product_name: customerName }).eq('id', selectedCredit.sale_id)
+        await supabase
+          .from('sales')
+          .update({ product_name: customerName })
+          .eq('id', selectedCredit.sale_id)
       }
     } else {
       for (const item of validItems) {
-        const insertData = {
+        await supabase.from(table).insert({
           [nameField]: customerName,
-          product_name: item.product_name || '',
+          product_name: item.product_name,
           quantity: parseInt(item.quantity) || 0,
           amount: parseInt(item.amount),
           date: date || new Date().toISOString(),
-          notes: notes || '',
-          status: status || 'unpaid',
+          notes,
+          status,
           user_id: profile.id,
-        }
-
-        // Only add product_id for credits_given
-        if (activeTab === 'given' && item.product_id) {
-          insertData.product_id = item.product_id
-        }
-
-        const { error: insertError } = await supabase.from(table).insert(insertData)
-        if (insertError) {
-          console.error('Insert error:', insertError)
-          showError('Failed to add credit. Please try again.')
-          setSaving(false)
-          return
-        }
-
-        // Deduct stock only for Credits Given
-        if (activeTab === 'given' && item.product_id && parseInt(item.quantity) > 0) {
-          const { data: fp } = await supabase.from('products').select('quantity').eq('id', item.product_id).single()
-          if (fp) {
-            await supabase.from('products')
-              .update({ quantity: fp.quantity - parseInt(item.quantity) })
-              .eq('id', item.product_id)
-          }
-        }
+        })
       }
     }
 
     await logActivity(
-      profile.id, profile.email, profile.full_name,
+      profile.id,
+      profile.email,
+      profile.full_name,
       selectedCredit ? 'Edit Credit' : 'Add Credit',
       `${selectedCredit ? 'Updated' : 'Added'} credit for: ${customerName}`
     )
 
     setSaving(false)
     setShowModal(false)
-    fetchAll(false)
+    fetchCredits()
+
+    // Refresh customer modal if open
+    if (selectedCustomer) {
+      const updatedData = activeTab === 'given' ? creditsGiven : creditsTaken
+      const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
+      const updatedItems = updatedData.filter(c => c[nameF] === selectedCustomer.name)
+      if (updatedItems.length > 0) {
+        const totalAmount = updatedItems.reduce((sum, c) => sum + (c.amount || 0), 0)
+        const unpaidAmount = updatedItems.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
+        setSelectedCustomer({ ...selectedCustomer, items: updatedItems, totalAmount, unpaidAmount })
+      }
+    }
   }
 
   const handleDelete = async () => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
 
-    // Restore stock if Credits Given and has product_id and no sale_id
-    if (activeTab === 'given' && selectedCredit.product_id && !selectedCredit.sale_id) {
-      const { data: fp } = await supabase.from('products').select('quantity').eq('id', selectedCredit.product_id).single()
-      if (fp) {
-        await supabase.from('products')
-          .update({ quantity: fp.quantity + (selectedCredit.quantity || 0) })
-          .eq('id', selectedCredit.product_id)
-      }
-    }
-
-    // If linked to a sale, delete sale and restore stock via sale_items
+    // If linked to a sale, delete that sale and restore stock
     if (activeTab === 'given' && selectedCredit.sale_id) {
-      const { data: saleItems } = await supabase.from('sale_items').select('*').eq('sale_id', selectedCredit.sale_id)
+      // Get sale items to restore stock
+      const { data: saleItems } = await supabase
+        .from('sale_items')
+        .select('*')
+        .eq('sale_id', selectedCredit.sale_id)
+
       if (saleItems && saleItems.length > 0) {
         for (const item of saleItems) {
-          const { data: fp } = await supabase.from('products').select('quantity').eq('id', item.product_id).single()
-          if (fp) {
-            await supabase.from('products')
-              .update({ quantity: fp.quantity + item.quantity_sold })
+          const { data: freshProduct } = await supabase
+            .from('products')
+            .select('quantity')
+            .eq('id', item.product_id)
+            .single()
+          if (freshProduct) {
+            await supabase
+              .from('products')
+              .update({ quantity: freshProduct.quantity + item.quantity_sold })
               .eq('id', item.product_id)
           }
         }
       }
+
+      // Delete sale items
       await supabase.from('sale_items').delete().eq('sale_id', selectedCredit.sale_id)
+      // Delete linked sale
       await supabase.from('sales').delete().eq('id', selectedCredit.sale_id)
     }
 
-    const { error } = await supabase.from(table).delete().eq('id', selectedCredit.id)
-    if (error) {
-      showError('Failed to delete credit. Please try again.')
-      setShowOTP(false)
-      return
-    }
+    await supabase.from(table).delete().eq('id', selectedCredit.id)
 
     await logActivity(
-      profile.id, profile.email, profile.full_name,
+      profile.id,
+      profile.email,
+      profile.full_name,
       'Delete Credit',
       `Deleted credit for: ${activeTab === 'given' ? selectedCredit.customer_name : selectedCredit.supplier_name} - RWF ${selectedCredit.amount?.toLocaleString()}`
     )
@@ -310,7 +234,7 @@ export default function Credits() {
     setShowConfirm(false)
     setShowOTP(false)
     setSelectedCustomer(null)
-    fetchAll(false)
+    fetchCredits()
   }
 
   const handleMarkPaid = async () => {
@@ -318,100 +242,146 @@ export default function Credits() {
     const now = new Date().toISOString()
     const newStatus = selectedCredit.status === 'paid' ? 'unpaid' : 'paid'
 
-    const { error } = await supabase.from(table).update({
+    console.log('Marking credit paid. selectedCredit:', selectedCredit)
+    console.log('activeTab:', activeTab, 'sale_id:', selectedCredit.sale_id, 'newStatus:', newStatus)
+
+    await supabase.from(table).update({
       status: newStatus,
       paid_at: newStatus === 'paid' ? now : null,
       paid_method: newStatus === 'paid' ? payMethod : null,
     }).eq('id', selectedCredit.id)
 
-    if (error) {
-      showError('Failed to update payment status. Please try again.')
-      return
-    }
-
+    // If credit given is marked paid, update linked sale
     if (activeTab === 'given' && selectedCredit.sale_id && newStatus === 'paid') {
-      await supabase.from('sales').update({
-        payment_status: 'paid',
-        payment_method: payMethod,
-        paid_at: now,
-      }).eq('id', selectedCredit.sale_id)
-    } else if (activeTab === 'given' && selectedCredit.sale_id && newStatus === 'unpaid') {
-      await supabase.from('sales').update({
-        payment_status: 'pending',
-        paid_at: null,
-      }).eq('id', selectedCredit.sale_id)
+      console.log('Updating linked sale:', selectedCredit.sale_id)
+      const { data: updateResult, error: updateError } = await supabase
+        .from('sales')
+        .update({
+          payment_status: 'paid',
+          payment_method: payMethod,
+        })
+        .eq('id', selectedCredit.sale_id)
+        .select()
+      console.log('Sale update result:', updateResult, 'error:', updateError)
+    } else {
+      console.log('Skipped sale update - condition not met')
     }
 
     await logActivity(
-      profile.id, profile.email, profile.full_name,
+      profile.id,
+      profile.email,
+      profile.full_name,
       newStatus === 'paid' ? 'Mark Credit Paid' : 'Mark Credit Unpaid',
-      `Marked credit as ${newStatus} for: ${activeTab === 'given' ? selectedCredit.customer_name : selectedCredit.supplier_name} - RWF ${selectedCredit.amount?.toLocaleString()}`
+      `Marked credit as ${newStatus} for: ${activeTab === 'given' ? selectedCredit.customer_name : selectedCredit.supplier_name} - RWF ${selectedCredit.amount?.toLocaleString()} - Method: ${payMethod}`
     )
 
     setShowPayModal(false)
-    await fetchAll(false)
-    setSelectedCustomer(null)
+    await fetchCredits()
+
+    // Refresh customer modal
+    if (selectedCustomer) {
+      const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
+      const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
+      const updatedItems = currentData.map(c =>
+        c.id === selectedCredit.id ? { ...c, status: newStatus, paid_at: now, paid_method: payMethod } : c
+      ).filter(c => c[nameF] === selectedCustomer.name)
+
+      if (updatedItems.every(c => c.status === 'paid') && statusFilter === 'unpaid') {
+        setSelectedCustomer(null)
+      } else {
+        const totalAmount = updatedItems.reduce((sum, c) => sum + (c.amount || 0), 0)
+        const unpaidAmount = updatedItems.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
+        setSelectedCustomer({ ...selectedCustomer, items: updatedItems, totalAmount, unpaidAmount })
+      }
+    }
+  }
+
+  const handleExportClientPDF = () => {
+    const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
+    const label = activeTab === 'given' ? 'Customer' : 'Supplier'
+    const items = selectedCustomer.items
+
+    const doc = new jsPDF()
+    doc.setFontSize(16)
+    doc.text('KaySales Management System', 14, 15)
+    doc.setFontSize(12)
+    doc.text(`Credit Statement — ${selectedCustomer.name}`, 14, 25)
+    doc.setFontSize(10)
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
+    doc.text(`Total Amount: RWF ${selectedCustomer.totalAmount.toLocaleString()}`, 14, 39)
+    doc.text(`Unpaid Amount: RWF ${selectedCustomer.unpaidAmount.toLocaleString()}`, 14, 46)
+    autoTable(doc, {
+      startY: 54,
+      head: [['Product', 'Qty', 'Unit Price', 'Amount (RWF)', 'Date', 'Status']],
+      body: items.map(c => [
+        c.product_name || '—',
+        c.quantity || '—',
+        c.quantity && c.amount ? Math.round(c.amount / c.quantity).toLocaleString() : '—',
+        c.amount?.toLocaleString() || '0',
+        c.date ? new Date(c.date).toLocaleDateString() : '—',
+        c.status === 'paid' ? 'Paid' : 'Unpaid',
+      ]),
+    })
+    doc.save(`KaySales_${label}_${selectedCustomer.name.replace(/\s+/g, '_')}_Credits.pdf`)
   }
 
   const handleExport = () => {
-    try {
-      const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
-      const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
-      const exportFiltered = currentData.filter(c => {
-        const creditDate = new Date(c.date || c.created_at)
-        const matchesFrom = exportFrom ? creditDate >= new Date(exportFrom) : true
-        const matchesTo = exportTo ? creditDate <= new Date(exportTo + 'T23:59:59') : true
-        return matchesFrom && matchesTo
-      })
-      const totalAmount = exportFiltered.reduce((sum, c) => sum + (c.amount || 0), 0)
-      const label = activeTab === 'given' ? 'Credits Given' : 'Credits Taken'
+    const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
+    const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
+    const exportFiltered = currentData.filter(c => {
+      const creditDate = new Date(c.date || c.created_at)
+      const matchesFrom = exportFrom ? creditDate >= new Date(exportFrom) : true
+      const matchesTo = exportTo ? creditDate <= new Date(exportTo + 'T23:59:59') : true
+      return matchesFrom && matchesTo
+    })
+    const totalAmount = exportFiltered.reduce((sum, c) => sum + (c.amount || 0), 0)
+    const label = activeTab === 'given' ? 'Credits Given' : 'Credits Taken'
 
-      if (exportType === 'excel') {
-        const data = exportFiltered.map(c => ({
-          [activeTab === 'given' ? 'Customer' : 'Supplier']: c[nameField],
-          Product: c.product_name || '—',
-          Quantity: c.quantity || '—',
-          'Amount (RWF)': c.amount,
-          'Credit Taken On': c.date ? new Date(c.date).toLocaleString() : '—',
-          Status: c.status || 'unpaid',
-          'Credit Paid On': c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
-          'Payment Method': c.paid_method || '—',
-          Notes: c.notes || '—',
-        }))
-        const ws = XLSX.utils.json_to_sheet(data)
-        const wb = XLSX.utils.book_new()
-        XLSX.utils.book_append_sheet(wb, ws, label)
-        XLSX.writeFile(wb, `KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.xlsx`)
-      } else {
-        const doc = new jsPDF()
-        doc.setFontSize(16)
-        doc.text('KaySales Management System', 14, 15)
-        doc.setFontSize(12)
-        doc.text(`${label} Report`, 14, 25)
-        doc.setFontSize(10)
-        doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-        doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, 39)
-        autoTable(doc, {
-          startY: 48,
-          head: [[activeTab === 'given' ? 'Customer' : 'Supplier', 'Product', 'Qty', 'Amount (RWF)', 'Credit Taken On', 'Status', 'Credit Paid On']],
-          body: exportFiltered.map(c => [
-            c[nameField], c.product_name || '—', c.quantity || '—',
-            c.amount?.toLocaleString(),
-            c.date ? new Date(c.date).toLocaleString() : '—',
-            c.status || 'unpaid',
-            c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
-          ]),
-          styles: { fontSize: 9 },
-          headStyles: { fillColor: [29, 78, 216] },
-        })
-        doc.save(`KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
-      }
-      setShowExportModal(false)
-      setExportFrom('')
-      setExportTo('')
-    } catch (e) {
-      showError('Failed to export. Please try again.')
+    if (exportType === 'excel') {
+      const data = exportFiltered.map(c => ({
+        [activeTab === 'given' ? 'Customer' : 'Supplier']: c[nameField],
+        Product: c.product_name || '—',
+        Quantity: c.quantity || '—',
+        'Amount (RWF)': c.amount,
+        Date: c.date ? new Date(c.date).toLocaleDateString() : '—',
+        Status: c.status || 'unpaid',
+        'Paid At': c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
+        'Payment Method': c.paid_method || '—',
+        Notes: c.notes || '—',
+      }))
+      const ws = XLSX.utils.json_to_sheet(data)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, label)
+      XLSX.writeFile(wb, `KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.xlsx`)
+    } else {
+      const doc = new jsPDF()
+      doc.setFontSize(16)
+      doc.text('KaySales Management System', 14, 15)
+      doc.setFontSize(12)
+      doc.text(`${label} Report`, 14, 25)
+      doc.setFontSize(10)
+      doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
+      doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, 39)
+      autoTable(doc, {
+        startY: 48,
+        head: [[activeTab === 'given' ? 'Customer' : 'Supplier', 'Product', 'Qty', 'Amount (RWF)', 'Date', 'Status', 'Paid At']],
+        body: exportFiltered.map(c => [
+          c[nameField],
+          c.product_name || '—',
+          c.quantity || '—',
+          c.amount?.toLocaleString(),
+          c.date ? new Date(c.date).toLocaleDateString() : '—',
+          c.status || 'unpaid',
+          c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
+        ]),
+        styles: { fontSize: 9 },
+        headStyles: { fillColor: [29, 78, 216] },
+      })
+      doc.save(`KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
     }
+    setShowExportModal(false)
+    setExportFrom('')
+    setExportTo('')
   }
 
   const currentCredits = activeTab === 'given' ? creditsGiven : creditsTaken
@@ -427,8 +397,6 @@ export default function Credits() {
   }, {})
 
   const groupedList = Object.values(allGrouped).filter(group => {
-    const matchesSearch = group.name.toLowerCase().includes(search.toLowerCase())
-    if (!matchesSearch) return false
     if (statusFilter === 'unpaid') return group.unpaidAmount > 0
     if (statusFilter === 'paid') return group.unpaidAmount === 0
     return true
@@ -448,19 +416,22 @@ export default function Credits() {
 
   return (
     <Layout>
-      <div className="p-4 sm:p-6 space-y-6">
+      <div className="p-6 space-y-6">
 
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">💳 Credits</h1>
             <p className="text-gray-400 text-sm mt-1">Track credits given and taken</p>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-3 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
-            <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-3 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
+            <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
+            <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
+            <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm">+ Add Credit</button>
           </div>
         </div>
 
+        {/* Summary Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[
             { label: 'Total Given', value: `RWF ${totalGiven.toLocaleString()}`, icon: '📤', color: 'text-yellow-400' },
@@ -470,39 +441,32 @@ export default function Credits() {
           ].map((stat, i) => (
             <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
               <span className="text-2xl">{stat.icon}</span>
-              <p className={`text-xl font-bold mt-2 ${stat.color}`}>{stat.value}</p>
+              <p className={`text-2xl font-bold mt-2 ${stat.color}`}>{stat.value}</p>
               <p className="text-gray-400 text-sm mt-1">{stat.label}</p>
             </div>
           ))}
         </div>
 
-        <input
-          type="text"
-          placeholder={`Search ${activeTab === 'given' ? 'customer' : 'supplier'}...`}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-        />
-
+        {/* Tabs & Filter */}
         <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
-          <div className="flex gap-2 flex-wrap">
-            <button onClick={() => setActiveTab('given')} className={`px-5 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'given' ? 'bg-yellow-500 text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+          <div className="flex gap-2">
+            <button onClick={() => setActiveTab('given')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'given' ? 'bg-yellow-500 text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
               📤 Credits Given ({creditsGiven.length})
             </button>
-            <button onClick={() => setActiveTab('taken')} className={`px-5 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'taken' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+            <button onClick={() => setActiveTab('taken')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'taken' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
               📥 Credits Taken ({creditsTaken.length})
             </button>
-            <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm">+ Add Credit</button>
           </div>
           <div className="flex gap-2">
             {['all', 'unpaid', 'paid'].map(f => (
-              <button key={f} onClick={() => setStatusFilter(f)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${statusFilter === f ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+              <button key={f} onClick={() => setStatusFilter(f)} className={`px-3 py-1 rounded-lg text-xs font-medium transition ${statusFilter === f ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
                 {f.charAt(0).toUpperCase() + f.slice(1)}
               </button>
             ))}
           </div>
         </div>
 
+        {/* Credits Table */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading credits...</p></div>
@@ -516,33 +480,34 @@ export default function Credits() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-800">
                   <tr>
-                    <th className="text-left text-gray-400 px-4 py-4 font-medium">{activeTab === 'given' ? 'Customer' : 'Supplier'}</th>
-                    <th className="text-left text-gray-400 px-4 py-4 font-medium">Items</th>
-                    <th className="text-left text-gray-400 px-4 py-4 font-medium">Total</th>
-                    <th className="text-left text-gray-400 px-4 py-4 font-medium hidden sm:table-cell">Unpaid</th>
-                    <th className="text-left text-gray-400 px-4 py-4 font-medium">Status</th>
-                    <th className="text-left text-gray-400 px-4 py-4 font-medium">Action</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">{activeTab === 'given' ? 'Customer' : 'Supplier'}</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Items</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Total</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Unpaid</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {groupedList.map((group) => (
                     <tr key={group.name} className="border-t border-gray-800 hover:bg-gray-800 transition cursor-pointer" onClick={() => setSelectedCustomer(group)}>
-                      <td className="px-4 py-3 text-white font-medium">{group.name}</td>
-                      <td className="px-4 py-3 text-gray-300">{group.items.length}</td>
-                      <td className={`px-4 py-3 font-medium ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
+                      <td className="px-6 py-4 text-white font-medium">{group.name}</td>
+                      <td className="px-6 py-4 text-gray-300">{group.items.length} item{group.items.length > 1 ? 's' : ''}</td>
+                      <td className={`px-6 py-4 font-medium ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
                         RWF {group.totalAmount.toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 hidden sm:table-cell">
+                      <td className="px-6 py-4">
                         {group.unpaidAmount > 0
-                          ? <span className="text-red-400 text-xs">RWF {group.unpaidAmount.toLocaleString()}</span>
-                          : <span className="text-green-400 text-xs">All paid</span>}
+                          ? <span className="text-red-400 font-medium text-xs">RWF {group.unpaidAmount.toLocaleString()}</span>
+                          : <span className="text-green-400 text-xs">All paid</span>
+                        }
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${group.unpaidAmount > 0 ? 'bg-red-900 text-red-300' : 'bg-green-900 text-green-300'}`}>
-                          {group.unpaidAmount > 0 ? '❌ Unpaid' : '✅ Paid'}
+                          {group.unpaidAmount > 0 ? '❌ Has Unpaid' : '✅ All Paid'}
                         </span>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-6 py-4">
                         <span className="text-blue-400 text-xs">View →</span>
                       </td>
                     </tr>
@@ -564,13 +529,22 @@ export default function Credits() {
                 <h2 className="text-lg font-bold text-white">{selectedCustomer.name}</h2>
                 <p className="text-gray-400 text-xs">{selectedCustomer.items.length} item{selectedCustomer.items.length > 1 ? 's' : ''} · RWF {selectedCustomer.totalAmount.toLocaleString()} total</p>
               </div>
-              <button onClick={() => setSelectedCustomer(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
+              <div className="flex items-center gap-3">
+                <button onClick={handleExportClientPDF} className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">
+                  📄 Download PDF
+                </button>
+                <button onClick={() => setSelectedCustomer(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
+              </div>
             </div>
             <div className="px-6 py-4 space-y-3 overflow-y-auto flex-1">
+
+              {/* Summary */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-gray-800 rounded-lg p-3">
                   <p className="text-gray-400 text-xs">Total Amount</p>
-                  <p className={`text-xl font-bold ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>RWF {selectedCustomer.totalAmount.toLocaleString()}</p>
+                  <p className={`text-xl font-bold ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
+                    RWF {selectedCustomer.totalAmount.toLocaleString()}
+                  </p>
                 </div>
                 <div className="bg-gray-800 rounded-lg p-3">
                   <p className="text-gray-400 text-xs">Unpaid Amount</p>
@@ -578,39 +552,7 @@ export default function Credits() {
                 </div>
               </div>
 
-              {/* Mark All Paid */}
-              {selectedCustomer.unpaidAmount > 0 && (
-                <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-                  <p className="text-white text-sm font-medium">Mark All Unpaid as Paid</p>
-                  <select id="markAllPayMethod" className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none" defaultValue="cash">
-                    <option value="cash">💵 Cash</option>
-                    <option value="mtn">📱 MTN Mobile Money</option>
-                    <option value="bank">🏦 Bank Transfer</option>
-                    <option value="cheque">📄 Cheque</option>
-                  </select>
-                  <button
-                    onClick={async () => {
-                      const method = document.getElementById('markAllPayMethod').value
-                      const now = new Date().toISOString()
-                      const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
-                      const unpaidItems = selectedCustomer.items.filter(c => c.status !== 'paid')
-                      for (const credit of unpaidItems) {
-                        await supabase.from(table).update({ status: 'paid', paid_at: now, paid_method: method }).eq('id', credit.id)
-                        if (activeTab === 'given' && credit.sale_id) {
-                          await supabase.from('sales').update({ payment_status: 'paid', payment_method: method, paid_at: now }).eq('id', credit.sale_id)
-                        }
-                      }
-                      await logActivity(profile.id, profile.email, profile.full_name, 'Mark All Credits Paid', `Marked all credits as paid for: ${selectedCustomer.name} - RWF ${selectedCustomer.unpaidAmount.toLocaleString()}`)
-                      await fetchAll(false)
-                      setSelectedCustomer(null)
-                    }}
-                    className="w-full py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition"
-                  >
-                    ✅ Mark All as Paid (RWF {selectedCustomer.unpaidAmount.toLocaleString()})
-                  </button>
-                </div>
-              )}
-
+              {/* Items */}
               <div className="space-y-2">
                 {selectedCustomer.items.map((credit) => (
                   <div key={credit.id} className="bg-gray-800 rounded-lg p-4">
@@ -627,54 +569,68 @@ export default function Credits() {
                       </div>
                       <div>
                         <p className="text-gray-400 text-xs">Unit Price</p>
-                        <p className="text-white">{credit.quantity && credit.amount ? `RWF ${Math.round(credit.amount / credit.quantity).toLocaleString()}` : '—'}</p>
+                        <p className="text-white">
+                          {credit.quantity && credit.amount
+                            ? `RWF ${Math.round(credit.amount / credit.quantity).toLocaleString()}`
+                            : '—'}
+                        </p>
                       </div>
                       <div>
-                        <p className="text-gray-400 text-xs">Total</p>
-                        <p className={`font-medium ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>RWF {credit.amount?.toLocaleString()}</p>
+                        <p className="text-gray-400 text-xs">Total Amount</p>
+                        <p className={`font-medium ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
+                          RWF {credit.amount?.toLocaleString()}
+                        </p>
                       </div>
                       <div>
-                        <p className="text-gray-400 text-xs">🕐 Credit Taken On</p>
-                        <p className="text-yellow-400 text-xs">{credit.date ? new Date(credit.date).toLocaleString() : '—'}</p>
+                        <p className="text-gray-400 text-xs">Date</p>
+                        <p className="text-white">{credit.date ? new Date(credit.date).toLocaleDateString() : '—'}</p>
                       </div>
                     </div>
                     {credit.status === 'paid' && credit.paid_at && (
                       <div className="bg-green-900 rounded-lg p-2 mb-2">
-                        <p className="text-green-300 text-xs">✅ Paid On: {new Date(credit.paid_at).toLocaleString()}</p>
-                        <p className="text-green-300 text-xs">Method: {getPaymentLabel(credit.paid_method)}</p>
-                      </div>
-                    )}
-                    {credit.status !== 'paid' && (
-                      <div className="bg-gray-700 rounded-lg p-2 mb-2">
-                        <p className="text-gray-400 text-xs">✅ Credit Paid On: Not yet paid</p>
+                        <p className="text-green-300 text-xs">✅ Paid on: {new Date(credit.paid_at).toLocaleString()}</p>
+                        <p className="text-green-300 text-xs">Payment: {getPaymentLabel(credit.paid_method)}</p>
                       </div>
                     )}
                     {credit.notes && <p className="text-gray-400 text-xs mb-2">📝 {credit.notes}</p>}
                     <div className="flex gap-2 flex-wrap">
                       {credit.status !== 'paid' ? (
-                        <button onClick={() => openPayModal(credit)} className="px-3 py-1.5 bg-green-700 text-white rounded-lg text-xs transition hover:bg-green-600 font-medium">✅ Mark Paid</button>
+                        <button
+                          onClick={() => openPayModal(credit)}
+                          className="px-3 py-1 bg-green-700 text-white rounded-lg text-xs transition hover:bg-green-600"
+                        >
+                          ✅ Mark Paid
+                        </button>
                       ) : (
                         <button
-                          onClick={async () => {
-                            const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
-                            await supabase.from(table).update({ status: 'unpaid', paid_at: null, paid_method: null }).eq('id', credit.id)
-                            if (activeTab === 'given' && credit.sale_id) {
-                              await supabase.from('sales').update({ payment_status: 'pending', paid_at: null }).eq('id', credit.sale_id)
-                            }
-                            fetchAll(false)
-                            setSelectedCustomer(null)
-                          }}
-                          className="px-3 py-1.5 bg-gray-700 text-gray-300 rounded-lg text-xs transition hover:bg-gray-600 font-medium"
-                        >Mark Unpaid</button>
+                      onClick={async () => {
+                        const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+                        await supabase.from(table).update({
+                          status: 'unpaid',
+                          paid_at: null,
+                          paid_method: null,
+                        }).eq('id', credit.id)
+                        if (activeTab === 'given' && credit.sale_id) {
+                          await supabase.from('sales').update({ payment_status: 'pending' }).eq('id', credit.sale_id)
+                        }
+                        fetchCredits()
+                        setSelectedCustomer(null)
+                      }}
+                      className="px-3 py-1 bg-gray-700 text-gray-300 rounded-lg text-xs transition hover:bg-gray-600"
+                    >
+                      Mark Unpaid
+                    </button>
                       )}
-                      <button onClick={() => { setSelectedCustomer(null); openEdit(credit) }} className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition font-medium">Edit</button>
-                      <button onClick={() => openDelete(credit)} className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Delete</button>
+                      <button onClick={() => { setSelectedCustomer(null); openEdit(credit) }} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
+                      <button onClick={() => { openDelete(credit) }} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                     </div>
                   </div>
                 ))}
               </div>
 
-              <button onClick={() => setSelectedCustomer(null)} className="w-full py-2.5 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition font-medium">Close</button>
+              <button onClick={() => setSelectedCustomer(null)} className="w-full py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
+                Close
+              </button>
             </div>
           </div>
         </div>
@@ -690,27 +646,28 @@ export default function Credits() {
             </div>
             <div className="px-6 py-4 space-y-4">
               <div className="bg-gray-800 rounded-lg p-3">
-                <p className="text-gray-400 text-xs">Customer / Supplier</p>
+                <p className="text-gray-400 text-xs">Customer</p>
                 <p className="text-white font-medium">{selectedCredit.customer_name || selectedCredit.supplier_name}</p>
                 <p className="text-gray-400 text-xs mt-1">Amount</p>
                 <p className="text-green-400 font-bold">RWF {selectedCredit.amount?.toLocaleString()}</p>
-                <p className="text-gray-400 text-xs mt-1">🕐 Credit Taken On</p>
-                <p className="text-yellow-400 text-xs">{selectedCredit.date ? new Date(selectedCredit.date).toLocaleString() : '—'}</p>
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
-                <select value={payMethod} onChange={(e) => setPayMethod(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+                <select
+                  value={payMethod}
+                  onChange={(e) => setPayMethod(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                >
                   <option value="cash">💵 Cash</option>
                   <option value="mtn">📱 MTN Mobile Money</option>
                   <option value="bank">🏦 Bank Transfer</option>
                   <option value="cheque">📄 Cheque</option>
                 </select>
               </div>
-              <p className="text-gray-400 text-xs">Will be recorded as paid on: <span className="text-white">{new Date().toLocaleString()}</span></p>
+              <p className="text-gray-400 text-xs">Payment time will be recorded as: <span className="text-white">{new Date().toLocaleString()}</span></p>
               <div className="flex gap-3">
-                <button onClick={() => setShowPayModal(false)} className="flex-1 py-2.5 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition font-medium">Cancel</button>
-                <button onClick={handleMarkPaid} className="flex-1 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">Confirm Paid</button>
+                <button onClick={() => setShowPayModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={handleMarkPaid} className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">Confirm Paid</button>
               </div>
             </div>
           </div>
@@ -720,99 +677,73 @@ export default function Credits() {
       {/* Add/Edit Modal */}
       {showModal && (
         <Modal
-          title={selectedCredit
-            ? `Edit Credit ${activeTab === 'given' ? 'Given' : 'Taken'}`
-            : `Add Credit ${activeTab === 'given' ? 'Given' : 'Taken'}`}
+          title={selectedCredit ? `Edit Credit ${activeTab === 'given' ? 'Given' : 'Taken'}` : `Add Credit ${activeTab === 'given' ? 'Given' : 'Taken'}`}
           onClose={() => setShowModal(false)}
         >
-          <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
-            {error && <p className="text-red-400 text-sm bg-red-900 bg-opacity-30 px-3 py-2 rounded-lg">{error}</p>}
+          <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
+            {error && <p className="text-red-400 text-sm">{error}</p>}
             <div>
               <label className="text-gray-400 text-sm mb-1 block">{activeTab === 'given' ? 'Customer Name *' : 'Supplier Name *'}</label>
-              <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder={activeTab === 'given' ? 'Customer name' : 'Supplier name'} />
+              <input
+                type="text"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                placeholder={activeTab === 'given' ? 'Customer name' : 'Supplier name'}
+              />
             </div>
 
             <div className="space-y-3">
-              <label className="text-gray-400 text-sm block">Products *</label>
+              <label className="text-gray-400 text-sm block">Products</label>
               {creditItems.map((item, index) => (
-                <div key={item._key} className="bg-gray-800 rounded-lg p-3 space-y-2" onClick={(e) => e.stopPropagation()}>
+                <div key={index} className="bg-gray-800 rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-gray-400 text-xs font-medium">Item {index + 1}</span>
+                    <span className="text-gray-400 text-xs">Item {index + 1}</span>
                     {creditItems.length > 1 && (
-                      <button onClick={() => removeItem(index)} className="text-red-400 hover:text-red-300 text-xs px-2 py-1 bg-red-900 bg-opacity-30 rounded">Remove</button>
+                      <button onClick={() => removeItem(index)} className="text-red-400 hover:text-red-300 text-xs">Remove</button>
                     )}
                   </div>
-
-                  {activeTab === 'given' ? (
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={productSearch[index] !== undefined ? productSearch[index] : (item.product_name || '')}
-                        onChange={(e) => {
-                          setProductSearch({ ...productSearch, [index]: e.target.value })
-                          setShowProductDropdown({ ...showProductDropdown, [index]: true })
-                        }}
-                        onFocus={() => setShowProductDropdown({ ...showProductDropdown, [index]: true })}
-                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                        placeholder="Search product..."
-                      />
-                      {showProductDropdown[index] && (
-                        <div className="absolute z-50 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
-                          {products.filter(p => p.name.toLowerCase().includes((productSearch[index] || '').toLowerCase())).length === 0 ? (
-                            <p className="text-gray-400 text-xs px-3 py-2">No products found</p>
-                          ) : (
-                            products.filter(p => p.name.toLowerCase().includes((productSearch[index] || '').toLowerCase())).map(p => (
-                              <button key={p.id} type="button"
-                                onClick={() => {
-                                  handleProductChange(index, p.id)
-                                  setProductSearch({ ...productSearch, [index]: p.name })
-                                  setShowProductDropdown({ ...showProductDropdown, [index]: false })
-                                }}
-                                className="w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition flex justify-between items-center"
-                              >
-                                <span className="text-white">{p.name}</span>
-                                <span className={`text-xs ml-2 flex-shrink-0 ${p.quantity < (p.low_stock_threshold || 3) ? 'text-orange-400' : 'text-gray-400'}`}>
-                                  Stock: {p.quantity}
-                                </span>
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <input type="text" value={item.product_name}
-                      onChange={(e) => updateItem(index, { product_name: e.target.value })}
-                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      placeholder="Product name (optional)" />
-                  )}
-
+                  <input
+                    type="text"
+                    value={item.product_name}
+                    onChange={(e) => updateItem(index, { product_name: e.target.value })}
+                    className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                    placeholder="Product name"
+                  />
                   <div className="grid grid-cols-3 gap-2">
-                    <input type="number" value={item.quantity}
+                    <input
+                      type="number"
+                      value={item.quantity}
                       onChange={(e) => {
                         const qty = e.target.value
                         const price = parseInt(item.unit_price) || 0
                         updateItem(index, { quantity: qty, amount: (parseInt(qty) || 0) * price })
                       }}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      placeholder="Qty" />
-                    <input type="number" value={item.unit_price || ''}
+                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      placeholder="Qty"
+                    />
+                    <input
+                      type="number"
+                      value={item.unit_price || ''}
                       onChange={(e) => {
                         const price = e.target.value
                         const qty = parseInt(item.quantity) || 0
                         updateItem(index, { unit_price: price, amount: qty * (parseInt(price) || 0) })
                       }}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      placeholder="Unit Price" />
-                    <input type="number" value={item.amount} readOnly
-                      className="bg-gray-600 border border-gray-600 text-green-400 px-3 py-2.5 rounded-lg text-sm font-medium"
-                      placeholder="Total" />
+                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      placeholder="Unit Price"
+                    />
+                    <input
+                      type="number"
+                      value={item.amount}
+                      readOnly
+                      className="bg-gray-600 border border-gray-600 text-green-400 px-3 py-2 rounded-lg text-sm font-medium"
+                      placeholder="Total"
+                    />
                   </div>
                 </div>
               ))}
-              <button onClick={addItem} className="w-full py-2.5 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
+              <button onClick={addItem} className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
                 + Add Another Product
               </button>
             </div>
@@ -828,27 +759,25 @@ export default function Credits() {
 
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Date</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
             </div>
+
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Status</label>
-              <select value={status} onChange={(e) => setStatus(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+              <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
                 <option value="unpaid">Unpaid</option>
                 <option value="paid">Paid</option>
               </select>
             </div>
+
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Notes</label>
-              <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                placeholder="Any additional notes..." rows={2} />
+              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Any additional notes..." rows={2} />
             </div>
 
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowModal(false)} className="flex-1 py-3 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition font-medium">Cancel</button>
-              <button onClick={handleSave} disabled={saving} className="flex-1 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+              <button onClick={handleSave} disabled={saving} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
                 {saving ? 'Saving...' : selectedCredit ? 'Update' : 'Add Credit'}
               </button>
             </div>
@@ -856,9 +785,10 @@ export default function Credits() {
         </Modal>
       )}
 
+      {/* Confirm Delete */}
       {showConfirm && !showOTP && (
         <ConfirmDialog
-          message={`Are you sure you want to delete this credit?${selectedCredit?.sale_id ? ' The linked sale will also be deleted and stock restored.' : activeTab === 'given' && selectedCredit?.product_id ? ' Stock will be restored.' : ''}`}
+          message={`Are you sure you want to delete this credit?${selectedCredit?.sale_id ? ' The linked sale will also be deleted and stock restored.' : ''}`}
           onConfirm={() => { setShowConfirm(false); setShowOTP(true) }}
           onCancel={() => setShowConfirm(false)}
         />
@@ -872,6 +802,7 @@ export default function Credits() {
         />
       )}
 
+      {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
@@ -880,7 +811,7 @@ export default function Credits() {
               <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-4">
-              <p className="text-gray-400 text-sm">Select date range. Leave blank to export all.</p>
+              <p className="text-gray-400 text-sm">Select date range. Leave blank to export all records.</p>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">From Date</label>
                 <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />

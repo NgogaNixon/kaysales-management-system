@@ -21,12 +21,13 @@ export default function ProtectedRoute({ children }) {
       .from('subscriptions')
       .select('*')
       .eq('user_id', profile.id)
-      .single()
+      .maybeSingle()
     setSubscription(data)
     setSubLoading(false)
   }
 
   const isExpired = () => {
+    if (subscription?.is_lifetime) return false
     if (!subscription?.expiry_date) return false
     return new Date(subscription.expiry_date) < new Date()
   }

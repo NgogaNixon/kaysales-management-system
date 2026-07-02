@@ -134,7 +134,7 @@ export default function Landing() {
             {/* Standard Plan */}
             <div className="bg-white dark:bg-gray-800 rounded-2xl p-8 shadow-sm border border-gray-200 dark:border-gray-700">
               <div className="text-gray-500 dark:text-gray-400 font-medium mb-2">Standard</div>
-              <div className="text-4xl font-extrabold text-gray-900 dark:text-white mb-1">RWF 45,000</div>
+              <div className="text-4xl font-extrabold text-gray-900 dark:text-white mb-1">RWF 25,000</div>
               <div className="text-gray-400 text-sm mb-6">per month</div>
               <ul className="space-y-3 mb-8">
                 {[
@@ -161,7 +161,7 @@ export default function Landing() {
                 MOST POPULAR
               </div>
               <div className="text-blue-200 font-medium mb-2">Premium</div>
-              <div className="text-4xl font-extrabold text-white mb-1">RWF 80,000</div>
+              <div className="text-4xl font-extrabold text-white mb-1">RWF 50,000</div>
               <div className="text-blue-300 text-sm mb-6">per month</div>
               <ul className="space-y-3 mb-8">
                 {[

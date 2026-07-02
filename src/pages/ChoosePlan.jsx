@@ -18,7 +18,8 @@ export default function ChoosePlan() {
     {
       id: 'standard',
       name: 'Standard',
-      price: 45000,
+      price: 25000,
+      billing: 'monthly',
       popular: false,
       features: [
         'Up to 2 Stock Categories',
@@ -32,7 +33,8 @@ export default function ChoosePlan() {
     {
       id: 'premium',
       name: 'Premium',
-      price: 80000,
+      price: 50000,
+      billing: 'monthly',
       popular: true,
       features: [
         'Unlimited Stock Categories',
@@ -41,6 +43,22 @@ export default function ChoosePlan() {
         'Full Dashboard Access',
         'Priority Support',
         'Revenue Charts & Reports',
+      ],
+    },
+    {
+      id: 'lifetime',
+      name: 'Lifetime',
+      price: 800000,
+      billing: 'once',
+      popular: false,
+      features: [
+        'Unlimited Stock Categories',
+        'Advanced Analytics',
+        'Sales & Product Management',
+        'Full Dashboard Access',
+        'Priority Support',
+        'Revenue Charts & Reports',
+        'One-Time Payment — Never Expires',
       ],
     },
   ]
@@ -230,7 +248,7 @@ export default function ChoosePlan() {
           </div>
 
           {/* Paid Plans */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
             {plans.map((plan) => (
               <div
                 key={plan.id}
@@ -249,7 +267,7 @@ export default function ChoosePlan() {
                 <div className="text-4xl font-extrabold text-white mb-1">
                   RWF {plan.price.toLocaleString()}
                 </div>
-                <p className={`text-sm mb-6 ${plan.popular ? 'text-blue-200' : 'text-gray-500'}`}>per month</p>
+                <p className={`text-sm mb-6 ${plan.popular ? 'text-blue-200' : 'text-gray-500'}`}>{plan.billing === 'once' ? 'one-time payment' : 'per month'}</p>
                 <ul className="space-y-2 mb-8">
                   {plan.features.map((f, i) => (
                     <li key={i} className={`text-sm ${plan.popular ? 'text-white' : 'text-gray-300'}`}>
