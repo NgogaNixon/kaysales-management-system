@@ -305,6 +305,7 @@ const handleToggleLifetime = async (userId, currentValue) => {
                       }`} />
                     </button>
                   </div>
+                  
                   <div className="flex justify-between items-center">
                     <span className="text-gray-400 text-sm">Lifetime Access</span>
                     <button
@@ -318,45 +319,8 @@ const handleToggleLifetime = async (userId, currentValue) => {
                       }`} />
                     </button>
                   </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-400 text-sm">Lifetime Access</span>
-                    <button
-                      onClick={() => handleToggleLifetime(selectedClient.id, selectedClient.subscription?.is_lifetime)}
-                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                        selectedClient.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
-                      }`}
-                    >
-                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
-                        selectedClient.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
-                      }`} />
-                    </button>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-400 text-sm">Lifetime Access</span>
-                    <button
-                      onClick={() => handleToggleLifetime(selectedClient.id, selectedClient.subscription?.is_lifetime)}
-                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                        selectedClient.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
-                      }`}
-                    >
-                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
-                        selectedClient.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
-                      }`} />
-                    </button>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-400 text-sm">Lifetime Access</span>
-                    <button
-                      onClick={() => handleToggleLifetime(selectedClient.id, selectedClient.subscription?.is_lifetime)}
-                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                        selectedClient.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
-                      }`}
-                    >
-                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
-                        selectedClient.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
-                      }`} />
-                    </button>
-                  </div>
+                
+                  
                   <div className="flex justify-between">
                     <span className="text-gray-400 text-sm">Status</span>
                     <span className={`text-sm font-medium ${selectedClient.approved ? 'text-green-400' : 'text-yellow-400'}`}>
