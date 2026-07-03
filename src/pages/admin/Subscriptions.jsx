@@ -9,10 +9,15 @@ export default function Subscriptions() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [activeTab, setActiveTab] = useState('payments')
-  const [showAddModal, setShowAddModal] = useState(false)
-  const [addForm, setAddForm] = useState({ user_id: '', plan_type: 'standard', expiry_days: '30' })
-  const [addSaving, setAddSaving] = useState(false)
-  const [extendDays, setExtendDays] = useState({})
+  const [customExpiry, setCustomExpiry] = useState({})
+
+  const getDefaultExpiry = (payment) => {
+    if (payment.plan_type === 'lifetime') return ''
+    const isTrial = payment.transaction_id === 'FREE-TRIAL'
+    const d = new Date()
+    d.setDate(d.getDate() + (isTrial ? 7 : 30))
+    return d.toISOString().split('T')[0]
+  }
 
   useEffect(() => {
     fetchData()
@@ -71,10 +76,13 @@ export default function Subscriptions() {
       .update({ approved: true, plan_type: payment.plan_type })
       .eq('id', payment.user_id)
 
-    // Set expiry date to 30 days from now
-    const expiryDate = new Date()
-    const isTrial = payment.transaction_id === 'FREE-TRIAL'
-    expiryDate.setDate(expiryDate.getDate() + (isTrial ? 7 : 30))
+    // Set expiry date: lifetime plans never expire, otherwise use admin's chosen date (defaults to trial=7 / paid=30 days)
+    const isLifetime = payment.plan_type === 'lifetime'
+    let expiryIso = null
+    if (!isLifetime) {
+      const chosenDate = customExpiry[payment.id] || getDefaultExpiry(payment)
+      expiryIso = new Date(chosenDate + 'T23:59:59').toISOString()
+    }
     // Check if subscription exists
     const { data: existingSub } = await supabase
       .from('subscriptions')
@@ -88,7 +96,7 @@ export default function Subscriptions() {
         .update({
           plan_type: payment.plan_type,
           payment_status: 'paid',
-          expiry_date: expiryDate.toISOString(),
+          expiry_date: expiryIso,
         })
         .eq('user_id', payment.user_id)
     } else {
@@ -98,7 +106,7 @@ export default function Subscriptions() {
           user_id: payment.user_id,
           plan_type: payment.plan_type,
           payment_status: 'paid',
-          expiry_date: expiryDate.toISOString(),
+          expiry_date: expiryIso,
         })
     }
 
@@ -129,65 +137,6 @@ export default function Subscriptions() {
     fetchData()
   }
 
-  const handleExtendSubscription = async (sub, days) => {
-    if (!days || parseInt(days) < 1) return
-    const currentExpiry = sub.expiry_date ? new Date(sub.expiry_date) : new Date()
-    const newExpiry = new Date(currentExpiry)
-    newExpiry.setDate(newExpiry.getDate() + parseInt(days))
-    await supabase
-      .from('subscriptions')
-      .update({
-        expiry_date: newExpiry.toISOString(),
-        payment_status: 'paid',
-      })
-      .eq('id', sub.id)
-    fetchData()
-  }
-
-  const handleAddSubscription = async () => {
-    if (!addForm.user_id) return
-    setAddSaving(true)
-
-    const expiryDate = new Date()
-    expiryDate.setDate(expiryDate.getDate() + parseInt(addForm.expiry_days || 30))
-
-    const { data: existingSub } = await supabase
-      .from('subscriptions')
-      .select('*')
-      .eq('user_id', addForm.user_id)
-      .maybeSingle()
-
-    if (existingSub) {
-      await supabase
-        .from('subscriptions')
-        .update({
-          plan_type: addForm.plan_type,
-          payment_status: 'paid',
-          expiry_date: expiryDate.toISOString(),
-        })
-        .eq('user_id', addForm.user_id)
-    } else {
-      await supabase
-        .from('subscriptions')
-        .insert({
-          user_id: addForm.user_id,
-          plan_type: addForm.plan_type,
-          payment_status: 'paid',
-          expiry_date: expiryDate.toISOString(),
-        })
-    }
-
-    await supabase
-      .from('profiles')
-      .update({ approved: true, plan_type: addForm.plan_type })
-      .eq('id', addForm.user_id)
-
-    setAddSaving(false)
-    setShowAddModal(false)
-    setAddForm({ user_id: '', plan_type: 'standard', expiry_days: '30' })
-    fetchData()
-  }
-
   const filtered = subscriptions.filter(s => {
     if (filter === 'paid') return s.payment_status === 'paid'
     if (filter === 'pending') return s.payment_status === 'pending'
@@ -205,17 +154,9 @@ export default function Subscriptions() {
       <div className="p-6 space-y-6">
 
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-white">💳 Subscriptions</h1>
-            <p className="text-gray-400 text-sm mt-1">Manage payments and subscriptions</p>
-          </div>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm"
-          >
-            + Add Subscription
-          </button>
+        <div>
+          <h1 className="text-2xl font-bold text-white">💳 Subscriptions</h1>
+          <p className="text-gray-400 text-sm mt-1">Manage payments and subscriptions</p>
         </div>
 
         {/* Stats */}
@@ -303,11 +244,13 @@ export default function Subscriptions() {
                         </td>
                         <td className="px-6 py-4">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            payment.plan_type === 'premium'
+                            payment.plan_type === 'lifetime'
+                              ? 'bg-yellow-900 text-yellow-300'
+                              : payment.plan_type === 'premium'
                               ? 'bg-purple-900 text-purple-300'
                               : 'bg-blue-900 text-blue-300'
                           }`}>
-                            {payment.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                            {payment.plan_type === 'lifetime' ? '♾️ Lifetime' : payment.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
                           </span>
                         </td>
                         <td className="px-6 py-4 font-medium">
@@ -339,19 +282,32 @@ export default function Subscriptions() {
                         </td>
                         <td className="px-6 py-4">
                           {payment.status === 'pending' && (
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleApprovePayment(payment)}
-                                className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
-                              >
-                                Approve
-                              </button>
-                              <button
-                                onClick={() => handleRejectPayment(payment.id)}
-                                className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
-                              >
-                                Reject
-                              </button>
+                            <div className="flex flex-col gap-2">
+                              {payment.plan_type !== 'lifetime' && (
+                                <div>
+                                  <label className="text-gray-500 text-xs block mb-1">Expires on</label>
+                                  <input
+                                    type="date"
+                                    value={customExpiry[payment.id] ?? getDefaultExpiry(payment)}
+                                    onChange={(e) => setCustomExpiry({ ...customExpiry, [payment.id]: e.target.value })}
+                                    className="bg-gray-800 border border-gray-700 text-white px-2 py-1 rounded-lg text-xs focus:outline-none focus:border-blue-500"
+                                  />
+                                </div>
+                              )}
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleApprovePayment(payment)}
+                                  className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  onClick={() => handleRejectPayment(payment.id)}
+                                  className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
+                                >
+                                  Reject
+                                </button>
+                              </div>
                             </div>
                           )}
                         </td>
@@ -414,11 +370,13 @@ export default function Subscriptions() {
                           </td>
                           <td className="px-6 py-4">
                             <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                              sub.plan_type === 'premium'
+                              sub.plan_type === 'lifetime'
+                                ? 'bg-yellow-900 text-yellow-300'
+                                : sub.plan_type === 'premium'
                                 ? 'bg-purple-900 text-purple-300'
                                 : 'bg-blue-900 text-blue-300'
                             }`}>
-                              {sub.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                              {sub.plan_type === 'lifetime' ? '♾️ Lifetime' : sub.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
                             </span>
                           </td>
                           <td className="px-6 py-4">
@@ -432,33 +390,13 @@ export default function Subscriptions() {
                               <option value="expired">Expired</option>
                             </select>
                           </td>
-                          <td className="px-6 py-4 space-y-2">
+                          <td className="px-6 py-4">
                             <input
                               type="date"
                               value={sub.expiry_date ? sub.expiry_date.split('T')[0] : ''}
                               onChange={(e) => handleExpiryChange(sub.id, e.target.value)}
-                              className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none w-full"
+                              className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none"
                             />
-                            <div className="flex gap-1">
-                              <input
-                                type="number"
-                                value={extendDays[sub.id] || ''}
-                                onChange={(e) => setExtendDays({ ...extendDays, [sub.id]: e.target.value })}
-                                className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none w-16"
-                                placeholder="Days"
-                                min="1"
-                              />
-                              <button
-                                onClick={() => {
-                                  handleExtendSubscription(sub, extendDays[sub.id])
-                                  setExtendDays({ ...extendDays, [sub.id]: '' })
-                                }}
-                                disabled={!extendDays[sub.id]}
-                                className="px-2 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded text-xs transition disabled:opacity-50"
-                              >
-                                + Extend
-                              </button>
-                            </div>
                           </td>
                           <td className="px-6 py-4">
                             {days === null ? (
@@ -482,70 +420,6 @@ export default function Subscriptions() {
         )}
 
       </div>
-    {/* Add Subscription Modal */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h2 className="text-lg font-bold text-white">+ Add Subscription</h2>
-              <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
-            </div>
-            <div className="px-6 py-4 space-y-4">
-              <div>
-                <label className="text-gray-400 text-sm mb-1 block">Select Client *</label>
-                <select
-                  value={addForm.user_id}
-                  onChange={(e) => setAddForm({ ...addForm, user_id: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                >
-                  <option value="">Choose a client...</option>
-                  {clients.map(c => (
-                    <option key={c.id} value={c.id}>{c.full_name} — {c.email}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-gray-400 text-sm mb-1 block">Plan</label>
-                <select
-                  value={addForm.plan_type}
-                  onChange={(e) => setAddForm({ ...addForm, plan_type: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                >
-                  <option value="standard">📦 Standard</option>
-                  <option value="premium">⭐ Premium</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-gray-400 text-sm mb-1 block">Duration (days)</label>
-                <input
-                  type="number"
-                  value={addForm.expiry_days}
-                  onChange={(e) => setAddForm({ ...addForm, expiry_days: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                  placeholder="30"
-                  min="1"
-                />
-                <p className="text-gray-500 text-xs mt-1">
-                  Expires on: {new Date(Date.now() + (parseInt(addForm.expiry_days) || 30) * 86400000).toLocaleDateString()}
-                </p>
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowAddModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
-                  Cancel
-                </button>
-                <button
-                  onClick={handleAddSubscription}
-                  disabled={addSaving || !addForm.user_id}
-                  className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium disabled:opacity-50"
-                >
-                  {addSaving ? 'Saving...' : 'Add Subscription'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
     </Layout>
   )
 }
