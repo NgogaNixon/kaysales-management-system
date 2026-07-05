@@ -144,9 +144,10 @@ export default function Dashboard() {
     doc.text('--------------------------------', 40, 20, { align: 'center' })
     doc.text(`Date: ${new Date(selectedSale.created_at).toLocaleDateString()}`, 5, 26)
     doc.text(`Customer: ${selectedSale.product_name}`, 5, 32)
-    doc.text('--------------------------------', 40, 36, { align: 'center' })
+    doc.text(`Payment: ${selectedSale.payment_method === 'credit' ? 'Credit' : 'Cash'} (${selectedSale.payment_status === 'paid' ? 'Paid' : 'Pending'})`, 5, 38)
+    doc.text('--------------------------------', 40, 42, { align: 'center' })
 
-    let y = 42
+    let y = 48
     receiptItems.forEach((item, i) => {
       doc.text(`${i + 1}. ${item.product_name}`, 5, y)
       doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
@@ -409,6 +410,16 @@ export default function Dashboard() {
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Customer</span>
                   <span className="text-white">{selectedSale.product_name}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Payment Method</span>
+                  <span className="text-white">{selectedSale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Payment Status</span>
+                  <span className={selectedSale.payment_status === 'paid' ? 'text-green-400 font-medium' : 'text-orange-400 font-medium'}>
+                    {selectedSale.payment_status === 'paid' ? '✅ Paid' : '⏳ Pending'}
+                  </span>
                 </div>
                 <div className="border-t border-gray-700 pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>

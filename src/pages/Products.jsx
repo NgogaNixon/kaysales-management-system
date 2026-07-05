@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { logActivity } from '../lib/activityLogger'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -6,6 +6,7 @@ import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
+import * as XLSX from 'xlsx'
 
 export default function Products() {
   const { profile } = useAuth()
@@ -27,6 +28,9 @@ export default function Products() {
   })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState(null)
+  const fileInputRef = useRef(null)
 
   useEffect(() => {
     if (profile?.id) fetchProducts()
@@ -38,8 +42,9 @@ export default function Products() {
       .from('products')
       .select('*')
       .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
-    setProducts(data || [])
+      .order('name', { ascending: true })
+    const sorted = (data || []).sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
+    setProducts(sorted)
     setLoading(false)
   }
 
@@ -72,6 +77,15 @@ export default function Products() {
     const isEmpty = (v) => v === '' || v === null || v === undefined
     if (isEmpty(form.name) || isEmpty(form.category) || isEmpty(form.quantity) || isEmpty(form.selling_price)) {
       setError('Name, category, quantity and selling price are required')
+      return
+    }
+
+    const duplicate = products.some(p =>
+      p.name?.trim().toLowerCase() === form.name.trim().toLowerCase() &&
+      p.id !== selectedProduct?.id
+    )
+    if (duplicate) {
+      setError('A product with this name already exists')
       return
     }
 
@@ -116,6 +130,109 @@ export default function Products() {
     fetchProducts()
   }
 
+  const handleDownloadTemplate = () => {
+    const sample = [
+      { Name: 'Example Product', Category: 'General', Quantity: 10, 'Buying Price': 1000, 'Selling Price': 1500 },
+    ]
+    const ws = XLSX.utils.json_to_sheet(sample)
+    ws['!cols'] = [{ wch: 20 }, { wch: 15 }, { wch: 10 }, { wch: 14 }, { wch: 14 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Products')
+    XLSX.writeFile(wb, 'KaySales_Product_Import_Template.xlsx')
+  }
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    setImporting(true)
+    setImportResult(null)
+
+    const buffer = await file.arrayBuffer()
+    const wb = XLSX.read(buffer, { type: 'array' })
+    const sheet = wb.Sheets[wb.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json(sheet)
+
+    const existingNamesLower = new Set(products.map(p => p.name?.trim().toLowerCase()))
+    const seenInFile = new Set()
+    const toInsert = []
+    const skipped = []
+
+    for (const row of rows) {
+      const name = String(row.Name ?? row.name ?? '').trim()
+      const category = String(row.Category ?? row.category ?? '').trim()
+      const rawQuantity = row.Quantity ?? row.quantity
+      const rawSelling = row['Selling Price'] ?? row.selling_price
+      const rawBuying = row['Buying Price'] ?? row.buying_price
+      const quantity = parseInt(rawQuantity)
+      const sellingPrice = parseInt(rawSelling)
+      const buyingPrice = rawBuying === undefined || rawBuying === '' ? 0 : parseInt(rawBuying)
+      const rowLabel = name || `Row with no name (${JSON.stringify(row)})`
+
+      if (!name) {
+        skipped.push(`❌ Error: a row is missing a Name — skipped`)
+        continue
+      }
+      if (!category) {
+        skipped.push(`❌ Error: "${name}" is missing a Category — skipped`)
+        continue
+      }
+      if (rawQuantity === undefined || rawQuantity === '' || isNaN(quantity)) {
+        skipped.push(`❌ Error: "${name}" has an invalid or missing Quantity — skipped`)
+        continue
+      }
+      if (quantity < 0) {
+        skipped.push(`❌ Error: "${name}" has a negative Quantity — skipped`)
+        continue
+      }
+      if (rawSelling === undefined || rawSelling === '' || isNaN(sellingPrice)) {
+        skipped.push(`❌ Error: "${name}" has an invalid or missing Selling Price — skipped`)
+        continue
+      }
+      if (sellingPrice < 0) {
+        skipped.push(`❌ Error: "${name}" has a negative Selling Price — skipped`)
+        continue
+      }
+      if (isNaN(buyingPrice) || buyingPrice < 0) {
+        skipped.push(`❌ Error: "${name}" has an invalid Buying Price — skipped`)
+        continue
+      }
+      const nameLower = name.toLowerCase()
+      if (existingNamesLower.has(nameLower)) {
+        skipped.push(`❌ Error: "${name}" already exists in your product list — skipped`)
+        continue
+      }
+      if (seenInFile.has(nameLower)) {
+        skipped.push(`❌ Error: "${name}" is duplicated within the file — skipped`)
+        continue
+      }
+      seenInFile.add(nameLower)
+      toInsert.push({
+        name,
+        category,
+        quantity,
+        buying_price: buyingPrice,
+        selling_price: sellingPrice,
+        user_id: profile.id,
+      })
+    }
+
+    if (toInsert.length > 0) {
+      await supabase.from('products').insert(toInsert)
+      await logActivity(
+        profile.id,
+        profile.email,
+        profile.full_name,
+        'Import Products',
+        `Imported ${toInsert.length} product(s) from Excel`
+      )
+    }
+
+    setImportResult({ added: toInsert.length, skipped })
+    setImporting(false)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    fetchProducts()
+  }
+
   const handleDelete = async () => {
     await supabase.from('products').delete().eq('id', selectedProduct.id)
     await logActivity(
@@ -148,12 +265,32 @@ export default function Products() {
             <h1 className="text-2xl font-bold text-white">📦 Products</h1>
             <p className="text-gray-400 text-sm mt-1">Manage your stock and inventory</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {isStandard && (
               <span className="text-xs text-yellow-400 bg-yellow-900 px-3 py-2 rounded-lg">
                 Standard Plan — up to 2 categories
               </span>
             )}
+            <button
+              onClick={handleDownloadTemplate}
+              className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition font-medium text-sm"
+            >
+              📥 Download Template
+            </button>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={importing}
+              className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition font-medium text-sm"
+            >
+              {importing ? 'Importing...' : '📤 Import Excel'}
+            </button>
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleImportFile}
+              accept=".xlsx,.xls"
+              className="hidden"
+            />
             <button
               onClick={openAdd}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm"
@@ -162,6 +299,24 @@ export default function Products() {
             </button>
           </div>
         </div>
+
+        {/* Import Result Banner */}
+        {importResult && (
+          <div className={`rounded-xl p-4 border ${importResult.skipped.length > 0 ? 'bg-yellow-900 border-yellow-700' : 'bg-green-900 border-green-700'}`}>
+            <div className="flex items-center justify-between">
+              <p className={`text-sm font-medium ${importResult.skipped.length > 0 ? 'text-yellow-300' : 'text-green-300'}`}>
+                ✅ {importResult.added} product{importResult.added !== 1 ? 's' : ''} imported successfully
+                {importResult.skipped.length > 0 && ` — ${importResult.skipped.length} error${importResult.skipped.length !== 1 ? 's' : ''} found`}
+              </p>
+              <button onClick={() => setImportResult(null)} className="text-gray-400 hover:text-white text-sm">✕</button>
+            </div>
+            {importResult.skipped.length > 0 && (
+              <ul className="mt-2 text-xs text-yellow-400 list-disc list-inside space-y-0.5">
+                {importResult.skipped.map((s, i) => <li key={i}>{s}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Stock Inventory Value - Esther only */}
         {isEsther && (
