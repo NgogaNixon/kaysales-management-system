@@ -130,10 +130,10 @@ export default function Layout({ children }) {
       </main>
 
       {/* ===== MOBILE LAYOUT ===== */}
-      <div className="md:hidden flex flex-col min-h-screen">
+      <div className="md:hidden flex flex-col h-dvh overflow-hidden">
 
         {/* Mobile Header */}
-        <header className="bg-gray-900 border-b border-gray-800 px-4 py-3 flex items-center justify-between sticky top-0 z-40">
+        <header className="bg-gray-900 border-b border-gray-800 px-4 py-3 flex items-center justify-between flex-shrink-0 z-40">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
               <span className="text-white font-bold text-sm">K</span>
@@ -169,12 +169,12 @@ export default function Layout({ children }) {
         </header>
 
         {/* Mobile Content */}
-        <div className="flex-1 pb-20 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto">
           {children}
         </div>
 
         {/* Mobile Bottom Navigation */}
-        <nav className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 z-50 safe-bottom">
+        <nav className="flex-shrink-0 bg-gray-900 border-t border-gray-800 z-50 safe-bottom">
           <div className="flex items-center overflow-x-auto px-1 py-2 gap-1">
             {navItems.map((item) => (
               <button
