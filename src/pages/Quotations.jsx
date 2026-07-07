@@ -38,7 +38,7 @@ export default function Quotations() {
       .from('quotations')
       .select('*')
       .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
+      .order('date', { ascending: false })
     setQuotations(data || [])
     setLoading(false)
   }
@@ -110,18 +110,27 @@ export default function Quotations() {
       setError('Customer name is required')
       return
     }
+    if (products.length === 0) {
+      setError('You have no products yet — add products first before creating a quotation')
+      return
+    }
     const validItems = quoteItems.filter(i => i.product_id && !isEmpty(i.quantity) && !isEmpty(i.selling_price))
     if (validItems.length === 0) {
-      setError('Please add at least one product')
+      setError('Please select a product and enter quantity + price for at least one item')
+      return
+    }
+    if (!profile?.id) {
+      alert('DIAGNOSTIC: profile is not loaded (profile.id is missing). This means the page loaded before your account data was ready. Try refreshing the page and opening Quotations again.')
       return
     }
 
     setSaving(true)
     setError('')
 
-    const { error: saveError } = await supabase.from('quotations').insert({
+    const payload = {
       user_id: profile.id,
       customer_name: customerName,
+      date: quoteDate,
       items: validItems.map(i => ({
         product_id: i.product_id,
         product_name: i.product_name,
@@ -131,30 +140,50 @@ export default function Quotations() {
       })),
       total: grandTotal,
       status: 'pending',
-      created_at: quoteDate,
-    })
-
-    if (saveError) {
-      setError('Failed to save quotation: ' + saveError.message)
-      setSaving(false)
-      return
     }
 
-    await logActivity(
-      profile.id,
-      profile.email,
-      profile.full_name,
-      'Add Quotation',
-      `Created quotation for: ${customerName} - RWF ${grandTotal.toLocaleString()}`
-    )
+    try {
+      const { data: insertedRows, error: saveError } = await supabase
+        .from('quotations')
+        .insert(payload)
+        .select()
 
-    setSaving(false)
-    setShowModal(false)
-    fetchQuotations()
+      if (saveError) {
+        alert('DIAGNOSTIC — Supabase rejected the save:\n\n' + JSON.stringify(saveError, null, 2))
+        setError('Failed to save quotation: ' + saveError.message)
+        return
+      }
+
+      if (!insertedRows || insertedRows.length === 0) {
+        alert('DIAGNOSTIC: Supabase returned no error, but also returned no saved row. This usually means Row Level Security silently blocked the insert. Check that the "quotations" table has an INSERT policy allowing auth.uid() = user_id.')
+        setError('Save appeared to succeed but no row was returned — likely a database permissions issue.')
+        return
+      }
+
+      await logActivity(
+        profile.id,
+        profile.email,
+        profile.full_name,
+        'Add Quotation',
+        `Created quotation for: ${customerName} - RWF ${grandTotal.toLocaleString()}`
+      )
+
+      setShowModal(false)
+      await fetchQuotations()
+    } catch (err) {
+      alert('DIAGNOSTIC — Unexpected JavaScript error:\n\n' + (err?.message || String(err)))
+      setError('Something went wrong while saving: ' + (err?.message || 'unknown error'))
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleDelete = async () => {
-    await supabase.from('quotations').delete().eq('id', selectedQuotation.id)
+    const { error: deleteError } = await supabase.from('quotations').delete().eq('id', selectedQuotation.id)
+    if (deleteError) {
+      alert('Could not delete this quotation:\n\n' + deleteError.message)
+      return
+    }
     await logActivity(
       profile.id,
       profile.email,
@@ -171,69 +200,98 @@ export default function Quotations() {
   const handleConvertToSale = async (quotation) => {
     if (quotation.status === 'converted') return
     setConverting(true)
+    setError('')
 
-    const { data: saleData, error: saleError } = await supabase
-      .from('sales')
-      .insert({
-        user_id: profile.id,
-        product_name: quotation.customer_name,
-        quantity_sold: quotation.items.reduce((sum, i) => sum + i.quantity, 0),
-        selling_price: 0,
-        total: quotation.total,
-        payment_method: 'cash',
-        payment_status: 'paid',
-      })
-      .select()
-      .single()
-
-    if (saleError || !saleData) {
-      setError('Failed to convert quotation: ' + (saleError?.message || 'unknown error'))
-      setConverting(false)
-      return
-    }
-
-    const itemsToInsert = quotation.items.map(item => ({
-      sale_id: saleData.id,
-      user_id: profile.id,
-      product_id: item.product_id,
-      product_name: item.product_name,
-      quantity_sold: item.quantity,
-      selling_price: item.selling_price,
-      total: item.total,
-    }))
-    await supabase.from('sale_items').insert(itemsToInsert)
-
-    // Reduce stock now that this is a real sale
-    for (const item of quotation.items) {
-      const { data: freshProduct } = await supabase
-        .from('products')
-        .select('quantity')
-        .eq('id', item.product_id)
-        .single()
-      if (freshProduct) {
-        await supabase
+    try {
+      // Look up each product's buying price so we can calculate real profit and
+      // keep sale_items consistent with sales created directly on the Sales page.
+      const itemsWithCost = []
+      for (const item of quotation.items) {
+        const { data: productData } = await supabase
           .from('products')
-          .update({ quantity: freshProduct.quantity - item.quantity })
+          .select('buying_price')
           .eq('id', item.product_id)
+          .single()
+        itemsWithCost.push({
+          ...item,
+          buying_price: productData?.buying_price || 0,
+        })
       }
+
+      const totalProfit = itemsWithCost.reduce((sum, item) => {
+        return sum + ((item.selling_price - item.buying_price) * item.quantity)
+      }, 0)
+
+      const { data: saleData, error: saleError } = await supabase
+        .from('sales')
+        .insert({
+          user_id: profile.id,
+          product_name: quotation.customer_name,
+          quantity_sold: quotation.items.reduce((sum, i) => sum + i.quantity, 0),
+          selling_price: 0,
+          total: quotation.total,
+          payment_method: 'cash',
+          payment_status: 'paid',
+          extra_fees: 0,
+          profit: totalProfit,
+        })
+        .select()
+        .single()
+
+      if (saleError || !saleData) {
+        console.error('Convert to sale error:', saleError)
+        setError('Failed to convert quotation: ' + (saleError?.message || 'unknown error'))
+        return
+      }
+
+      const itemsToInsert = itemsWithCost.map(item => ({
+        sale_id: saleData.id,
+        user_id: profile.id,
+        product_id: item.product_id,
+        product_name: item.product_name,
+        quantity_sold: item.quantity,
+        selling_price: item.selling_price,
+        buying_price: item.buying_price,
+        total: item.total,
+      }))
+      await supabase.from('sale_items').insert(itemsToInsert)
+
+      // Reduce stock now that this is a real sale
+      for (const item of itemsWithCost) {
+        const { data: freshProduct } = await supabase
+          .from('products')
+          .select('quantity')
+          .eq('id', item.product_id)
+          .single()
+        if (freshProduct) {
+          await supabase
+            .from('products')
+            .update({ quantity: freshProduct.quantity - item.quantity })
+            .eq('id', item.product_id)
+        }
+      }
+
+      await supabase
+        .from('quotations')
+        .update({ status: 'converted', sale_id: saleData.id })
+        .eq('id', quotation.id)
+
+      await logActivity(
+        profile.id,
+        profile.email,
+        profile.full_name,
+        'Convert Quotation to Sale',
+        `Converted quotation for: ${quotation.customer_name} - RWF ${quotation.total.toLocaleString()}`
+      )
+
+      fetchQuotations()
+      fetchProducts()
+    } catch (err) {
+      console.error('Unexpected error converting quotation:', err)
+      setError('Something went wrong converting to sale: ' + (err?.message || 'unknown error'))
+    } finally {
+      setConverting(false)
     }
-
-    await supabase
-      .from('quotations')
-      .update({ status: 'converted', sale_id: saleData.id })
-      .eq('id', quotation.id)
-
-    await logActivity(
-      profile.id,
-      profile.email,
-      profile.full_name,
-      'Convert Quotation to Sale',
-      `Converted quotation for: ${quotation.customer_name} - RWF ${quotation.total.toLocaleString()}`
-    )
-
-    setConverting(false)
-    fetchQuotations()
-    fetchProducts()
   }
 
   const exportPDF = (quotation) => {
@@ -243,7 +301,7 @@ export default function Quotations() {
     doc.setFontSize(12)
     doc.text(`Quotation — ${quotation.customer_name}`, 14, 25)
     doc.setFontSize(10)
-    doc.text(`Date: ${new Date(quotation.created_at).toLocaleDateString()}`, 14, 32)
+    doc.text(`Date: ${new Date(quotation.date).toLocaleDateString()}`, 14, 32)
     doc.text(`Status: ${quotation.status === 'converted' ? 'Converted to Sale' : 'Pending'}`, 14, 39)
     autoTable(doc, {
       startY: 47,
@@ -304,7 +362,7 @@ export default function Quotations() {
                       <td className="px-6 py-4 text-white font-medium">{q.customer_name}</td>
                       <td className="px-6 py-4 text-gray-300">{q.items.length} item{q.items.length > 1 ? 's' : ''}</td>
                       <td className="px-6 py-4 text-green-400 font-medium">RWF {q.total.toLocaleString()}</td>
-                      <td className="px-6 py-4 text-gray-400">{new Date(q.created_at).toLocaleDateString()}</td>
+                      <td className="px-6 py-4 text-gray-400">{new Date(q.date).toLocaleDateString()}</td>
                       <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                           q.status === 'converted' ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'
@@ -326,11 +384,9 @@ export default function Quotations() {
                               🔁 Convert to Sale
                             </button>
                           )}
-                          {q.status !== 'converted' && (
-                            <button onClick={() => openDelete(q)} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs transition">
-                              Delete
-                            </button>
-                          )}
+                          <button onClick={() => openDelete(q)} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs transition">
+                            Delete
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -434,9 +490,13 @@ export default function Quotations() {
         )}
 
         {/* Confirm Delete */}
-        {showConfirm && (
+        {showConfirm && selectedQuotation && (
           <ConfirmDialog
-            message="Are you sure you want to delete this quotation?"
+            message={
+              selectedQuotation.status === 'converted'
+                ? 'This quotation was already converted to a Sale. Deleting it only removes this quotation record — the Sale itself will NOT be affected. Continue?'
+                : 'Are you sure you want to delete this quotation?'
+            }
             onConfirm={handleDelete}
             onCancel={() => setShowConfirm(false)}
           />

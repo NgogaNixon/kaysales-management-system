@@ -10,7 +10,7 @@ import * as XLSX from 'xlsx'
 
 export default function Products() {
   const { profile } = useAuth()
-  const isEsther = profile?.email === 'uwimanaesther078@gmail.com'
+  const showProfit = profile?.show_profit === true
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
@@ -319,7 +319,7 @@ export default function Products() {
         )}
 
         {/* Stock Inventory Value - Esther only */}
-        {isEsther && (
+        {showProfit && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="bg-blue-900 border border-blue-700 rounded-xl p-4">
               <span className="text-2xl">📦</span>
@@ -385,6 +385,9 @@ export default function Products() {
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Name</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Category</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Qty</th>
+                    {showProfit && (
+                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Buying Price</th>
+                    )}
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Selling Price</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
@@ -400,6 +403,9 @@ export default function Products() {
                           {product.quantity}
                         </span>
                       </td>
+                      {showProfit && (
+                        <td className="px-6 py-4 text-purple-300">RWF {(product.buying_price || 0).toLocaleString()}</td>
+                      )}
                       <td className="px-6 py-4 text-gray-300">RWF {product.selling_price?.toLocaleString()}</td>
                       <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
@@ -472,7 +478,7 @@ export default function Products() {
                 className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
-            {isEsther && (
+            {showProfit && (
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">Buying Price / Cost (RWF)</label>
                 <input

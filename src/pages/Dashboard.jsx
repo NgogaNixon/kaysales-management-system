@@ -28,6 +28,7 @@ export default function Dashboard() {
   const [loadingReceipt, setLoadingReceipt] = useState(false)
   const [manualExpenses, setManualExpenses] = useState(0)
   const [expenseList, setExpenseList] = useState([])
+  const [allSales, setAllSales] = useState([])
   const [showExpenseModal, setShowExpenseModal] = useState(false)
   const [showExpenseHistory, setShowExpenseHistory] = useState(false)
   const [expenseDesc, setExpenseDesc] = useState('')
@@ -101,6 +102,7 @@ export default function Dashboard() {
     const stockValueSelling = productsData?.reduce((sum, p) => sum + ((p.selling_price || 0) * (p.quantity || 0)), 0) || 0
     const lowStock = productsData?.filter(p => p.quantity < 3) || []
     const recentSales = salesData?.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 10) || []
+    setAllSales(salesData || [])
 
     setStats({
       totalSales: salesData?.length || 0,
@@ -158,9 +160,25 @@ export default function Dashboard() {
     doc.text('--------------------------------', 40, y, { align: 'center' })
     doc.setFontSize(11)
     doc.text(`GRAND TOTAL: RWF ${selectedSale.total?.toLocaleString()}`, 40, y + 7, { align: 'center' })
+    let footerY = y + 7
+
+    if (showProfit && (selectedSale.extra_fees || selectedSale.profit !== undefined)) {
+      doc.setFontSize(8)
+      if (selectedSale.extra_fees) {
+        footerY += 6
+        doc.text(`Extra Fees: -RWF ${selectedSale.extra_fees.toLocaleString()}`, 40, footerY, { align: 'center' })
+        footerY += 5
+        doc.text(`Remaining: RWF ${(selectedSale.total - selectedSale.extra_fees).toLocaleString()}`, 40, footerY, { align: 'center' })
+      }
+      if (selectedSale.profit !== undefined && selectedSale.profit !== null) {
+        footerY += 5
+        doc.text(`Profit Made: RWF ${selectedSale.profit.toLocaleString()}`, 40, footerY, { align: 'center' })
+      }
+    }
+
     doc.setFontSize(8)
-    doc.text('Thank you for your business!', 40, y + 14, { align: 'center' })
-    doc.text('Powered by KaySales', 40, y + 19, { align: 'center' })
+    doc.text('Thank you for your business!', 40, footerY + 7, { align: 'center' })
+    doc.text('Powered by KaySales', 40, footerY + 12, { align: 'center' })
     doc.save(`Receipt_${selectedSale.product_name}_${new Date(selectedSale.created_at).toLocaleDateString()}.pdf`)
   }
 
@@ -282,6 +300,7 @@ export default function Dashboard() {
                 <span className="text-2xl">💰</span>
                 <p className="text-white text-2xl font-bold mt-2">RWF {stats.totalRevenue.toLocaleString()}</p>
                 <p className="text-gray-400 text-sm mt-1">Total (Revenue)</p>
+                <p className="text-gray-500 text-xs mt-1">= Sum of every sale's total, including unpaid credit sales</p>
               </div>
               <div
                 onClick={() => setShowExpenseHistory(true)}
@@ -290,17 +309,20 @@ export default function Dashboard() {
                 <span className="text-2xl">📉</span>
                 <p className="text-orange-300 text-2xl font-bold mt-2">RWF {(cogs + manualExpenses).toLocaleString()}</p>
                 <p className="text-orange-400 text-sm mt-1">Expenses (Cost of Goods + Operating)</p>
-                <p className="text-orange-500 text-xs mt-1 underline">Click to see breakdown</p>
+                <p className="text-orange-500 text-xs mt-1">= (Total − Total Profit) + Manual Expenses</p>
+                <p className="text-orange-500 text-xs mt-1 underline">Click to see full breakdown</p>
               </div>
               <div className="bg-yellow-900 border border-yellow-700 rounded-xl p-4">
                 <span className="text-2xl">🧾</span>
                 <p className="text-yellow-300 text-2xl font-bold mt-2">RWF {vat.toLocaleString()}</p>
                 <p className="text-yellow-400 text-sm mt-1">VAT (18%)</p>
+                <p className="text-yellow-500 text-xs mt-1">= Total Revenue × 18%</p>
               </div>
               <div className="bg-purple-900 border border-purple-700 rounded-xl p-4">
                 <span className="text-2xl">💎</span>
                 <p className="text-purple-300 text-2xl font-bold mt-2">RWF {netProfit.toLocaleString()}</p>
                 <p className="text-purple-400 text-sm mt-1">Profit (after Expenses & VAT)</p>
+                <p className="text-purple-500 text-xs mt-1">= Total − Expenses − VAT</p>
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -308,11 +330,13 @@ export default function Dashboard() {
                 <span className="text-2xl">📦</span>
                 <p className="text-blue-300 text-2xl font-bold mt-2">RWF {stats.stockValueCost.toLocaleString()}</p>
                 <p className="text-blue-400 text-sm mt-1">Stock Value (Cost)</p>
+                <p className="text-blue-500 text-xs mt-1">= Σ (buying price × quantity) across unsold stock</p>
               </div>
               <div className="bg-green-900 border border-green-700 rounded-xl p-4">
                 <span className="text-2xl">💰</span>
                 <p className="text-green-300 text-2xl font-bold mt-2">RWF {stats.stockValueSelling.toLocaleString()}</p>
                 <p className="text-green-400 text-sm mt-1">Stock Value (Selling Price)</p>
+                <p className="text-green-500 text-xs mt-1">= Σ (selling price × quantity) across unsold stock</p>
               </div>
             </div>
           </div>
@@ -443,6 +467,24 @@ export default function Dashboard() {
                   <span className="text-white font-bold">GRAND TOTAL</span>
                   <span className="text-green-400 font-bold text-lg">RWF {selectedSale.total?.toLocaleString()}</span>
                 </div>
+                {showProfit && selectedSale.extra_fees > 0 && (
+                  <>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Extra Fees</span>
+                      <span className="text-red-400">- RWF {selectedSale.extra_fees.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Remaining</span>
+                      <span className="text-white font-medium">RWF {(selectedSale.total - selectedSale.extra_fees).toLocaleString()}</span>
+                    </div>
+                  </>
+                )}
+                {showProfit && selectedSale.profit !== undefined && selectedSale.profit !== null && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Profit Made</span>
+                    <span className="text-purple-400 font-medium">RWF {selectedSale.profit.toLocaleString()}</span>
+                  </div>
+                )}
               </div>
               <div className="text-center mt-4 text-gray-500 text-xs">
                 <p>Thank you for your business!</p>
@@ -513,13 +555,36 @@ export default function Dashboard() {
 
               {/* Cost of Goods */}
               <div>
-                <p className="text-white font-bold text-sm mb-2">Cost of Goods Sold — RWF {cogs.toLocaleString()}</p>
-                <p className="text-gray-400 text-xs mb-2">Automatically calculated from what you paid for products you've sold. See the "Products (Bought / Sold)" column on the Sales page for a per-product breakdown.</p>
+                <p className="text-white font-bold text-sm mb-1">Cost of Goods Sold — RWF {cogs.toLocaleString()}</p>
+                <p className="text-gray-500 text-xs mb-3">Per sale: (Revenue − Profit). Sum of the column below = the total above.</p>
+                {allSales.length === 0 ? (
+                  <p className="text-gray-500 text-sm">No sales recorded yet.</p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {allSales
+                      .slice()
+                      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                      .map((s) => {
+                        const saleCost = (s.total || 0) - (s.profit || 0)
+                        return (
+                          <div key={s.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
+                            <div>
+                              <p className="text-white text-sm">{s.product_name}</p>
+                              <p className="text-gray-500 text-xs">
+                                {new Date(s.created_at).toLocaleDateString()} · Revenue RWF {(s.total || 0).toLocaleString()} − Profit RWF {(s.profit || 0).toLocaleString()}
+                              </p>
+                            </div>
+                            <span className="text-orange-300 text-sm font-medium">RWF {saleCost.toLocaleString()}</span>
+                          </div>
+                        )
+                      })}
+                  </div>
+                )}
                 <button
                   onClick={() => navigate('/sales')}
-                  className="text-blue-400 hover:text-blue-300 text-xs underline"
+                  className="text-blue-400 hover:text-blue-300 text-xs underline mt-2 inline-block"
                 >
-                  Go to Sales page →
+                  Go to Sales page for full item-level detail →
                 </button>
               </div>
 

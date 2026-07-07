@@ -13,7 +13,7 @@ import autoTable from 'jspdf-autotable'
 
 export default function Sales() {
   const { profile } = useAuth()
-  const isEsther = profile?.email === 'uwimanaesther078@gmail.com'
+  const showProfit = profile?.show_profit === true
   const [sales, setSales] = useState([])
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -104,6 +104,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setCustomerName(sale.product_name)
     setPaymentMethod(sale.payment_method || 'cash')
     setSaleDate(sale.created_at ? sale.created_at.split('T')[0] : new Date().toISOString().split('T')[0])
+    setExtraFees(sale.extra_fees ? String(sale.extra_fees) : '')
     setError('')
 
     const { data: existingItems } = await supabase
@@ -276,7 +277,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         }
 
         // Recalculate profit/extra fees
-        if (isEsther) {
+        if (showProfit) {
           await supabase.from('sales').update({
             extra_fees: parseInt(extraFees) || 0,
             profit: totalProfit,
@@ -338,7 +339,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         }))
         await supabase.from('sale_items').insert(itemsToInsert)
 
-        if (isEsther) {
+        if (showProfit) {
           await supabase.from('sales').update({
             extra_fees: parseInt(extraFees) || 0,
             profit: totalProfit,
@@ -413,44 +414,70 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
   const confirmDelete = async () => {
     if (!pendingDelete) return
 
-    const { data: items } = await supabase
-      .from('sale_items')
-      .select('*')
-      .eq('sale_id', pendingDelete.id)
+    try {
+      // Fetch items first so we know what to restock, but don't touch stock yet
+      const { data: items } = await supabase
+        .from('sale_items')
+        .select('*')
+        .eq('sale_id', pendingDelete.id)
 
-    // Restore product quantities
-    if (items && items.length > 0) {
-      for (const item of items) {
-        const { data: freshProduct } = await supabase
-          .from('products')
-          .select('quantity')
-          .eq('id', item.product_id)
-          .single()
-        if (freshProduct) {
-          await supabase
+      // Unlink any quotation that points at this sale, so the FK doesn't block deletion.
+      // Revert it to 'pending' so it can be converted again if needed.
+      await supabase
+        .from('quotations')
+        .update({ sale_id: null, status: 'pending' })
+        .eq('sale_id', pendingDelete.id)
+
+      // Delete the sale itself first — check that it actually succeeded before touching anything else
+      const { error: deleteSaleError } = await supabase
+        .from('sales')
+        .delete()
+        .eq('id', pendingDelete.id)
+
+      if (deleteSaleError) {
+        alert('Could not delete this sale:\n\n' + deleteSaleError.message)
+        setPendingDelete(null)
+        setShowUndoToast(false)
+        return
+      }
+
+      // Sale delete succeeded — now safe to remove its items and restore stock
+      await supabase.from('sale_items').delete().eq('sale_id', pendingDelete.id)
+
+      if (items && items.length > 0) {
+        for (const item of items) {
+          const { data: freshProduct } = await supabase
             .from('products')
-            .update({ quantity: freshProduct.quantity + item.quantity_sold })
+            .select('quantity')
             .eq('id', item.product_id)
+            .single()
+          if (freshProduct) {
+            await supabase
+              .from('products')
+              .update({ quantity: freshProduct.quantity + item.quantity_sold })
+              .eq('id', item.product_id)
+          }
         }
       }
+
+      await logActivity(
+        profile.id,
+        profile.email,
+        profile.full_name,
+        'Delete Sale',
+        `Deleted sale for: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
+      )
+
+      setPendingDelete(null)
+      setShowUndoToast(false)
+      fetchSales()
+      fetchAllSaleItems()
+      fetchProducts()
+    } catch (err) {
+      alert('Unexpected error deleting sale:\n\n' + (err?.message || String(err)))
+      setPendingDelete(null)
+      setShowUndoToast(false)
     }
-
-    await supabase.from('sale_items').delete().eq('sale_id', pendingDelete.id)
-    await supabase.from('sales').delete().eq('id', pendingDelete.id)
-
-    await logActivity(
-      profile.id,
-      profile.email,
-      profile.full_name,
-      'Delete Sale',
-      `Deleted sale for: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
-    )
-
-    setPendingDelete(null)
-    setShowUndoToast(false)
-    fetchSales()
-    fetchAllSaleItems()
-    fetchProducts()
   }
 
   const handleUndo = () => {
@@ -495,9 +522,25 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     doc.text('--------------------------------', 40, y, { align: 'center' })
     doc.setFontSize(11)
     doc.text(`GRAND TOTAL: RWF ${receiptSale.total?.toLocaleString()}`, 40, y + 7, { align: 'center' })
+    let footerY = y + 7
+
+    if (showProfit && (receiptSale.extra_fees || receiptSale.profit !== undefined)) {
+      doc.setFontSize(8)
+      if (receiptSale.extra_fees) {
+        footerY += 6
+        doc.text(`Extra Fees: -RWF ${receiptSale.extra_fees.toLocaleString()}`, 40, footerY, { align: 'center' })
+        footerY += 5
+        doc.text(`Remaining: RWF ${(receiptSale.total - receiptSale.extra_fees).toLocaleString()}`, 40, footerY, { align: 'center' })
+      }
+      if (receiptSale.profit !== undefined && receiptSale.profit !== null) {
+        footerY += 5
+        doc.text(`Profit Made: RWF ${receiptSale.profit.toLocaleString()}`, 40, footerY, { align: 'center' })
+      }
+    }
+
     doc.setFontSize(8)
-    doc.text('Thank you for your business!', 40, y + 14, { align: 'center' })
-    doc.text('Powered by KaySales', 40, y + 19, { align: 'center' })
+    doc.text('Thank you for your business!', 40, footerY + 7, { align: 'center' })
+    doc.text('Powered by KaySales', 40, footerY + 12, { align: 'center' })
     doc.save(`Receipt_${receiptSale.product_name}_${new Date(receiptSale.created_at).toLocaleDateString()}.pdf`)
   }
 
@@ -744,7 +787,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                       placeholder="Selling Price (RWF)"
                     />
                   </div>
-                  {isEsther && (
+                  {showProfit && (
                     <input
                       type="number"
                       value={item.buying_price}
@@ -762,7 +805,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 + Add Another Product
               </button>
             </div>
-            {isEsther && (
+            {showProfit && (
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">Extra Fees (RWF)</label>
                 <input
@@ -778,7 +821,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
               <div className="bg-gray-800 rounded-lg px-4 py-3">
                 <p className="text-gray-400 text-sm">Grand Total</p>
                 <p className="text-green-400 text-xl font-bold">RWF {grandTotal.toLocaleString()}</p>
-                {isEsther && (
+                {showProfit && (
                   <>
                     <p className="text-gray-400 text-sm mt-2">Estimated Profit</p>
                     <p className={`text-lg font-bold ${totalProfit >= 0 ? 'text-purple-400' : 'text-red-400'}`}>
@@ -922,6 +965,24 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                   <span className="text-white font-bold">GRAND TOTAL</span>
                   <span className="text-green-400 font-bold text-lg">RWF {receiptSale.total?.toLocaleString()}</span>
                 </div>
+                {showProfit && receiptSale.extra_fees > 0 && (
+                  <>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Extra Fees</span>
+                      <span className="text-red-400">- RWF {receiptSale.extra_fees.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Remaining</span>
+                      <span className="text-white font-medium">RWF {(receiptSale.total - receiptSale.extra_fees).toLocaleString()}</span>
+                    </div>
+                  </>
+                )}
+                {showProfit && receiptSale.profit !== undefined && receiptSale.profit !== null && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Profit Made</span>
+                    <span className="text-purple-400 font-medium">RWF {receiptSale.profit.toLocaleString()}</span>
+                  </div>
+                )}
               </div>
               <div className="text-center mt-4 text-gray-500 text-xs">
                 <p>Thank you for your business!</p>
