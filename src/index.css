@@ -15,9 +15,13 @@ html, body {
 /* Fallback chain for viewport height: last supported value wins.
    100vh works everywhere but ignores the dynamic Safari toolbar.
    -webkit-fill-available covers older iOS Safari.
-   100dvh (iOS 15.4+) is the correct modern value that live-updates with the toolbar. */
+   100dvh (iOS 15.4+) is the correct modern value that live-updates with the toolbar.
+   var(--app-height) is set by JS (Layout.jsx) from the real measured screen height,
+   and takes priority over all of the above since some browsers (e.g. Chrome on iOS)
+   don't recalculate dvh reliably. */
 .mobile-viewport {
   height: 100vh;
   height: -webkit-fill-available;
   height: 100dvh;
+  height: var(--app-height, 100dvh);
 }

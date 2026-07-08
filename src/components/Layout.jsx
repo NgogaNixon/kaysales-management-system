@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useLanguage } from '../context/LanguageContext'
@@ -27,6 +27,29 @@ export default function Layout({ children }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(true)
+
+  // Measure the ACTUAL visible screen height with JS instead of relying on CSS
+  // viewport units (100vh/100dvh), since some mobile browsers (notably Chrome
+  // on iOS) don't recalculate dvh reliably on load. This works everywhere.
+  useEffect(() => {
+    const setAppHeight = () => {
+      const height = window.visualViewport ? window.visualViewport.height : window.innerHeight
+      document.documentElement.style.setProperty('--app-height', `${height}px`)
+    }
+    setAppHeight()
+    window.addEventListener('resize', setAppHeight)
+    window.addEventListener('orientationchange', setAppHeight)
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', setAppHeight)
+    }
+    return () => {
+      window.removeEventListener('resize', setAppHeight)
+      window.removeEventListener('orientationchange', setAppHeight)
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', setAppHeight)
+      }
+    }
+  }, [])
 
   const isAdmin = profile?.role === 'admin'
   const navItems = isAdmin ? adminNavItems : clientNavItems

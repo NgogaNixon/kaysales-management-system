@@ -508,7 +508,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
       receiptSale.payment_method === 'cheque' ? 'Cheque' :
       receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'
-    doc.text(`Payment: ${paymentLabel}`, 5, 38)
+    doc.text(`Payment: ${paymentLabel} (${receiptSale.payment_status === 'pending' ? 'Pending' : 'Paid'})`, 5, 38)
     doc.text('--------------------------------', 40, 42, { align: 'center' })
 
     let y = 48

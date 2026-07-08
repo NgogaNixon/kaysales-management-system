@@ -360,7 +360,7 @@ export default function Credits() {
     doc.text(`Unpaid Amount: RWF ${selectedCustomer.unpaidAmount.toLocaleString()}`, 14, 46)
     autoTable(doc, {
       startY: 54,
-      head: [['Product', 'Qty', 'Unit Price', 'Amount (RWF)', 'Date', 'Status']],
+      head: [['Product', 'Qty', 'Unit Price', 'Amount (RWF)', 'Date', 'Status', 'Paid At', 'Payment Method']],
       body: items.map(c => [
         c.product_name || '—',
         c.quantity || '—',
@@ -368,6 +368,8 @@ export default function Credits() {
         c.amount?.toLocaleString() || '0',
         c.date ? new Date(c.date).toLocaleDateString() : '—',
         c.status === 'paid' ? 'Paid' : 'Unpaid',
+        c.status === 'paid' && c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
+        c.status === 'paid' ? (getPaymentLabel(c.paid_method) || '—') : '—',
       ]),
     })
     doc.save(`KaySales_${label}_${selectedCustomer.name.replace(/\s+/g, '_')}_Credits.pdf`)
