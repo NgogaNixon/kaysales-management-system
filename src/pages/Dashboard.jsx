@@ -146,7 +146,11 @@ export default function Dashboard() {
     doc.text('--------------------------------', 40, 20, { align: 'center' })
     doc.text(`Date: ${new Date(selectedSale.created_at).toLocaleDateString()}`, 5, 26)
     doc.text(`Customer: ${selectedSale.product_name}`, 5, 32)
-    doc.text(`Payment: ${selectedSale.payment_method === 'credit' ? 'Credit' : 'Cash'} (${selectedSale.payment_status === 'paid' ? 'Paid' : 'Pending'})`, 5, 38)
+    const paymentLabel = selectedSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
+      selectedSale.payment_method === 'bank' ? 'Bank Transfer' :
+      selectedSale.payment_method === 'cheque' ? 'Cheque' :
+      selectedSale.payment_method === 'credit' ? 'Credit' : 'Cash'
+    doc.text(`Payment: ${paymentLabel} (${selectedSale.payment_status === 'paid' ? 'Paid' : 'Pending'})`, 5, 38)
     doc.text('--------------------------------', 40, 42, { align: 'center' })
 
     let y = 48
@@ -437,7 +441,12 @@ export default function Dashboard() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Payment Method</span>
-                  <span className="text-white">{selectedSale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}</span>
+                  <span className="text-white">
+                    {selectedSale.payment_method === 'mtn' ? '📱 MTN Mobile Money' :
+                     selectedSale.payment_method === 'bank' ? '🏦 Bank Transfer' :
+                     selectedSale.payment_method === 'cheque' ? '📄 Cheque' :
+                     selectedSale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
+                  </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Payment Status</span>
