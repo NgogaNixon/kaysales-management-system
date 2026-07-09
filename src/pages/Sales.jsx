@@ -31,12 +31,20 @@ export default function Sales() {
   const [receiptSale, setReceiptSale] = useState(null)
   const [receiptItems, setReceiptItems] = useState([])
   const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const getMonthStart = () => {
+    const d = new Date()
+    return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split('T')[0]
+  }
+  const getMonthEnd = () => {
+    const d = new Date()
+    return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split('T')[0]
+  }
+  const [dateFrom, setDateFrom] = useState(getMonthStart())
+  const [dateTo, setDateTo] = useState(getMonthEnd())
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0])
-  const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+  const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0, is_consignment: false }])
 const [extraFees, setExtraFees] = useState('')
 const [productSearch, setProductSearch] = useState({})
 const [showProductDropdown, setShowProductDropdown] = useState({})
@@ -92,7 +100,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setCustomerName('')
     setPaymentMethod('cash')
     setSaleDate(new Date().toISOString().split('T')[0])
-    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+    setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0, is_consignment: false }])
     setExtraFees('')
     setError('')
     setShowModal(true)
@@ -120,9 +128,10 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         selling_price: item.selling_price,
         buying_price: item.buying_price || '',
         total: item.total,
+        is_consignment: item.is_consignment || false,
       })))
     } else {
-      setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+      setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0, is_consignment: false }])
     }
 
     setShowModal(true)
@@ -168,8 +177,28 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setSaleItems(updated)
   }
 
+  const handleToggleConsignment = (index) => {
+    const updated = [...saleItems]
+    const goingConsignment = !updated[index].is_consignment
+    updated[index] = {
+      ...updated[index],
+      is_consignment: goingConsignment,
+      // Clear product selection when switching to consignment (it's not from our own stock)
+      product_id: goingConsignment ? '' : updated[index].product_id,
+      product_name: goingConsignment ? '' : updated[index].product_name,
+      buying_price: goingConsignment ? '' : updated[index].buying_price,
+    }
+    setSaleItems(updated)
+  }
+
+  const handleConsignmentNameChange = (index, name) => {
+    const updated = [...saleItems]
+    updated[index] = { ...updated[index], product_name: name }
+    setSaleItems(updated)
+  }
+
   const addItem = () => {
-    setSaleItems([...saleItems, { product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0 }])
+    setSaleItems([...saleItems, { product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0, is_consignment: false }])
   }
 
   const removeItem = (index) => {
@@ -192,7 +221,9 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       setError('Customer name is required')
       return
     }
-    const validItems = saleItems.filter(i => i.product_id && i.quantity_sold && i.selling_price)
+    const validItems = saleItems.filter(i =>
+      (i.is_consignment ? i.product_name : i.product_id) && i.quantity_sold && i.selling_price
+    )
     if (validItems.length === 0) {
       setError('Please add at least one product')
       return
@@ -208,7 +239,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       // Step 1: fetch old items so we can reverse their stock deduction before applying new ones
       const { data: oldItems } = await supabase
         .from('sale_items')
-        .select('product_id, quantity_sold')
+        .select('product_id, quantity_sold, is_consignment')
         .eq('sale_id', editSale.id)
 
       const { data, error } = await supabase
@@ -232,8 +263,9 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           await supabase.from('sales').update({ created_at: saleDate }).eq('id', editSale.id)
         }
 
-        // Restore stock from the old items before replacing them
+        // Restore stock from the old items before replacing them (skip consignment — was never deducted)
         for (const oldItem of oldItems || []) {
+          if (oldItem.is_consignment) continue
           const { data: freshProduct } = await supabase
             .from('products')
             .select('quantity')
@@ -252,17 +284,19 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         const itemsToInsert = validItems.map(item => ({
           sale_id: editSale.id,
           user_id: profile.id,
-          product_id: item.product_id,
+          product_id: item.is_consignment ? null : item.product_id,
           product_name: item.product_name,
           quantity_sold: parseInt(item.quantity_sold),
           selling_price: parseInt(item.selling_price),
           buying_price: parseInt(item.buying_price) || 0,
           total: item.total,
+          is_consignment: !!item.is_consignment,
         }))
         await supabase.from('sale_items').insert(itemsToInsert)
 
-        // Deduct stock for the new items
+        // Deduct stock for the new items (skip consignment items — not our own stock)
         for (const item of validItems) {
+          if (item.is_consignment) continue
           const { data: freshProduct } = await supabase
             .from('products')
             .select('quantity')
@@ -330,12 +364,13 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         const itemsToInsert = validItems.map(item => ({
           sale_id: saleData.id,
           user_id: profile.id,
-          product_id: item.product_id,
+          product_id: item.is_consignment ? null : item.product_id,
           product_name: item.product_name,
           quantity_sold: parseInt(item.quantity_sold),
           selling_price: parseInt(item.selling_price),
           buying_price: parseInt(item.buying_price) || 0,
           total: item.total,
+          is_consignment: !!item.is_consignment,
         }))
         await supabase.from('sale_items').insert(itemsToInsert)
 
@@ -346,8 +381,9 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           }).eq('id', saleData.id)
         }
 
-        // Reduce product quantities
+        // Reduce product quantities (skip consignment items — not our own stock)
         for (const item of validItems) {
+          if (item.is_consignment) continue
           const { data: freshProduct } = await supabase
             .from('products')
             .select('quantity')
@@ -446,6 +482,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
       if (items && items.length > 0) {
         for (const item of items) {
+          if (item.is_consignment) continue
           const { data: freshProduct } = await supabase
             .from('products')
             .select('quantity')
@@ -631,6 +668,18 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           />
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
           <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+          <button
+            onClick={() => { setDateFrom(getMonthStart()); setDateTo(getMonthEnd()) }}
+            className="px-3 py-2 bg-gray-800 text-gray-300 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
+          >
+            This Month
+          </button>
+          <button
+            onClick={() => { setDateFrom(''); setDateTo('') }}
+            className="px-3 py-2 bg-gray-800 text-gray-300 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
+          >
+            All Time
+          </button>
           <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
           <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
         </div>
@@ -638,11 +687,11 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         {/* Revenue Summary */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
           <div>
-            <p className="text-gray-400 text-sm">Total Revenue</p>
+            <p className="text-gray-400 text-sm">Total Revenue {(dateFrom || dateTo) && <span className="text-gray-500 text-xs font-normal">(filtered)</span>}</p>
             <p className="text-green-400 text-2xl font-bold">RWF {totalRevenue.toLocaleString()}</p>
           </div>
           <div className="text-right">
-            <p className="text-gray-400 text-sm">Total Sales</p>
+            <p className="text-gray-400 text-sm">Total Sales {(dateFrom || dateTo) && <span className="text-gray-500 text-xs font-normal">(filtered)</span>}</p>
             <p className="text-white text-2xl font-bold">{filtered.length}</p>
           </div>
         </div>
@@ -761,16 +810,35 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                       <button onClick={() => removeItem(index)} className="text-red-400 hover:text-red-300 text-xs">Remove</button>
                     )}
                   </div>
-                  <select
-                    value={item.product_id}
-                    onChange={(e) => handleProductChange(index, e.target.value)}
-                    className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">Select product</option>
-                    {products.map(p => (
-                      <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity})</option>
-                    ))}
-                  </select>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!item.is_consignment}
+                      onChange={() => handleToggleConsignment(index)}
+                      className="rounded"
+                    />
+                    <span className="text-gray-300 text-xs">🔄 Third-Party Item</span>
+                  </label>
+                  {item.is_consignment ? (
+                    <input
+                      type="text"
+                      value={item.product_name}
+                      onChange={(e) => handleConsignmentNameChange(index, e.target.value)}
+                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      placeholder="Product name (not in your inventory)"
+                    />
+                  ) : (
+                    <select
+                      value={item.product_id}
+                      onChange={(e) => handleProductChange(index, e.target.value)}
+                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="">Select product</option>
+                      {products.map(p => (
+                        <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity})</option>
+                      ))}
+                    </select>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <input
                       type="number"
@@ -793,7 +861,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                       value={item.buying_price}
                       onChange={(e) => handleBuyingPriceChange(index, e.target.value)}
                       className="w-full bg-gray-700 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
-                      placeholder="Buying Price / Cost (RWF)"
+                      placeholder={item.is_consignment ? "Amount you owe the owner (RWF)" : "Buying Price / Cost (RWF)"}
                     />
                   )}
                   {item.total > 0 && (

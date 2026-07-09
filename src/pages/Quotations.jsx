@@ -20,7 +20,7 @@ export default function Quotations() {
   const [selectedQuotation, setSelectedQuotation] = useState(null)
   const [customerName, setCustomerName] = useState('')
   const [quoteDate, setQuoteDate] = useState(new Date().toISOString().split('T')[0])
-  const [quoteItems, setQuoteItems] = useState([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0 }])
+  const [quoteItems, setQuoteItems] = useState([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0, is_consignment: false }])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [converting, setConverting] = useState(false)
@@ -55,7 +55,7 @@ export default function Quotations() {
     setSelectedQuotation(null)
     setCustomerName('')
     setQuoteDate(new Date().toISOString().split('T')[0])
-    setQuoteItems([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0 }])
+    setQuoteItems([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0, is_consignment: false }])
     setError('')
     setShowModal(true)
   }
@@ -94,8 +94,26 @@ export default function Quotations() {
     setQuoteItems(updated)
   }
 
+  const handleToggleConsignment = (index) => {
+    const updated = [...quoteItems]
+    const goingConsignment = !updated[index].is_consignment
+    updated[index] = {
+      ...updated[index],
+      is_consignment: goingConsignment,
+      product_id: goingConsignment ? '' : updated[index].product_id,
+      product_name: goingConsignment ? '' : updated[index].product_name,
+    }
+    setQuoteItems(updated)
+  }
+
+  const handleConsignmentNameChange = (index, name) => {
+    const updated = [...quoteItems]
+    updated[index] = { ...updated[index], product_name: name }
+    setQuoteItems(updated)
+  }
+
   const addItem = () => {
-    setQuoteItems([...quoteItems, { product_id: '', product_name: '', quantity: '', selling_price: '', total: 0 }])
+    setQuoteItems([...quoteItems, { product_id: '', product_name: '', quantity: '', selling_price: '', total: 0, is_consignment: false }])
   }
 
   const removeItem = (index) => {
@@ -114,7 +132,9 @@ export default function Quotations() {
       setError('You have no products yet — add products first before creating a quotation')
       return
     }
-    const validItems = quoteItems.filter(i => i.product_id && !isEmpty(i.quantity) && !isEmpty(i.selling_price))
+    const validItems = quoteItems.filter(i =>
+      (i.is_consignment ? i.product_name : i.product_id) && !isEmpty(i.quantity) && !isEmpty(i.selling_price)
+    )
     if (validItems.length === 0) {
       setError('Please select a product and enter quantity + price for at least one item')
       return
@@ -132,11 +152,12 @@ export default function Quotations() {
       customer_name: customerName,
       date: quoteDate,
       items: validItems.map(i => ({
-        product_id: i.product_id,
+        product_id: i.is_consignment ? null : i.product_id,
         product_name: i.product_name,
         quantity: parseInt(i.quantity),
         selling_price: parseInt(i.selling_price),
         total: i.total,
+        is_consignment: !!i.is_consignment,
       })),
       total: grandTotal,
       status: 'pending',
@@ -205,8 +226,15 @@ export default function Quotations() {
     try {
       // Look up each product's buying price so we can calculate real profit and
       // keep sale_items consistent with sales created directly on the Sales page.
+      // Consignment items (not our own stock) have no product to look up — cost
+      // defaults to 0 here; the admin can fill in the real amount owed to the
+      // owner afterward via Sales > Edit.
       const itemsWithCost = []
       for (const item of quotation.items) {
+        if (item.is_consignment) {
+          itemsWithCost.push({ ...item, buying_price: 0 })
+          continue
+        }
         const { data: productData } = await supabase
           .from('products')
           .select('buying_price')
@@ -247,17 +275,19 @@ export default function Quotations() {
       const itemsToInsert = itemsWithCost.map(item => ({
         sale_id: saleData.id,
         user_id: profile.id,
-        product_id: item.product_id,
+        product_id: item.is_consignment ? null : item.product_id,
         product_name: item.product_name,
         quantity_sold: item.quantity,
         selling_price: item.selling_price,
         buying_price: item.buying_price,
         total: item.total,
+        is_consignment: !!item.is_consignment,
       }))
       await supabase.from('sale_items').insert(itemsToInsert)
 
-      // Reduce stock now that this is a real sale
+      // Reduce stock now that this is a real sale (skip consignment items — not our own stock)
       for (const item of itemsWithCost) {
+        if (item.is_consignment) continue
         const { data: freshProduct } = await supabase
           .from('products')
           .select('quantity')
@@ -432,16 +462,35 @@ export default function Quotations() {
                         <button onClick={() => removeItem(index)} className="text-red-400 hover:text-red-300 text-xs">Remove</button>
                       )}
                     </div>
-                    <select
-                      value={item.product_id}
-                      onChange={(e) => handleProductChange(index, e.target.value)}
-                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                    >
-                      <option value="">Select product</option>
-                      {products.map(p => (
-                        <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity})</option>
-                      ))}
-                    </select>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={!!item.is_consignment}
+                        onChange={() => handleToggleConsignment(index)}
+                        className="rounded"
+                      />
+                      <span className="text-gray-300 text-xs">🔄 Third-Party Item</span>
+                    </label>
+                    {item.is_consignment ? (
+                      <input
+                        type="text"
+                        value={item.product_name}
+                        onChange={(e) => handleConsignmentNameChange(index, e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        placeholder="Product name (not in your inventory)"
+                      />
+                    ) : (
+                      <select
+                        value={item.product_id}
+                        onChange={(e) => handleProductChange(index, e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      >
+                        <option value="">Select product</option>
+                        {products.map(p => (
+                          <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity})</option>
+                        ))}
+                      </select>
+                    )}
                     <div className="grid grid-cols-3 gap-2">
                       <input
                         type="number"

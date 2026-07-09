@@ -34,6 +34,9 @@ export default function Dashboard() {
   const [expenseDesc, setExpenseDesc] = useState('')
   const [expenseAmount, setExpenseAmount] = useState('')
   const [savingExpense, setSavingExpense] = useState(false)
+  const [periodPreset, setPeriodPreset] = useState('month')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
 
   useEffect(() => {
     if (profile?.id) {
@@ -233,9 +236,44 @@ export default function Dashboard() {
     )
   }
 
-  const cogs = Math.max(stats.totalRevenue - stats.totalProfit, 0)
-  const vat = Math.round(stats.totalRevenue * 0.18)
-  const netProfit = stats.totalRevenue - (cogs + manualExpenses) - vat
+  // Period filter for the Financial Breakdown section: defaults to the current month,
+  // but can be widened to All Time or a custom range.
+  const getPeriodBounds = () => {
+    const now = new Date()
+    if (periodPreset === 'all') return { start: null, end: null }
+    if (periodPreset === 'custom') {
+      return {
+        start: customFrom ? new Date(customFrom) : null,
+        end: customTo ? new Date(customTo + 'T23:59:59') : null,
+      }
+    }
+    // default: this month
+    const start = new Date(now.getFullYear(), now.getMonth(), 1)
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59)
+    return { start, end }
+  }
+  const { start: periodStart, end: periodEnd } = getPeriodBounds()
+
+  const inPeriod = (dateStr) => {
+    const d = new Date(dateStr)
+    if (periodStart && d < periodStart) return false
+    if (periodEnd && d > periodEnd) return false
+    return true
+  }
+
+  const periodSales = allSales.filter(s => inPeriod(s.created_at))
+  const periodExpenseList = expenseList.filter(e => inPeriod(e.created_at))
+  const periodRevenue = periodSales.reduce((sum, s) => sum + (s.total || 0), 0)
+  const periodProfitSum = periodSales.reduce((sum, s) => sum + (s.profit || 0), 0)
+  const periodManualExpenses = periodExpenseList.reduce((sum, e) => sum + (e.amount || 0), 0)
+  const cogs = Math.max(periodRevenue - periodProfitSum, 0)
+  const netProfit = periodRevenue - (cogs + periodManualExpenses)
+
+  const periodLabel = periodPreset === 'month'
+    ? new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+    : periodPreset === 'all'
+    ? 'All Time'
+    : `${customFrom || '…'} to ${customTo || '…'}`
 
   return (
     <Layout>
@@ -282,8 +320,8 @@ export default function Dashboard() {
         {/* Esther Special Cards */}
         {showProfit && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-white font-bold">Financial Breakdown</h3>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h3 className="text-white font-bold">Financial Breakdown — {periodLabel}</h3>
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowExpenseHistory(true)}
@@ -299,34 +337,65 @@ export default function Dashboard() {
                 </button>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+            {/* Period Filter */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {[
+                { key: 'month', label: 'This Month' },
+                { key: 'all', label: 'All Time' },
+                { key: 'custom', label: 'Custom Range' },
+              ].map(opt => (
+                <button
+                  key={opt.key}
+                  onClick={() => setPeriodPreset(opt.key)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                    periodPreset === opt.key ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+              {periodPreset === 'custom' && (
+                <>
+                  <input
+                    type="date"
+                    value={customFrom}
+                    onChange={(e) => setCustomFrom(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-white px-3 py-1.5 rounded-lg text-xs focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-gray-500 text-xs">to</span>
+                  <input
+                    type="date"
+                    value={customTo}
+                    onChange={(e) => setCustomTo(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-white px-3 py-1.5 rounded-lg text-xs focus:outline-none focus:border-blue-500"
+                  />
+                </>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
                 <span className="text-2xl">💰</span>
-                <p className="text-white text-2xl font-bold mt-2">RWF {stats.totalRevenue.toLocaleString()}</p>
+                <p className="text-white text-2xl font-bold mt-2">RWF {periodRevenue.toLocaleString()}</p>
                 <p className="text-gray-400 text-sm mt-1">Total (Revenue)</p>
-                <p className="text-gray-500 text-xs mt-1">= Sum of every sale's total, including unpaid credit sales</p>
+                <p className="text-gray-500 text-xs mt-1">= Sum of sales in {periodLabel}, including unpaid credit sales</p>
               </div>
               <div
                 onClick={() => setShowExpenseHistory(true)}
                 className="bg-orange-900 border border-orange-700 rounded-xl p-4 cursor-pointer hover:border-orange-500 transition"
               >
                 <span className="text-2xl">📉</span>
-                <p className="text-orange-300 text-2xl font-bold mt-2">RWF {(cogs + manualExpenses).toLocaleString()}</p>
+                <p className="text-orange-300 text-2xl font-bold mt-2">RWF {(cogs + periodManualExpenses).toLocaleString()}</p>
                 <p className="text-orange-400 text-sm mt-1">Expenses (Cost of Goods + Operating)</p>
-                <p className="text-orange-500 text-xs mt-1">= (Total − Total Profit) + Manual Expenses</p>
+                <p className="text-orange-500 text-xs mt-1">= (Revenue − Profit) + Manual Expenses, for {periodLabel}</p>
                 <p className="text-orange-500 text-xs mt-1 underline">Click to see full breakdown</p>
-              </div>
-              <div className="bg-yellow-900 border border-yellow-700 rounded-xl p-4">
-                <span className="text-2xl">🧾</span>
-                <p className="text-yellow-300 text-2xl font-bold mt-2">RWF {vat.toLocaleString()}</p>
-                <p className="text-yellow-400 text-sm mt-1">VAT (18%)</p>
-                <p className="text-yellow-500 text-xs mt-1">= Total Revenue × 18%</p>
               </div>
               <div className="bg-purple-900 border border-purple-700 rounded-xl p-4">
                 <span className="text-2xl">💎</span>
                 <p className="text-purple-300 text-2xl font-bold mt-2">RWF {netProfit.toLocaleString()}</p>
-                <p className="text-purple-400 text-sm mt-1">Profit (after Expenses & VAT)</p>
-                <p className="text-purple-500 text-xs mt-1">= Total − Expenses − VAT</p>
+                <p className="text-purple-400 text-sm mt-1">Profit (after Expenses)</p>
+                <p className="text-purple-500 text-xs mt-1">= Total − Expenses, for {periodLabel}</p>
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -557,7 +626,7 @@ export default function Dashboard() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg shadow-2xl max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
-              <h2 className="text-lg font-bold text-white">Expense Breakdown</h2>
+              <h2 className="text-lg font-bold text-white">Expense Breakdown — {periodLabel}</h2>
               <button onClick={() => setShowExpenseHistory(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1 space-y-5">
@@ -565,12 +634,12 @@ export default function Dashboard() {
               {/* Cost of Goods */}
               <div>
                 <p className="text-white font-bold text-sm mb-1">Cost of Goods Sold — RWF {cogs.toLocaleString()}</p>
-                <p className="text-gray-500 text-xs mb-3">Per sale: (Revenue − Profit). Sum of the column below = the total above.</p>
-                {allSales.length === 0 ? (
-                  <p className="text-gray-500 text-sm">No sales recorded yet.</p>
+                <p className="text-gray-500 text-xs mb-3">Per sale: (Revenue − Profit). Sum of the column below = the total above. Showing sales from {periodLabel} only.</p>
+                {periodSales.length === 0 ? (
+                  <p className="text-gray-500 text-sm">No sales in this period.</p>
                 ) : (
                   <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                    {allSales
+                    {periodSales
                       .slice()
                       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
                       .map((s) => {
@@ -599,12 +668,13 @@ export default function Dashboard() {
 
               {/* Manual Operating Expenses */}
               <div className="border-t border-gray-800 pt-4">
-                <p className="text-white font-bold text-sm mb-2">Operating Expenses — RWF {manualExpenses.toLocaleString()}</p>
-                {expenseList.length === 0 ? (
-                  <p className="text-gray-500 text-sm">No manual expenses logged yet.</p>
+                <p className="text-white font-bold text-sm mb-2">Operating Expenses — RWF {periodManualExpenses.toLocaleString()}</p>
+                <p className="text-gray-500 text-xs mb-2">Showing expenses logged in {periodLabel} only.</p>
+                {periodExpenseList.length === 0 ? (
+                  <p className="text-gray-500 text-sm">No manual expenses logged in this period.</p>
                 ) : (
                   <div className="space-y-2">
-                    {expenseList.map((e) => (
+                    {periodExpenseList.map((e) => (
                       <div key={e.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
                         <div>
                           <p className="text-white text-sm">{e.description}</p>
