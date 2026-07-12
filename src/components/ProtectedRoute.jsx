@@ -1,11 +1,13 @@
-import { Navigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { useEffect, useState } from 'react'
 
 export default function ProtectedRoute({ children }) {
   const { user, profile, loading } = useAuth()
+  const navigate = useNavigate()
   const [subscription, setSubscription] = useState(null)
+  const [pendingPayment, setPendingPayment] = useState(null)
   const [subLoading, setSubLoading] = useState(true)
 
   useEffect(() => {
@@ -21,13 +23,23 @@ export default function ProtectedRoute({ children }) {
       .from('subscriptions')
       .select('*')
       .eq('user_id', profile.id)
-      .maybeSingle()
+      .single()
     setSubscription(data)
+
+    const { data: pending } = await supabase
+      .from('payment_requests')
+      .select('*')
+      .eq('user_id', profile.id)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    setPendingPayment(pending)
+
     setSubLoading(false)
   }
 
   const isExpired = () => {
-    if (subscription?.is_lifetime) return false
     if (!subscription?.expiry_date) return false
     return new Date(subscription.expiry_date) < new Date()
   }
@@ -63,6 +75,36 @@ export default function ProtectedRoute({ children }) {
   }
 
   if (profile.role !== 'admin' && isExpired()) {
+    if (pendingPayment) {
+      return (
+        <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
+          <div className="bg-gray-900 border border-yellow-800 rounded-2xl p-8 w-full max-w-md text-center">
+            <span className="text-5xl">⏳</span>
+            <h2 className="text-2xl font-bold text-white mt-4 mb-2">
+              Payment Under Review
+            </h2>
+            <p className="text-gray-400 mb-2">
+              We received your payment submission of{' '}
+              <span className="text-white font-medium">RWF {pendingPayment.amount?.toLocaleString()}</span>{' '}
+              on {new Date(pendingPayment.created_at).toLocaleDateString()}.
+            </p>
+            <p className="text-gray-400 mb-6">
+              An admin is reviewing it now — this usually doesn't take long. You don't need to submit another payment unless this one was made in error.
+            </p>
+            <button
+              onClick={async () => {
+                const { supabase } = await import('../lib/supabase')
+                await supabase.auth.signOut()
+                window.location.href = '/login'
+              }}
+              className="w-full py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition"
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+      )
+    }
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
         <div className="bg-gray-900 border border-red-800 rounded-2xl p-8 w-full max-w-md text-center">
@@ -84,10 +126,16 @@ export default function ProtectedRoute({ children }) {
             <p className="text-yellow-200 text-sm">1. Send payment via MTN Mobile Money</p>
             <p className="text-yellow-200 text-sm">2. Number: <strong className="text-white">0785422754</strong></p>
             <p className="text-yellow-200 text-sm">3. Amount: <strong className="text-white">
-              RWF {subscription?.plan_type === 'premium' ? '80,000' : '50,000'}
+              RWF {subscription?.plan_type === 'premium' ? '50,000' : '25,000'}
             </strong></p>
             <p className="text-yellow-200 text-sm">4. Contact admin with your transaction ID</p>
           </div>
+          <button
+            onClick={() => navigate('/choose-plan')}
+            className="w-full py-3 bg-yellow-500 text-gray-900 rounded-xl font-bold hover:bg-yellow-600 transition mb-3"
+          >
+            Top Up Now
+          </button>
           <button
             onClick={async () => {
               const { supabase } = await import('../lib/supabase')

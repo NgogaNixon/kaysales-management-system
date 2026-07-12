@@ -166,7 +166,6 @@ export default function Products() {
       const quantity = parseInt(rawQuantity)
       const sellingPrice = parseInt(rawSelling)
       const buyingPrice = rawBuying === undefined || rawBuying === '' ? 0 : parseInt(rawBuying)
-      const rowLabel = name || `Row with no name (${JSON.stringify(row)})`
 
       if (!name) {
         skipped.push(`❌ Error: a row is missing a Name — skipped`)

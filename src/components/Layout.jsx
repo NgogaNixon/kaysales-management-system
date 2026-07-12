@@ -31,23 +31,59 @@ export default function Layout({ children }) {
   // Measure the ACTUAL visible screen height with JS instead of relying on CSS
   // viewport units (100vh/100dvh), since some mobile browsers (notably Chrome
   // on iOS) don't recalculate dvh reliably on load. This works everywhere.
+  //
+  // Important: the on-screen keyboard ALSO shrinks visualViewport.height, the
+  // same signal used to detect the browser's toolbar hiding/showing. Without
+  // filtering, opening the keyboard would squeeze the whole app layout down to
+  // fit above it. We only trust small changes (toolbar) and ignore large ones
+  // (keyboard) — the keyboard should simply cover the bottom of the screen.
   useEffect(() => {
-    const setAppHeight = () => {
-      const height = window.visualViewport ? window.visualViewport.height : window.innerHeight
+    let baseHeight = window.innerHeight
+
+    const applyHeight = (height) => {
       document.documentElement.style.setProperty('--app-height', `${height}px`)
     }
-    setAppHeight()
-    window.addEventListener('resize', setAppHeight)
-    window.addEventListener('orientationchange', setAppHeight)
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', setAppHeight)
+    applyHeight(baseHeight)
+
+    const handleWindowResize = () => {
+      // Real layout changes (rotation, actual window resize) — always trust these.
+      baseHeight = window.innerHeight
+      applyHeight(baseHeight)
     }
-    return () => {
-      window.removeEventListener('resize', setAppHeight)
-      window.removeEventListener('orientationchange', setAppHeight)
+
+    const handleVisualViewportResize = () => {
+      if (!window.visualViewport) return
+      const vh = window.visualViewport.height
+      const shrink = baseHeight - vh
+      // A keyboard typically covers 200px+; a toolbar hide/show is usually under ~120px.
+      if (shrink > 120) return
+      applyHeight(vh)
+    }
+
+    window.addEventListener('resize', handleWindowResize)
+    window.addEventListener('orientationchange', handleWindowResize)
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleVisualViewportResize)
+    }
+
+    // Chrome on iOS in particular can report a stale/incorrect height at the
+    // exact instant the page first loads, before it finishes settling. Nothing
+    // has focus yet this early, so there's no keyboard to worry about — safe to
+    // just trust visualViewport directly and correct any initial mismatch.
+    const settleTimer = setTimeout(() => {
       if (window.visualViewport) {
-        window.visualViewport.removeEventListener('resize', setAppHeight)
+        baseHeight = window.visualViewport.height
+        applyHeight(baseHeight)
       }
+    }, 300)
+
+    return () => {
+      window.removeEventListener('resize', handleWindowResize)
+      window.removeEventListener('orientationchange', handleWindowResize)
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', handleVisualViewportResize)
+      }
+      clearTimeout(settleTimer)
     }
   }, [])
 

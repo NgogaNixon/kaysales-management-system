@@ -28,6 +28,7 @@ export default function Credits() {
   const [selectedCredit, setSelectedCredit] = useState(null)
   const [selectedCustomer, setSelectedCustomer] = useState(null)
   const [payMethod, setPayMethod] = useState('cash')
+  const [paymentAmountInput, setPaymentAmountInput] = useState('')
   const [bulkPayMode, setBulkPayMode] = useState(false)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -96,6 +97,7 @@ export default function Credits() {
     setSelectedCredit(credit)
     setPayMethod('cash')
     setBulkPayMode(false)
+    setPaymentAmountInput(String((credit.amount || 0) - (credit.paid_amount || 0)))
     setShowPayModal(true)
   }
 
@@ -245,6 +247,26 @@ export default function Credits() {
     fetchCredits()
   }
 
+  // A sale can have multiple credit items (one per product). Its overall
+  // payment_status must reflect ALL of them together, not just one.
+  const syncSalePaymentStatus = async (saleId) => {
+    const { data: items } = await supabase
+      .from('credits_given')
+      .select('amount, paid_amount')
+      .eq('sale_id', saleId)
+
+    if (!items || items.length === 0) return
+
+    const totalAmount = items.reduce((sum, i) => sum + (i.amount || 0), 0)
+    const totalPaid = items.reduce((sum, i) => sum + (i.paid_amount || 0), 0)
+    const status = totalPaid >= totalAmount ? 'paid' : totalPaid > 0 ? 'partial' : 'pending'
+
+    await supabase.from('sales').update({
+      payment_status: status,
+      amount_paid: totalPaid,
+    }).eq('id', saleId)
+  }
+
   const handleMarkPaid = async () => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
     const now = new Date().toISOString()
@@ -255,15 +277,14 @@ export default function Credits() {
       for (const item of unpaidItems) {
         await supabase.from(table).update({
           status: 'paid',
+          paid_amount: item.amount || 0,
           paid_at: now,
           paid_method: payMethod,
         }).eq('id', item.id)
 
         if (activeTab === 'given' && item.sale_id) {
-          await supabase.from('sales').update({
-            payment_status: 'paid',
-            payment_method: payMethod,
-          }).eq('id', item.sale_id)
+          await syncSalePaymentStatus(item.sale_id)
+          await supabase.from('sales').update({ payment_method: payMethod }).eq('id', item.sale_id)
         }
       }
 
@@ -282,37 +303,30 @@ export default function Credits() {
       if (statusFilter === 'unpaid') {
         setSelectedCustomer(null)
       } else {
-        const updatedItems = selectedCustomer.items.map(c => ({ ...c, status: 'paid', paid_at: now, paid_method: payMethod }))
+        const updatedItems = selectedCustomer.items.map(c => ({ ...c, status: 'paid', paid_amount: c.amount || 0, paid_at: now, paid_method: payMethod }))
         setSelectedCustomer({ ...selectedCustomer, items: updatedItems, unpaidAmount: 0 })
       }
       return
     }
 
-    const newStatus = selectedCredit.status === 'paid' ? 'unpaid' : 'paid'
-
-    console.log('Marking credit paid. selectedCredit:', selectedCredit)
-    console.log('activeTab:', activeTab, 'sale_id:', selectedCredit.sale_id, 'newStatus:', newStatus)
+    // Single item: record a payment (full or partial) using the amount the user entered
+    const additionalPaid = Math.max(parseInt(paymentAmountInput) || 0, 0)
+    const previouslyPaid = selectedCredit.paid_amount || 0
+    const newPaidAmount = Math.min(previouslyPaid + additionalPaid, selectedCredit.amount || 0)
+    const newStatus = newPaidAmount >= (selectedCredit.amount || 0) ? 'paid' : newPaidAmount > 0 ? 'partial' : 'unpaid'
 
     await supabase.from(table).update({
       status: newStatus,
-      paid_at: newStatus === 'paid' ? now : null,
-      paid_method: newStatus === 'paid' ? payMethod : null,
+      paid_amount: newPaidAmount,
+      paid_at: newStatus !== 'unpaid' ? now : null,
+      paid_method: newStatus !== 'unpaid' ? payMethod : null,
     }).eq('id', selectedCredit.id)
 
-    // If credit given is marked paid, update linked sale
-    if (activeTab === 'given' && selectedCredit.sale_id && newStatus === 'paid') {
-      console.log('Updating linked sale:', selectedCredit.sale_id)
-      const { data: updateResult, error: updateError } = await supabase
-        .from('sales')
-        .update({
-          payment_status: 'paid',
-          payment_method: payMethod,
-        })
-        .eq('id', selectedCredit.sale_id)
-        .select()
-      console.log('Sale update result:', updateResult, 'error:', updateError)
-    } else {
-      console.log('Skipped sale update - condition not met')
+    // If this is a credit given that's linked to a sale, sync the sale's amount_paid/status
+    // by summing ALL credit items tied to that sale (a sale can have multiple items/credits).
+    if (activeTab === 'given' && selectedCredit.sale_id) {
+      await syncSalePaymentStatus(selectedCredit.sale_id)
+      await supabase.from('sales').update({ payment_method: payMethod }).eq('id', selectedCredit.sale_id)
     }
 
     await logActivity(
@@ -345,7 +359,6 @@ export default function Credits() {
   }
 
   const handleExportClientPDF = () => {
-    const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
     const label = activeTab === 'given' ? 'Customer' : 'Supplier'
     const items = selectedCustomer.items
 
@@ -442,7 +455,7 @@ export default function Credits() {
     if (!acc[name]) acc[name] = { name, items: [], totalAmount: 0, unpaidAmount: 0 }
     acc[name].items.push(credit)
     acc[name].totalAmount += credit.amount || 0
-    if (credit.status !== 'paid') acc[name].unpaidAmount += credit.amount || 0
+    if (credit.status !== 'paid') acc[name].unpaidAmount += (credit.amount || 0) - (credit.paid_amount || 0)
     return acc
   }, {})
 
@@ -452,8 +465,8 @@ export default function Credits() {
     return true
   })
 
-  const unpaidGiven = creditsGiven.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
-  const unpaidTaken = creditsTaken.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
+  const unpaidGiven = creditsGiven.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
+  const unpaidTaken = creditsTaken.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
 
   const getPaymentLabel = (method) => {
     if (method === 'mtn') return '📱 MTN Mobile Money'
@@ -609,12 +622,18 @@ export default function Credits() {
 
               {/* Items */}
               <div className="space-y-2">
-                {selectedCustomer.items.map((credit) => (
+                {selectedCustomer.items.map((credit) => {
+                  const balance = (credit.amount || 0) - (credit.paid_amount || 0)
+                  return (
                   <div key={credit.id} className="bg-gray-800 rounded-lg p-4">
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-white font-medium">{credit.product_name || '—'}</p>
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${credit.status === 'paid' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>
-                        {credit.status === 'paid' ? '✅ Paid' : '❌ Unpaid'}
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        credit.status === 'paid' ? 'bg-green-900 text-green-300' :
+                        credit.status === 'partial' ? 'bg-orange-900 text-orange-300' :
+                        'bg-red-900 text-red-300'
+                      }`}>
+                        {credit.status === 'paid' ? '✅ Paid' : credit.status === 'partial' ? '🟠 Partial' : '❌ Unpaid'}
                       </span>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-sm mb-2">
@@ -641,6 +660,18 @@ export default function Credits() {
                         <p className="text-white">{credit.date ? new Date(credit.date).toLocaleDateString() : '—'}</p>
                       </div>
                     </div>
+                    {(credit.paid_amount > 0) && (
+                      <div className="grid grid-cols-2 gap-2 text-sm mb-2 bg-gray-900 rounded-lg p-2">
+                        <div>
+                          <p className="text-gray-400 text-xs">Paid So Far</p>
+                          <p className="text-green-400 font-medium">RWF {(credit.paid_amount || 0).toLocaleString()}</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-400 text-xs">Balance</p>
+                          <p className="text-orange-400 font-medium">RWF {balance.toLocaleString()}</p>
+                        </div>
+                      </div>
+                    )}
                     {credit.status === 'paid' && credit.paid_at && (
                       <div className="bg-green-900 rounded-lg p-2 mb-2">
                         <p className="text-green-300 text-xs">✅ Paid on: {new Date(credit.paid_at).toLocaleString()}</p>
@@ -654,33 +685,36 @@ export default function Credits() {
                           onClick={() => openPayModal(credit)}
                           className="px-3 py-1 bg-green-700 text-white rounded-lg text-xs transition hover:bg-green-600"
                         >
-                          ✅ Mark Paid
+                          {credit.status === 'partial' ? '💰 Record Payment' : '✅ Record Payment'}
                         </button>
-                      ) : (
+                      ) : null}
+                      {credit.status !== 'unpaid' && (
                         <button
-                      onClick={async () => {
-                        const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
-                        await supabase.from(table).update({
-                          status: 'unpaid',
-                          paid_at: null,
-                          paid_method: null,
-                        }).eq('id', credit.id)
-                        if (activeTab === 'given' && credit.sale_id) {
-                          await supabase.from('sales').update({ payment_status: 'pending' }).eq('id', credit.sale_id)
-                        }
-                        fetchCredits()
-                        setSelectedCustomer(null)
-                      }}
-                      className="px-3 py-1 bg-gray-700 text-gray-300 rounded-lg text-xs transition hover:bg-gray-600"
-                    >
-                      🔴 Mark as Credit
-                    </button>
+                          onClick={async () => {
+                            const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+                            await supabase.from(table).update({
+                              status: 'unpaid',
+                              paid_amount: 0,
+                              paid_at: null,
+                              paid_method: null,
+                            }).eq('id', credit.id)
+                            if (activeTab === 'given' && credit.sale_id) {
+                              await syncSalePaymentStatus(credit.sale_id)
+                            }
+                            fetchCredits()
+                            setSelectedCustomer(null)
+                          }}
+                          className="px-3 py-1 bg-gray-700 text-gray-300 rounded-lg text-xs transition hover:bg-gray-600"
+                        >
+                          🔴 Reset to Unpaid
+                        </button>
                       )}
                       <button onClick={() => { setSelectedCustomer(null); openEdit(credit) }} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
                       <button onClick={() => { openDelete(credit) }} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
 
               <button onClick={() => setSelectedCustomer(null)} className="w-full py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
@@ -696,7 +730,7 @@ export default function Credits() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h2 className="text-lg font-bold text-white">✅ Mark as Paid</h2>
+              <h2 className="text-lg font-bold text-white">{bulkPayMode ? '✅ Mark as Paid' : '💰 Record Payment'}</h2>
               <button onClick={() => { setShowPayModal(false); setBulkPayMode(false) }} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-4">
@@ -708,11 +742,30 @@ export default function Credits() {
                 {bulkPayMode && (
                   <p className="text-gray-400 text-xs mt-1">{selectedCustomer.items.filter(c => c.status !== 'paid').length} unpaid item(s)</p>
                 )}
-                <p className="text-gray-400 text-xs mt-1">Amount</p>
+                <p className="text-gray-400 text-xs mt-1">{bulkPayMode ? 'Amount' : 'Balance Owed'}</p>
                 <p className="text-green-400 font-bold">
-                  RWF {(bulkPayMode ? selectedCustomer.unpaidAmount : selectedCredit.amount)?.toLocaleString()}
+                  RWF {(bulkPayMode ? selectedCustomer.unpaidAmount : (selectedCredit.amount || 0) - (selectedCredit.paid_amount || 0))?.toLocaleString()}
                 </p>
+                {!bulkPayMode && selectedCredit.paid_amount > 0 && (
+                  <p className="text-gray-500 text-xs mt-1">Already paid: RWF {selectedCredit.paid_amount.toLocaleString()} of RWF {selectedCredit.amount?.toLocaleString()}</p>
+                )}
               </div>
+              {!bulkPayMode && (
+                <div>
+                  <label className="text-gray-400 text-sm mb-1 block">Amount to Pay Now</label>
+                  <input
+                    type="number"
+                    value={paymentAmountInput}
+                    onChange={(e) => setPaymentAmountInput(e.target.value)}
+                    max={(selectedCredit.amount || 0) - (selectedCredit.paid_amount || 0)}
+                    className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                    placeholder="0"
+                  />
+                  <p className="text-gray-500 text-xs mt-1">
+                    Leave as the full balance to mark fully paid, or lower it to record a partial payment.
+                  </p>
+                </div>
+              )}
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
                 <select
@@ -729,7 +782,13 @@ export default function Credits() {
               <p className="text-gray-400 text-xs">Payment time will be recorded as: <span className="text-white">{new Date().toLocaleString()}</span></p>
               <div className="flex gap-3">
                 <button onClick={() => { setShowPayModal(false); setBulkPayMode(false) }} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
-                <button onClick={handleMarkPaid} className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">Confirm Paid</button>
+                <button onClick={handleMarkPaid} className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">
+                  {bulkPayMode
+                    ? 'Confirm Paid'
+                    : (parseInt(paymentAmountInput) || 0) >= ((selectedCredit.amount || 0) - (selectedCredit.paid_amount || 0))
+                    ? 'Confirm Full Payment'
+                    : 'Record Partial Payment'}
+                </button>
               </div>
             </div>
           </div>

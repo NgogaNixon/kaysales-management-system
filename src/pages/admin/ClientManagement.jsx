@@ -80,10 +80,18 @@ export default function ClientManagement() {
     }
     fetchData()
   }
-const handleToggleLifetime = async (userId, currentValue) => {
+
+  const handleToggleLifetime = async (userId, currentValue) => {
     await supabase.from('subscriptions').update({ is_lifetime: !currentValue }).eq('user_id', userId)
+    if (selectedClient?.id === userId) {
+      setSelectedClient({
+        ...selectedClient,
+        subscription: { ...selectedClient.subscription, is_lifetime: !currentValue },
+      })
+    }
     fetchData()
   }
+
   const getDaysRemaining = (expiryDate) => {
     if (!expiryDate) return null
     const today = new Date()
@@ -305,7 +313,6 @@ const handleToggleLifetime = async (userId, currentValue) => {
                       }`} />
                     </button>
                   </div>
-                  
                   <div className="flex justify-between items-center">
                     <span className="text-gray-400 text-sm">Lifetime Access</span>
                     <button
@@ -319,8 +326,6 @@ const handleToggleLifetime = async (userId, currentValue) => {
                       }`} />
                     </button>
                   </div>
-                
-                  
                   <div className="flex justify-between">
                     <span className="text-gray-400 text-sm">Status</span>
                     <span className={`text-sm font-medium ${selectedClient.approved ? 'text-green-400' : 'text-yellow-400'}`}>

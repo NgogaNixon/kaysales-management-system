@@ -21,6 +21,8 @@ export default function Quotations() {
   const [customerName, setCustomerName] = useState('')
   const [quoteDate, setQuoteDate] = useState(new Date().toISOString().split('T')[0])
   const [quoteItems, setQuoteItems] = useState([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0, is_consignment: false }])
+  const [productSearch, setProductSearch] = useState({})
+  const [showProductDropdown, setShowProductDropdown] = useState({})
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [converting, setConverting] = useState(false)
@@ -480,16 +482,45 @@ export default function Quotations() {
                         placeholder="Product name (not in your inventory)"
                       />
                     ) : (
-                      <select
-                        value={item.product_id}
-                        onChange={(e) => handleProductChange(index, e.target.value)}
-                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                      >
-                        <option value="">Select product</option>
-                        {products.map(p => (
-                          <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity})</option>
-                        ))}
-                      </select>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={showProductDropdown[index] ? (productSearch[index] ?? '') : item.product_name}
+                          onChange={(e) => {
+                            setProductSearch({ ...productSearch, [index]: e.target.value })
+                            setShowProductDropdown({ ...showProductDropdown, [index]: true })
+                          }}
+                          onFocus={() => {
+                            setProductSearch({ ...productSearch, [index]: '' })
+                            setShowProductDropdown({ ...showProductDropdown, [index]: true })
+                          }}
+                          onBlur={() => setTimeout(() => setShowProductDropdown({ ...showProductDropdown, [index]: false }), 150)}
+                          className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                          placeholder="🔍 Search your stock..."
+                        />
+                        {showProductDropdown[index] && (
+                          <div className="absolute z-20 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
+                            {products
+                              .filter(p => p.name?.toLowerCase().includes((productSearch[index] || '').toLowerCase()))
+                              .map(p => (
+                                <div
+                                  key={p.id}
+                                  onMouseDown={() => {
+                                    handleProductChange(index, p.id)
+                                    setProductSearch({ ...productSearch, [index]: '' })
+                                    setShowProductDropdown({ ...showProductDropdown, [index]: false })
+                                  }}
+                                  className="px-3 py-2 hover:bg-gray-700 cursor-pointer text-sm text-white border-b border-gray-700 last:border-0"
+                                >
+                                  {p.name} <span className="text-gray-400">(Stock: {p.quantity})</span>
+                                </div>
+                              ))}
+                            {products.filter(p => p.name?.toLowerCase().includes((productSearch[index] || '').toLowerCase())).length === 0 && (
+                              <div className="px-3 py-2 text-gray-500 text-sm">No products found in your stock</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     )}
                     <div className="grid grid-cols-3 gap-2">
                       <input

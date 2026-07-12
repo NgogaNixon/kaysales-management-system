@@ -26,7 +26,6 @@ export default function Dashboard() {
   const [selectedSale, setSelectedSale] = useState(null)
   const [receiptItems, setReceiptItems] = useState([])
   const [loadingReceipt, setLoadingReceipt] = useState(false)
-  const [manualExpenses, setManualExpenses] = useState(0)
   const [expenseList, setExpenseList] = useState([])
   const [allSales, setAllSales] = useState([])
   const [showExpenseModal, setShowExpenseModal] = useState(false)
@@ -53,8 +52,6 @@ export default function Dashboard() {
       .eq('user_id', profile.id)
       .order('created_at', { ascending: false })
     setExpenseList(data || [])
-    const sum = (data || []).reduce((s, e) => s + (e.amount || 0), 0)
-    setManualExpenses(sum)
   }
 
   const handleDeleteExpense = async (id) => {

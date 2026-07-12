@@ -46,6 +46,7 @@ export default function Sales() {
   const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0])
   const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0, is_consignment: false }])
 const [extraFees, setExtraFees] = useState('')
+  const [amountPaidNow, setAmountPaidNow] = useState('')
 const [productSearch, setProductSearch] = useState({})
 const [showProductDropdown, setShowProductDropdown] = useState({})
   const [error, setError] = useState('')
@@ -102,6 +103,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setSaleDate(new Date().toISOString().split('T')[0])
     setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0, is_consignment: false }])
     setExtraFees('')
+    setAmountPaidNow('')
     setError('')
     setShowModal(true)
   }
@@ -113,6 +115,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setPaymentMethod(sale.payment_method || 'cash')
     setSaleDate(sale.created_at ? sale.created_at.split('T')[0] : new Date().toISOString().split('T')[0])
     setExtraFees(sale.extra_fees ? String(sale.extra_fees) : '')
+    setAmountPaidNow(sale.amount_paid ? String(sale.amount_paid) : '')
     setError('')
 
     const { data: existingItems } = await supabase
@@ -232,6 +235,12 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setSaving(true)
     setError('')
 
+    const paidNow = parseInt(amountPaidNow) || 0
+    const paymentStatus = paymentMethod !== 'credit'
+      ? 'paid'
+      : paidNow >= grandTotal ? 'paid' : paidNow > 0 ? 'partial' : 'pending'
+    const amountPaidValue = paymentMethod === 'credit' ? Math.min(paidNow, grandTotal) : grandTotal
+
     let saleData, saleError
 
     if (editSale) {
@@ -249,7 +258,8 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
           total: grandTotal,
           payment_method: paymentMethod,
-          payment_status: paymentMethod === 'credit' ? 'pending' : 'paid',
+          payment_status: paymentStatus,
+          amount_paid: amountPaidValue,
         })
         .eq('id', editSale.id)
         .select()
@@ -321,16 +331,19 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         // Resync credit records: remove old auto-added entries for this sale, re-add if still on credit
         await supabase.from('credits_given').delete().eq('sale_id', editSale.id)
         if (paymentMethod === 'credit') {
+          const paidRatio = grandTotal > 0 ? Math.min(paidNow / grandTotal, 1) : 0
           for (const item of validItems) {
+            const itemPaid = Math.round(item.total * paidRatio)
             await supabase.from('credits_given').insert({
               user_id: profile.id,
               customer_name: customerName,
               product_name: item.product_name,
               quantity: parseInt(item.quantity_sold),
               amount: item.total,
+              paid_amount: itemPaid,
               date: saleDate,
               notes: 'Auto-added from sale on credit',
-              status: 'unpaid',
+              status: itemPaid >= item.total ? 'paid' : itemPaid > 0 ? 'partial' : 'unpaid',
               sale_id: saleData.id,
             })
           }
@@ -347,7 +360,8 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           selling_price: 0,
           total: grandTotal,
           payment_method: paymentMethod,
-          payment_status: paymentMethod === 'credit' ? 'pending' : 'paid',
+          payment_status: paymentStatus,
+          amount_paid: amountPaidValue,
         })
         .select()
         .single()
@@ -397,19 +411,21 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           }
         }
 
-        console.log('Sale data before credit insert:', saleData)
         // If credit payment, add to credits given
         if (paymentMethod === 'credit') {
+          const paidRatio = grandTotal > 0 ? Math.min(paidNow / grandTotal, 1) : 0
           for (const item of validItems) {
+            const itemPaid = Math.round(item.total * paidRatio)
             await supabase.from('credits_given').insert({
               user_id: profile.id,
               customer_name: customerName,
               product_name: item.product_name,
               quantity: parseInt(item.quantity_sold),
               amount: item.total,
+              paid_amount: itemPaid,
               date: saleDate,
               notes: 'Auto-added from sale on credit',
-              status: 'unpaid',
+              status: itemPaid >= item.total ? 'paid' : itemPaid > 0 ? 'partial' : 'unpaid',
               sale_id: saleData.id,
             })
           }
@@ -545,7 +561,10 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
       receiptSale.payment_method === 'cheque' ? 'Cheque' :
       receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'
-    doc.text(`Payment: ${paymentLabel} (${receiptSale.payment_status === 'pending' ? 'Pending' : 'Paid'})`, 5, 38)
+    const statusLabel = receiptSale.payment_status === 'pending' ? 'Pending' :
+      receiptSale.payment_status === 'partial' ? `Partial — Paid RWF ${(receiptSale.amount_paid || 0).toLocaleString()}, Balance RWF ${(receiptSale.total - (receiptSale.amount_paid || 0)).toLocaleString()}` :
+      'Paid'
+    doc.text(`Payment: ${paymentLabel} (${statusLabel})`, 5, 38)
     doc.text('--------------------------------', 40, 42, { align: 'center' })
 
     let y = 48
@@ -733,10 +752,12 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                       <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                           sale.payment_status === 'paid' ? 'bg-green-900 text-green-300' :
+                          sale.payment_status === 'partial' ? 'bg-orange-900 text-orange-300' :
                           sale.payment_status === 'pending' ? 'bg-yellow-900 text-yellow-300' :
                           'bg-green-900 text-green-300'
                         }`}>
-                          {sale.payment_status === 'pending' ? '⏳ Pending' : '✅ Paid'}
+                          {sale.payment_status === 'pending' ? '⏳ Pending' :
+                           sale.payment_status === 'partial' ? '🟠 Partial' : '✅ Paid'}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-gray-400">{new Date(sale.created_at).toLocaleDateString()}</td>
@@ -796,8 +817,23 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
               </select>
             </div>
             {paymentMethod === 'credit' && (
-              <div className="bg-yellow-900 border border-yellow-700 rounded-lg p-3">
-                <p className="text-yellow-300 text-xs">⚠️ This sale will be automatically added to Credits Given as unpaid.</p>
+              <div className="bg-yellow-900 border border-yellow-700 rounded-lg p-3 space-y-3">
+                <p className="text-yellow-300 text-xs">⚠️ Whatever isn't paid now will be added to Credits Given as owed.</p>
+                <div>
+                  <label className="text-yellow-200 text-xs mb-1 block">Amount Paid Now (leave blank if nothing was paid)</label>
+                  <input
+                    type="number"
+                    value={amountPaidNow}
+                    onChange={(e) => setAmountPaidNow(e.target.value)}
+                    className="w-full bg-gray-800 border border-yellow-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-yellow-500"
+                    placeholder="0"
+                  />
+                </div>
+                {grandTotal > 0 && (
+                  <p className="text-yellow-200 text-xs">
+                    Balance remaining on credit: <span className="font-bold">RWF {Math.max(grandTotal - (parseInt(amountPaidNow) || 0), 0).toLocaleString()}</span>
+                  </p>
+                )}
               </div>
             )}
             <div className="space-y-3">
@@ -828,16 +864,45 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                       placeholder="Product name (not in your inventory)"
                     />
                   ) : (
-                    <select
-                      value={item.product_id}
-                      onChange={(e) => handleProductChange(index, e.target.value)}
-                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                    >
-                      <option value="">Select product</option>
-                      {products.map(p => (
-                        <option key={p.id} value={p.id}>{p.name} (Stock: {p.quantity})</option>
-                      ))}
-                    </select>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={showProductDropdown[index] ? (productSearch[index] ?? '') : item.product_name}
+                        onChange={(e) => {
+                          setProductSearch({ ...productSearch, [index]: e.target.value })
+                          setShowProductDropdown({ ...showProductDropdown, [index]: true })
+                        }}
+                        onFocus={() => {
+                          setProductSearch({ ...productSearch, [index]: '' })
+                          setShowProductDropdown({ ...showProductDropdown, [index]: true })
+                        }}
+                        onBlur={() => setTimeout(() => setShowProductDropdown({ ...showProductDropdown, [index]: false }), 150)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        placeholder="🔍 Search your stock..."
+                      />
+                      {showProductDropdown[index] && (
+                        <div className="absolute z-20 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
+                          {products
+                            .filter(p => p.name?.toLowerCase().includes((productSearch[index] || '').toLowerCase()))
+                            .map(p => (
+                              <div
+                                key={p.id}
+                                onMouseDown={() => {
+                                  handleProductChange(index, p.id)
+                                  setProductSearch({ ...productSearch, [index]: '' })
+                                  setShowProductDropdown({ ...showProductDropdown, [index]: false })
+                                }}
+                                className="px-3 py-2 hover:bg-gray-700 cursor-pointer text-sm text-white border-b border-gray-700 last:border-0"
+                              >
+                                {p.name} <span className="text-gray-400">(Stock: {p.quantity})</span>
+                              </div>
+                            ))}
+                          {products.filter(p => p.name?.toLowerCase().includes((productSearch[index] || '').toLowerCase())).length === 0 && (
+                            <div className="px-3 py-2 text-gray-500 text-sm">No products found in your stock</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   )}
                   <div className="grid grid-cols-2 gap-2">
                     <input
@@ -1011,10 +1076,26 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Status</span>
-                  <span className={receiptSale.payment_status === 'pending' ? 'text-yellow-400' : 'text-green-400'}>
-                    {receiptSale.payment_status === 'pending' ? '⏳ Pending' : '✅ Paid'}
+                  <span className={
+                    receiptSale.payment_status === 'pending' ? 'text-yellow-400' :
+                    receiptSale.payment_status === 'partial' ? 'text-orange-400' : 'text-green-400'
+                  }>
+                    {receiptSale.payment_status === 'pending' ? '⏳ Pending' :
+                     receiptSale.payment_status === 'partial' ? '🟠 Partial' : '✅ Paid'}
                   </span>
                 </div>
+                {receiptSale.payment_status === 'partial' && (
+                  <>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Paid So Far</span>
+                      <span className="text-white">RWF {(receiptSale.amount_paid || 0).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Balance on Credit</span>
+                      <span className="text-orange-400 font-medium">RWF {(receiptSale.total - (receiptSale.amount_paid || 0)).toLocaleString()}</span>
+                    </div>
+                  </>
+                )}
                 <div className="border-t border-gray-700 pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
                   {receiptItems.length > 0 ? receiptItems.map((item, i) => (
