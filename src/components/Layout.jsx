@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useLanguage } from '../context/LanguageContext'
@@ -27,65 +27,6 @@ export default function Layout({ children }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(true)
-
-  // Measure the ACTUAL visible screen height with JS instead of relying on CSS
-  // viewport units (100vh/100dvh), since some mobile browsers (notably Chrome
-  // on iOS) don't recalculate dvh reliably on load. This works everywhere.
-  //
-  // Important: the on-screen keyboard ALSO shrinks visualViewport.height, the
-  // same signal used to detect the browser's toolbar hiding/showing. Without
-  // filtering, opening the keyboard would squeeze the whole app layout down to
-  // fit above it. We only trust small changes (toolbar) and ignore large ones
-  // (keyboard) — the keyboard should simply cover the bottom of the screen.
-  useEffect(() => {
-    let baseHeight = window.innerHeight
-
-    const applyHeight = (height) => {
-      document.documentElement.style.setProperty('--app-height', `${height}px`)
-    }
-    applyHeight(baseHeight)
-
-    const handleWindowResize = () => {
-      // Real layout changes (rotation, actual window resize) — always trust these.
-      baseHeight = window.innerHeight
-      applyHeight(baseHeight)
-    }
-
-    const handleVisualViewportResize = () => {
-      if (!window.visualViewport) return
-      const vh = window.visualViewport.height
-      const shrink = baseHeight - vh
-      // A keyboard typically covers 200px+; a toolbar hide/show is usually under ~120px.
-      if (shrink > 120) return
-      applyHeight(vh)
-    }
-
-    window.addEventListener('resize', handleWindowResize)
-    window.addEventListener('orientationchange', handleWindowResize)
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', handleVisualViewportResize)
-    }
-
-    // Chrome on iOS in particular can report a stale/incorrect height at the
-    // exact instant the page first loads, before it finishes settling. Nothing
-    // has focus yet this early, so there's no keyboard to worry about — safe to
-    // just trust visualViewport directly and correct any initial mismatch.
-    const settleTimer = setTimeout(() => {
-      if (window.visualViewport) {
-        baseHeight = window.visualViewport.height
-        applyHeight(baseHeight)
-      }
-    }, 300)
-
-    return () => {
-      window.removeEventListener('resize', handleWindowResize)
-      window.removeEventListener('orientationchange', handleWindowResize)
-      if (window.visualViewport) {
-        window.visualViewport.removeEventListener('resize', handleVisualViewportResize)
-      }
-      clearTimeout(settleTimer)
-    }
-  }, [])
 
   const isAdmin = profile?.role === 'admin'
   const navItems = isAdmin ? adminNavItems : clientNavItems
@@ -189,10 +130,10 @@ export default function Layout({ children }) {
       </main>
 
       {/* ===== MOBILE LAYOUT ===== */}
-      <div className="md:hidden flex flex-col mobile-viewport overflow-hidden">
+      <div className="md:hidden min-h-screen bg-gray-950">
 
         {/* Mobile Header */}
-        <header className="bg-gray-900 border-b border-gray-800 px-4 py-3 flex items-center justify-between flex-shrink-0 z-40">
+        <header className="sticky top-0 bg-gray-900 border-b border-gray-800 px-4 py-3 flex items-center justify-between z-40">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
               <span className="text-white font-bold text-sm">K</span>
@@ -227,13 +168,13 @@ export default function Layout({ children }) {
           </div>
         </header>
 
-        {/* Mobile Content */}
-        <div className="flex-1 overflow-y-auto">
+        {/* Mobile Content — page scrolls naturally; pb-24 keeps content clear of the fixed nav below */}
+        <div className="pb-24">
           {children}
         </div>
 
-        {/* Mobile Bottom Navigation */}
-        <nav className="flex-shrink-0 bg-gray-900 border-t border-gray-800 z-50 safe-bottom">
+        {/* Mobile Bottom Navigation — truly fixed to the real browser viewport, no JS height math */}
+        <nav className="fixed bottom-0 inset-x-0 bg-gray-900 border-t border-gray-800 z-50 safe-bottom">
           <div className="flex items-center overflow-x-auto px-1 py-2 gap-1">
             {navItems.map((item) => (
               <button
