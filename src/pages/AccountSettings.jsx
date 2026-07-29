@@ -116,7 +116,7 @@ export default function AccountSettings() {
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
               className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-              placeholder="e.g. Trust Construction Company"
+              placeholder="Company Name"
             />
           </div>
           <div>
@@ -126,7 +126,7 @@ export default function AccountSettings() {
               value={companyPhone}
               onChange={(e) => setCompanyPhone(e.target.value)}
               className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-              placeholder="e.g. +250 788 643 505"
+              placeholder="e.g 07.........."
             />
           </div>
           <div>
@@ -136,7 +136,7 @@ export default function AccountSettings() {
               value={companyLocation}
               onChange={(e) => setCompanyLocation(e.target.value)}
               className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-              placeholder="e.g. Kigali, Gisozi-Umukindo Center"
+              placeholder=""
             />
           </div>
           <div>
