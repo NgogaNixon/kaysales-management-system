@@ -9,6 +9,7 @@ import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
 import { logActivity } from '../lib/activityLogger'
+import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 
 export default function Credits() {
   const { profile } = useAuth()
@@ -151,7 +152,6 @@ export default function Credits() {
         status,
       }).eq('id', selectedCredit.id)
 
-      // If linked to a sale, update sale customer name too
       if (activeTab === 'given' && selectedCredit.sale_id) {
         await supabase
           .from('sales')
@@ -185,7 +185,6 @@ export default function Credits() {
     setShowModal(false)
     fetchCredits()
 
-    // Refresh customer modal if open
     if (selectedCustomer) {
       const updatedData = activeTab === 'given' ? creditsGiven : creditsTaken
       const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
@@ -201,9 +200,7 @@ export default function Credits() {
   const handleDelete = async () => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
 
-    // If linked to a sale, delete that sale and restore stock
     if (activeTab === 'given' && selectedCredit.sale_id) {
-      // Get sale items to restore stock
       const { data: saleItems } = await supabase
         .from('sale_items')
         .select('*')
@@ -225,9 +222,7 @@ export default function Credits() {
         }
       }
 
-      // Delete sale items
       await supabase.from('sale_items').delete().eq('sale_id', selectedCredit.sale_id)
-      // Delete linked sale
       await supabase.from('sales').delete().eq('id', selectedCredit.sale_id)
     }
 
@@ -247,8 +242,6 @@ export default function Credits() {
     fetchCredits()
   }
 
-  // A sale can have multiple credit items (one per product). Its overall
-  // payment_status must reflect ALL of them together, not just one.
   const syncSalePaymentStatus = async (saleId) => {
     const { data: items } = await supabase
       .from('credits_given')
@@ -309,7 +302,6 @@ export default function Credits() {
       return
     }
 
-    // Single item: record a payment (full or partial) using the amount the user entered
     const additionalPaid = Math.max(parseInt(paymentAmountInput) || 0, 0)
     const previouslyPaid = selectedCredit.paid_amount || 0
     const newPaidAmount = Math.min(previouslyPaid + additionalPaid, selectedCredit.amount || 0)
@@ -322,8 +314,6 @@ export default function Credits() {
       paid_method: newStatus !== 'unpaid' ? payMethod : null,
     }).eq('id', selectedCredit.id)
 
-    // If this is a credit given that's linked to a sale, sync the sale's amount_paid/status
-    // by summing ALL credit items tied to that sale (a sale can have multiple items/credits).
     if (activeTab === 'given' && selectedCredit.sale_id) {
       await syncSalePaymentStatus(selectedCredit.sale_id)
       await supabase.from('sales').update({ payment_method: payMethod }).eq('id', selectedCredit.sale_id)
@@ -340,7 +330,6 @@ export default function Credits() {
     setShowPayModal(false)
     await fetchCredits()
 
-    // Refresh customer modal
     if (selectedCustomer) {
       const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
       const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
@@ -358,21 +347,32 @@ export default function Credits() {
     }
   }
 
-  const handleExportClientPDF = () => {
+  const getPaymentLabel = (method) => {
+    if (method === 'mtn') return '📱 MTN Mobile Money'
+    if (method === 'bank') return '🏦 Bank Transfer'
+    if (method === 'cheque') return '📄 Cheque'
+    return '💵 Cash'
+  }
+
+  const handleExportClientPDF = async () => {
     const label = activeTab === 'given' ? 'Customer' : 'Supplier'
     const items = selectedCustomer.items
 
     const doc = new jsPDF()
-    doc.setFontSize(16)
-    doc.text('KaySales Management System', 14, 15)
+
+    // Branded header (logo, company name, phone/location/TIN)
+    const headerEndY = await drawBrandedHeader(doc, profile)
+
     doc.setFontSize(12)
-    doc.text(`Credit Statement — ${selectedCustomer.name}`, 14, 25)
+    doc.text(`Credit Statement — ${selectedCustomer.name}`, 14, headerEndY)
     doc.setFontSize(10)
-    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-    doc.text(`Total Amount: RWF ${selectedCustomer.totalAmount.toLocaleString()}`, 14, 39)
-    doc.text(`Unpaid Amount: RWF ${selectedCustomer.unpaidAmount.toLocaleString()}`, 14, 46)
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, headerEndY + 7)
+    doc.text(`Total Amount: RWF ${selectedCustomer.totalAmount.toLocaleString()}`, 14, headerEndY + 14)
+    doc.text(`Unpaid Amount: RWF ${selectedCustomer.unpaidAmount.toLocaleString()}`, 14, headerEndY + 21)
+
+    // autoTable auto-paginates on its own for long credit lists — no truncation risk
     autoTable(doc, {
-      startY: 54,
+      startY: headerEndY + 29,
       head: [['Product', 'Qty', 'Unit Price', 'Amount (RWF)', 'Date', 'Status', 'Paid At', 'Payment Method']],
       body: items.map(c => [
         c.product_name || '—',
@@ -385,6 +385,19 @@ export default function Credits() {
         c.status === 'paid' ? (getPaymentLabel(c.paid_method) || '—') : '—',
       ]),
     })
+
+    let finalY = doc.lastAutoTable.finalY || 60
+
+    // If the table ran close to the bottom of the page, start a fresh page for
+    // the signature/stamp instead of letting them get cut off.
+    const pageHeight = doc.internal.pageSize.getHeight()
+    if (finalY > pageHeight - 45) {
+      doc.addPage()
+      finalY = 20
+    }
+
+    await drawSignatureAndStamp(doc, profile, doc.internal.pageSize.getWidth(), finalY + 30)
+
     doc.save(`KaySales_${label}_${selectedCustomer.name.replace(/\s+/g, '_')}_Credits.pdf`)
   }
 
@@ -419,7 +432,7 @@ export default function Credits() {
     } else {
       const doc = new jsPDF()
       doc.setFontSize(16)
-      doc.text('KaySales Management System', 14, 15)
+      doc.text(profile?.company_name || 'KaySales Management System', 14, 15)
       doc.setFontSize(12)
       doc.text(`${label} Report`, 14, 25)
       doc.setFontSize(10)
@@ -468,18 +481,10 @@ export default function Credits() {
   const unpaidGiven = creditsGiven.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
   const unpaidTaken = creditsTaken.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
 
-  const getPaymentLabel = (method) => {
-    if (method === 'mtn') return '📱 MTN Mobile Money'
-    if (method === 'bank') return '🏦 Bank Transfer'
-    if (method === 'cheque') return '📄 Cheque'
-    return '💵 Cash'
-  }
-
   return (
     <Layout>
       <div className="p-6 space-y-6">
 
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">💳 Credits</h1>
@@ -492,7 +497,6 @@ export default function Credits() {
           </div>
         </div>
 
-        {/* Summary Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
             <span className="text-2xl">⏳</span>
@@ -506,7 +510,6 @@ export default function Credits() {
           </div>
         </div>
 
-        {/* Tabs & Filter */}
         <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
           <div className="flex gap-2">
             <button onClick={() => setActiveTab('given')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'given' ? 'bg-yellow-500 text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
@@ -525,7 +528,6 @@ export default function Credits() {
           </div>
         </div>
 
-        {/* Credits Table */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading credits...</p></div>
@@ -579,7 +581,6 @@ export default function Credits() {
 
       </div>
 
-      {/* Customer Details Modal */}
       {selectedCustomer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl shadow-2xl max-h-full flex flex-col">
@@ -597,7 +598,6 @@ export default function Credits() {
             </div>
             <div className="px-6 py-4 space-y-3 overflow-y-auto flex-1">
 
-              {/* Summary */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-gray-800 rounded-lg p-3">
                   <p className="text-gray-400 text-xs">Total Amount</p>
@@ -620,7 +620,6 @@ export default function Credits() {
                 </button>
               )}
 
-              {/* Items */}
               <div className="space-y-2">
                 {selectedCustomer.items.map((credit) => {
                   const balance = (credit.amount || 0) - (credit.paid_amount || 0)
@@ -725,7 +724,6 @@ export default function Credits() {
         </div>
       )}
 
-      {/* Pay Modal */}
       {showPayModal && (bulkPayMode ? selectedCustomer : selectedCredit) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
@@ -795,7 +793,6 @@ export default function Credits() {
         </div>
       )}
 
-      {/* Add/Edit Modal */}
       {showModal && (
         <Modal
           title={selectedCredit ? `Edit Credit ${activeTab === 'given' ? 'Given' : 'Taken'}` : `Add Credit ${activeTab === 'given' ? 'Given' : 'Taken'}`}
@@ -906,7 +903,6 @@ export default function Credits() {
         </Modal>
       )}
 
-      {/* Confirm Delete */}
       {showConfirm && !showOTP && (
         <ConfirmDialog
           message={`Are you sure you want to delete this credit?${selectedCredit?.sale_id ? ' The linked sale will also be deleted and stock restored.' : ''}`}
@@ -923,7 +919,6 @@ export default function Credits() {
         />
       )}
 
-      {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">

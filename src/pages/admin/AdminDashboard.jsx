@@ -77,7 +77,7 @@ export default function AdminDashboard() {
       activeSubscriptions,
       expiringSoon: expiring.length,
       expired: expired.length,
-      estimatedRevenue: (standardPlans * 45000) + (premiumPlans * 80000),
+      estimatedRevenue: (standardPlans * 25000) + (premiumPlans * 50000),
     })
     setLoading(false)
   }

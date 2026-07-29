@@ -5,6 +5,7 @@ import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { logActivity } from '../lib/activityLogger'
+import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -219,18 +220,12 @@ export default function Quotations() {
     fetchQuotations()
   }
 
-  // Quotation does not touch stock. Converting to a Sale is the only place stock is reduced.
   const handleConvertToSale = async (quotation) => {
     if (quotation.status === 'converted') return
     setConverting(true)
     setError('')
 
     try {
-      // Look up each product's buying price so we can calculate real profit and
-      // keep sale_items consistent with sales created directly on the Sales page.
-      // Consignment items (not our own stock) have no product to look up — cost
-      // defaults to 0 here; the admin can fill in the real amount owed to the
-      // owner afterward via Sales > Edit.
       const itemsWithCost = []
       for (const item of quotation.items) {
         if (item.is_consignment) {
@@ -287,7 +282,6 @@ export default function Quotations() {
       }))
       await supabase.from('sale_items').insert(itemsToInsert)
 
-      // Reduce stock now that this is a real sale (skip consignment items — not our own stock)
       for (const item of itemsWithCost) {
         if (item.is_consignment) continue
         const { data: freshProduct } = await supabase
@@ -326,17 +320,21 @@ export default function Quotations() {
     }
   }
 
-  const exportPDF = (quotation) => {
+  const exportPDF = async (quotation) => {
     const doc = new jsPDF()
-    doc.setFontSize(16)
-    doc.text('KaySales Management System', 14, 15)
+
+    // Branded header (logo, company name, phone/location/TIN)
+    const headerEndY = await drawBrandedHeader(doc, profile)
+
     doc.setFontSize(12)
-    doc.text(`Quotation — ${quotation.customer_name}`, 14, 25)
+    doc.text(`Quotation — ${quotation.customer_name}`, 14, headerEndY)
     doc.setFontSize(10)
-    doc.text(`Date: ${new Date(quotation.date).toLocaleDateString()}`, 14, 32)
-    doc.text(`Status: ${quotation.status === 'converted' ? 'Converted to Sale' : 'Pending'}`, 14, 39)
+    doc.text(`Date: ${new Date(quotation.date).toLocaleDateString()}`, 14, headerEndY + 7)
+    doc.text(`Status: ${quotation.status === 'converted' ? 'Converted to Sale' : 'Pending'}`, 14, headerEndY + 14)
+
+    // autoTable auto-paginates on its own for long item lists — no truncation risk
     autoTable(doc, {
-      startY: 47,
+      startY: headerEndY + 22,
       head: [['Product', 'Qty', 'Unit Price (RWF)', 'Total (RWF)']],
       body: quotation.items.map(i => [
         i.product_name,
@@ -345,9 +343,22 @@ export default function Quotations() {
         i.total.toLocaleString(),
       ]),
     })
-    const finalY = doc.lastAutoTable.finalY || 60
+
+    let finalY = doc.lastAutoTable.finalY || 60
     doc.setFontSize(11)
     doc.text(`Grand Total: RWF ${quotation.total.toLocaleString()}`, 14, finalY + 10)
+    finalY += 10
+
+    // If the table ran close to the bottom of the page, start a fresh page for
+    // the signature/stamp instead of letting them get cut off.
+    const pageHeight = doc.internal.pageSize.getHeight()
+    if (finalY > pageHeight - 45) {
+      doc.addPage()
+      finalY = 20
+    }
+
+    await drawSignatureAndStamp(doc, profile, doc.internal.pageSize.getWidth(), finalY + 30)
+
     doc.save(`KaySales_Quotation_${quotation.customer_name.replace(/\s+/g, '_')}.pdf`)
   }
 
@@ -355,7 +366,6 @@ export default function Quotations() {
     <Layout>
       <div className="p-6 space-y-6">
 
-        {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold text-white">📝 Quotations</h1>
@@ -369,7 +379,6 @@ export default function Quotations() {
           </button>
         </div>
 
-        {/* Table */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading...</p></div>
@@ -429,7 +438,6 @@ export default function Quotations() {
           )}
         </div>
 
-        {/* Add Modal */}
         {showModal && (
           <Modal title="New Quotation" onClose={() => setShowModal(false)}>
             <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
@@ -569,7 +577,6 @@ export default function Quotations() {
           </Modal>
         )}
 
-        {/* Confirm Delete */}
         {showConfirm && selectedQuotation && (
           <ConfirmDialog
             message={

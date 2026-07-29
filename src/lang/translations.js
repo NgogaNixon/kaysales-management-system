@@ -14,7 +14,9 @@ activity: 'Journal d\'activité',
     adminReports: 'Admin Reports',
     adminReports: 'Rapports Admin',
     activity: 'Activity Log',
+    devices: 'Devices',
     logout: 'Logout',
+    accountSettings: 'Account Settings',
 
     // Dashboard
     welcomeBack: 'Welcome back',
@@ -156,7 +158,9 @@ activity: 'Journal d\'activité',
     clients: 'Clients',
     subscriptions: 'Abonnements',
     reports: 'Reports',
+    devices: 'Appareils',
     logout: 'Déconnexion',
+    accountSettings: 'Paramètres du compte',
 
     // Dashboard
     welcomeBack: 'Bienvenue',

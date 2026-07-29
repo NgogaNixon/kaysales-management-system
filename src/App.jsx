@@ -19,7 +19,9 @@ import ClientManagement from './pages/admin/ClientManagement'
 import Subscriptions from './pages/admin/Subscriptions'
 import SystemReports from './pages/admin/SystemReports'
 import ActivityLog from './pages/admin/ActivityLog'
+import Devices from './pages/admin/Devices'
 import AdminReports from './pages/admin/AdminReports'
+import AccountSettings from './pages/AccountSettings'
 
 function App() {
   return (
@@ -41,6 +43,7 @@ function App() {
             <Route path="/sales" element={<ProtectedRoute><Sales /></ProtectedRoute>} />
             <Route path="/credits" element={<ProtectedRoute><Credits /></ProtectedRoute>} />
             <Route path="/quotations" element={<ProtectedRoute><Quotations /></ProtectedRoute>} />
+            <Route path="/account-settings" element={<ProtectedRoute><AccountSettings /></ProtectedRoute>} />
             <Route path="/analysis" element={<ProtectedRoute><Analysis /></ProtectedRoute>} />
 
             {/* Protected admin routes */}
@@ -49,6 +52,7 @@ function App() {
             <Route path="/admin/subscriptions" element={<ProtectedRoute><Subscriptions /></ProtectedRoute>} />
             <Route path="/admin/reports" element={<ProtectedRoute><SystemReports /></ProtectedRoute>} />
             <Route path="/admin/activity" element={<ProtectedRoute><ActivityLog /></ProtectedRoute>} />
+            <Route path="/admin/devices" element={<ProtectedRoute><Devices /></ProtectedRoute>} />
             <Route path="/admin/admin-reports" element={<ProtectedRoute><AdminReports /></ProtectedRoute>} />
           </Routes>
         </LanguageProvider>

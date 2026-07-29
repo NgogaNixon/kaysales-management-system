@@ -6,6 +6,7 @@ import Layout from '../components/Layout'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import { drawBrandedHeaderNarrow, drawSignatureAndStampNarrow, estimateNarrowReceiptHeight } from '../lib/pdfBranding'
 
 export default function Dashboard() {
   const { profile } = useAuth()
@@ -137,23 +138,29 @@ export default function Dashboard() {
     setLoadingReceipt(false)
   }
 
-  const printReceipt = () => {
-    const doc = new jsPDF({ format: [80, 200], unit: 'mm' })
-    doc.setFontSize(12)
-    doc.text('KaySales Management System', 40, 10, { align: 'center' })
-    doc.setFontSize(9)
-    doc.text('Sales Receipt', 40, 16, { align: 'center' })
-    doc.text('--------------------------------', 40, 20, { align: 'center' })
-    doc.text(`Date: ${new Date(selectedSale.created_at).toLocaleDateString()}`, 5, 26)
-    doc.text(`Customer: ${selectedSale.product_name}`, 5, 32)
+  const printReceipt = async () => {
+    const pageHeight = estimateNarrowReceiptHeight(profile, receiptItems.length)
+    const doc = new jsPDF({ format: [80, pageHeight], unit: 'mm' })
+
+    let y = await drawBrandedHeaderNarrow(doc, profile)
+
+    doc.text('Sales Receipt', 40, y, { align: 'center' })
+    y += 4
+    doc.text('--------------------------------', 40, y, { align: 'center' })
+    y += 6
+    doc.text(`Date: ${new Date(selectedSale.created_at).toLocaleDateString()}`, 5, y)
+    y += 6
+    doc.text(`Customer: ${selectedSale.product_name}`, 5, y)
+    y += 6
     const paymentLabel = selectedSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
       selectedSale.payment_method === 'bank' ? 'Bank Transfer' :
       selectedSale.payment_method === 'cheque' ? 'Cheque' :
       selectedSale.payment_method === 'credit' ? 'Credit' : 'Cash'
-    doc.text(`Payment: ${paymentLabel} (${selectedSale.payment_status === 'paid' ? 'Paid' : 'Pending'})`, 5, 38)
-    doc.text('--------------------------------', 40, 42, { align: 'center' })
+    doc.text(`Payment: ${paymentLabel} (${selectedSale.payment_status === 'paid' ? 'Paid' : 'Pending'})`, 5, y)
+    y += 4
+    doc.text('--------------------------------', 40, y, { align: 'center' })
+    y += 6
 
-    let y = 48
     receiptItems.forEach((item, i) => {
       doc.text(`${i + 1}. ${item.product_name}`, 5, y)
       doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
@@ -180,9 +187,11 @@ export default function Dashboard() {
       }
     }
 
+    footerY = await drawSignatureAndStampNarrow(doc, profile, footerY + 4)
+
     doc.setFontSize(8)
-    doc.text('Thank you for your business!', 40, footerY + 7, { align: 'center' })
-    doc.text('Powered by KaySales', 40, footerY + 12, { align: 'center' })
+    doc.text('Thank you for your business!', 40, footerY, { align: 'center' })
+    doc.text('Powered by KaySales', 40, footerY + 5, { align: 'center' })
     doc.save(`Receipt_${selectedSale.product_name}_${new Date(selectedSale.created_at).toLocaleDateString()}.pdf`)
   }
 
@@ -201,7 +210,7 @@ export default function Dashboard() {
   const exportPDF = () => {
     const doc = new jsPDF()
     doc.setFontSize(16)
-    doc.text('KaySales Management System', 14, 15)
+    doc.text(profile?.company_name || 'KaySales Management System', 14, 15)
     doc.setFontSize(12)
     doc.text('Dashboard Report', 14, 25)
     doc.setFontSize(10)
@@ -233,8 +242,6 @@ export default function Dashboard() {
     )
   }
 
-  // Period filter for the Financial Breakdown section: defaults to the current month,
-  // but can be widened to All Time or a custom range.
   const getPeriodBounds = () => {
     const now = new Date()
     if (periodPreset === 'all') return { start: null, end: null }
@@ -244,7 +251,6 @@ export default function Dashboard() {
         end: customTo ? new Date(customTo + 'T23:59:59') : null,
       }
     }
-    // default: this month
     const start = new Date(now.getFullYear(), now.getMonth(), 1)
     const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59)
     return { start, end }
@@ -276,7 +282,6 @@ export default function Dashboard() {
     <Layout>
       <div className="p-6 space-y-6">
 
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">
@@ -293,7 +298,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Subscription Reminder */}
         {daysRemaining !== null && daysRemaining <= 7 && (
           <div className={`rounded-xl p-4 flex items-center justify-between ${daysRemaining <= 3 ? 'bg-red-900 border border-red-700' : 'bg-yellow-900 border border-yellow-700'}`}>
             <div className="flex items-center gap-3">
@@ -314,7 +318,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Esther Special Cards */}
         {showProfit && (
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
@@ -335,7 +338,6 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Period Filter */}
             <div className="flex items-center gap-2 flex-wrap">
               {[
                 { key: 'month', label: 'This Month' },
@@ -412,7 +414,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Low Stock Alerts */}
         {stats.lowStockProducts.length > 0 && (
           <div className="bg-orange-900 border border-orange-700 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-3">
@@ -429,7 +430,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Recent Sales */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-white">Recent Sales</h2>
@@ -480,7 +480,6 @@ export default function Dashboard() {
 
       </div>
 
-      {/* Receipt Modal */}
       {selectedSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
@@ -490,10 +489,15 @@ export default function Dashboard() {
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1">
               <div className="text-center mb-4">
-                <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
-                  <span className="text-white font-bold">K</span>
-                </div>
-                <p className="text-white font-bold">KaySales Management System</p>
+                {profile?.logo_url ? (
+                  <img src={profile.logo_url} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-2 rounded" />
+                ) : (
+                  <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
+                    <span className="text-white font-bold">K</span>
+                  </div>
+                )}
+                <p className="text-white font-bold">{profile?.company_name || 'KaySales Management System'}</p>
+                {profile?.company_location && <p className="text-gray-500 text-xs">{profile.company_location}</p>}
                 <p className="text-gray-400 text-xs">Sales Receipt</p>
               </div>
               <div className="border-t border-gray-700 pt-4 space-y-2">
@@ -561,6 +565,22 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
+              {(profile?.signature_url || profile?.stamp_url) && (
+                <div className="flex justify-between items-end mt-4 pt-3 border-t border-gray-700">
+                  {profile?.signature_url ? (
+                    <div className="text-center">
+                      <img src={profile.signature_url} alt="Signature" className="h-10 object-contain mx-auto" />
+                      <p className="text-gray-500 text-[10px] mt-1">Signature</p>
+                    </div>
+                  ) : <div />}
+                  {profile?.stamp_url ? (
+                    <div className="text-center">
+                      <img src={profile.stamp_url} alt="Stamp" className="h-10 object-contain mx-auto" />
+                      <p className="text-gray-500 text-[10px] mt-1">Company Stamp</p>
+                    </div>
+                  ) : <div />}
+                </div>
+              )}
               <div className="text-center mt-4 text-gray-500 text-xs">
                 <p>Thank you for your business!</p>
                 <p>Powered by KaySales</p>
@@ -578,7 +598,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Add Expense Modal */}
       {showExpenseModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
@@ -618,7 +637,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Expense History Modal */}
       {showExpenseHistory && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg shadow-2xl max-h-[80vh] flex flex-col">
@@ -628,7 +646,6 @@ export default function Dashboard() {
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1 space-y-5">
 
-              {/* Cost of Goods */}
               <div>
                 <p className="text-white font-bold text-sm mb-1">Cost of Goods Sold — RWF {cogs.toLocaleString()}</p>
                 <p className="text-gray-500 text-xs mb-3">Per sale: (Revenue − Profit). Sum of the column below = the total above. Showing sales from {periodLabel} only.</p>
@@ -663,7 +680,6 @@ export default function Dashboard() {
                 </button>
               </div>
 
-              {/* Manual Operating Expenses */}
               <div className="border-t border-gray-800 pt-4">
                 <p className="text-white font-bold text-sm mb-2">Operating Expenses — RWF {periodManualExpenses.toLocaleString()}</p>
                 <p className="text-gray-500 text-xs mb-2">Showing expenses logged in {periodLabel} only.</p>

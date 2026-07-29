@@ -1,20 +1,30 @@
 import { supabase } from './supabase'
+import { getDeviceId, getAutoDeviceLabel } from './deviceId'
+
+// IP is background context only, never the primary proof (see getIpAddress
+// below for why). Cached per page load so we don't hit the lookup service on
+// every single action.
+let cachedIp = null
+
+const getIpAddress = async () => {
+  if (cachedIp) return cachedIp
+  try {
+    const response = await fetch('https://api.ipify.org?format=json')
+    const data = await response.json()
+    cachedIp = data.ip
+    return cachedIp
+  } catch (error) {
+    // Never let an IP lookup failure block the actual action from being logged.
+    return null
+  }
+}
 
 export const logActivity = async (userId, userEmail, userName, action, details) => {
   try {
     const device = navigator.userAgent
     const browser = getBrowser()
-    const deviceType = getDeviceType()
-    const os = getOS()
-    let ipAddress = 'Unknown'
-
-    try {
-      const res = await fetch('https://api.ipify.org?format=json')
-      const data = await res.json()
-      ipAddress = data.ip
-    } catch {
-      ipAddress = 'Unknown'
-    }
+    const deviceId = getDeviceId()
+    const ipAddress = await getIpAddress()
 
     await supabase.from('activity_logs').insert({
       user_id: userId,
@@ -24,10 +34,30 @@ export const logActivity = async (userId, userEmail, userName, action, details) 
       details,
       device,
       browser,
-      device_type: deviceType,
-      os,
+      device_id: deviceId,
       ip_address: ipAddress,
     })
+
+    // Keep the devices table in sync: register on first use, update last_seen on
+    // every action after that. Never overwrites a label someone has already set.
+    const { data: existing } = await supabase
+      .from('devices')
+      .select('id')
+      .eq('device_id', deviceId)
+      .maybeSingle()
+
+    if (existing) {
+      await supabase
+        .from('devices')
+        .update({ last_seen: new Date().toISOString() })
+        .eq('device_id', deviceId)
+    } else {
+      await supabase.from('devices').insert({
+        device_id: deviceId,
+        label: getAutoDeviceLabel(deviceId),
+        account_user_id: userId,
+      })
+    }
   } catch (error) {
     console.error('Failed to log activity:', error)
   }
@@ -35,30 +65,9 @@ export const logActivity = async (userId, userEmail, userName, action, details) 
 
 const getBrowser = () => {
   const ua = navigator.userAgent
-  if (ua.includes('Edg')) return 'Edge'
   if (ua.includes('Chrome')) return 'Chrome'
   if (ua.includes('Firefox')) return 'Firefox'
   if (ua.includes('Safari')) return 'Safari'
-  if (ua.includes('Opera') || ua.includes('OPR')) return 'Opera'
-  return 'Unknown'
-}
-
-const getDeviceType = () => {
-  const ua = navigator.userAgent
-  if (/tablet|ipad|playbook|silk/i.test(ua)) return 'Tablet'
-  if (/mobile|iphone|ipod|android|blackberry|mini|windows\sce|palm/i.test(ua)) return 'Mobile'
-  return 'Desktop'
-}
-
-const getOS = () => {
-  const ua = navigator.userAgent
-  if (ua.includes('Windows NT 10')) return 'Windows 10/11'
-  if (ua.includes('Windows NT 6.3')) return 'Windows 8.1'
-  if (ua.includes('Windows NT 6.1')) return 'Windows 7'
-  if (ua.includes('Windows')) return 'Windows'
-  if (ua.includes('Mac OS X')) return 'macOS'
-  if (ua.includes('Android')) return 'Android'
-  if (ua.includes('iPhone') || ua.includes('iPad')) return 'iOS'
-  if (ua.includes('Linux')) return 'Linux'
+  if (ua.includes('Edge')) return 'Edge'
   return 'Unknown'
 }

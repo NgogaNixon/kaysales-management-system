@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Whatever the actual page content height ends up being on a given device,
+   the raw browser background (html/body) should always match the app's dark
+   theme — so if there's ever a gap below our content, it's invisible instead
+   of showing the browser's default white. */
+html, body {
+  background-color: #030712;
+  min-height: 100%;
+}
+
 /* iOS Safari: account for the home-indicator safe area on notched iPhones,
    so the fixed bottom nav isn't crowded against the gesture bar. */
 .safe-bottom {

@@ -7,6 +7,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
 import UndoToast from '../components/UndoToast'
 import { logActivity } from '../lib/activityLogger'
+import { drawBrandedHeaderNarrow, drawSignatureAndStampNarrow, estimateNarrowReceiptHeight } from '../lib/pdfBranding'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -186,7 +187,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     updated[index] = {
       ...updated[index],
       is_consignment: goingConsignment,
-      // Clear product selection when switching to consignment (it's not from our own stock)
       product_id: goingConsignment ? '' : updated[index].product_id,
       product_name: goingConsignment ? '' : updated[index].product_name,
       buying_price: goingConsignment ? '' : updated[index].buying_price,
@@ -244,8 +244,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     let saleData, saleError
 
     if (editSale) {
-      // UPDATE existing sale
-      // Step 1: fetch old items so we can reverse their stock deduction before applying new ones
       const { data: oldItems } = await supabase
         .from('sale_items')
         .select('product_id, quantity_sold, is_consignment')
@@ -268,12 +266,10 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       saleError = error
 
       if (!saleError && saleData) {
-        // Update date if changed
         if (saleDate !== editSale.created_at?.split('T')[0]) {
           await supabase.from('sales').update({ created_at: saleDate }).eq('id', editSale.id)
         }
 
-        // Restore stock from the old items before replacing them (skip consignment — was never deducted)
         for (const oldItem of oldItems || []) {
           if (oldItem.is_consignment) continue
           const { data: freshProduct } = await supabase
@@ -289,7 +285,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           }
         }
 
-        // Delete old items and insert new ones (now including buying_price)
         await supabase.from('sale_items').delete().eq('sale_id', editSale.id)
         const itemsToInsert = validItems.map(item => ({
           sale_id: editSale.id,
@@ -304,7 +299,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         }))
         await supabase.from('sale_items').insert(itemsToInsert)
 
-        // Deduct stock for the new items (skip consignment items — not our own stock)
         for (const item of validItems) {
           if (item.is_consignment) continue
           const { data: freshProduct } = await supabase
@@ -320,7 +314,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           }
         }
 
-        // Recalculate profit/extra fees
         if (showProfit) {
           await supabase.from('sales').update({
             extra_fees: parseInt(extraFees) || 0,
@@ -328,7 +321,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           }).eq('id', saleData.id)
         }
 
-        // Resync credit records: remove old auto-added entries for this sale, re-add if still on credit
         await supabase.from('credits_given').delete().eq('sale_id', editSale.id)
         if (paymentMethod === 'credit') {
           const paidRatio = grandTotal > 0 ? Math.min(paidNow / grandTotal, 1) : 0
@@ -350,7 +342,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         }
       }
     } else {
-      // INSERT new sale
       const { data, error } = await supabase
         .from('sales')
         .insert({
@@ -369,12 +360,10 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       saleError = error
 
       if (!saleError && saleData) {
-        // Update date if not today
         if (saleDate !== new Date().toISOString().split('T')[0]) {
           await supabase.from('sales').update({ created_at: saleDate }).eq('id', saleData.id)
         }
 
-       // Insert sale items
         const itemsToInsert = validItems.map(item => ({
           sale_id: saleData.id,
           user_id: profile.id,
@@ -395,7 +384,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           }).eq('id', saleData.id)
         }
 
-        // Reduce product quantities (skip consignment items — not our own stock)
         for (const item of validItems) {
           if (item.is_consignment) continue
           const { data: freshProduct } = await supabase
@@ -411,7 +399,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           }
         }
 
-        // If credit payment, add to credits given
         if (paymentMethod === 'credit') {
           const paidRatio = grandTotal > 0 ? Math.min(paidNow / grandTotal, 1) : 0
           for (const item of validItems) {
@@ -467,20 +454,16 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     if (!pendingDelete) return
 
     try {
-      // Fetch items first so we know what to restock, but don't touch stock yet
       const { data: items } = await supabase
         .from('sale_items')
         .select('*')
         .eq('sale_id', pendingDelete.id)
 
-      // Unlink any quotation that points at this sale, so the FK doesn't block deletion.
-      // Revert it to 'pending' so it can be converted again if needed.
       await supabase
         .from('quotations')
         .update({ sale_id: null, status: 'pending' })
         .eq('sale_id', pendingDelete.id)
 
-      // Delete the sale itself first — check that it actually succeeded before touching anything else
       const { error: deleteSaleError } = await supabase
         .from('sales')
         .delete()
@@ -493,7 +476,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         return
       }
 
-      // Sale delete succeeded — now safe to remove its items and restore stock
       await supabase.from('sale_items').delete().eq('sale_id', pendingDelete.id)
 
       if (items && items.length > 0) {
@@ -548,15 +530,24 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setShowReceipt(true)
   }
 
-  const printReceipt = () => {
-    const doc = new jsPDF({ format: [80, 200], unit: 'mm' })
-    doc.setFontSize(12)
-    doc.text('KaySales Management System', 40, 10, { align: 'center' })
-    doc.setFontSize(9)
-    doc.text('Sales Receipt', 40, 16, { align: 'center' })
-    doc.text('--------------------------------', 40, 20, { align: 'center' })
-    doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 5, 26)
-    doc.text(`Customer: ${receiptSale.product_name}`, 5, 32)
+  const printReceipt = async () => {
+    // Page height is calculated from the actual number of items, so a receipt
+    // with many products never gets silently truncated at a fixed 200mm.
+    const pageHeight = estimateNarrowReceiptHeight(profile, receiptItems.length)
+    const doc = new jsPDF({ format: [80, pageHeight], unit: 'mm' })
+
+    // Branded header (logo + company name/location/phone/TIN), height varies
+    // depending on whether a logo is set — headerEndY tracks where to continue.
+    let y = await drawBrandedHeaderNarrow(doc, profile)
+
+    doc.text('Sales Receipt', 40, y, { align: 'center' })
+    y += 4
+    doc.text('--------------------------------', 40, y, { align: 'center' })
+    y += 6
+    doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 5, y)
+    y += 6
+    doc.text(`Customer: ${receiptSale.product_name}`, 5, y)
+    y += 6
     const paymentLabel = receiptSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
       receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
       receiptSale.payment_method === 'cheque' ? 'Cheque' :
@@ -564,10 +555,11 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     const statusLabel = receiptSale.payment_status === 'pending' ? 'Pending' :
       receiptSale.payment_status === 'partial' ? `Partial — Paid RWF ${(receiptSale.amount_paid || 0).toLocaleString()}, Balance RWF ${(receiptSale.total - (receiptSale.amount_paid || 0)).toLocaleString()}` :
       'Paid'
-    doc.text(`Payment: ${paymentLabel} (${statusLabel})`, 5, 38)
-    doc.text('--------------------------------', 40, 42, { align: 'center' })
+    doc.text(`Payment: ${paymentLabel} (${statusLabel})`, 5, y)
+    y += 4
+    doc.text('--------------------------------', 40, y, { align: 'center' })
+    y += 6
 
-    let y = 48
     receiptItems.forEach((item, i) => {
       doc.text(`${i + 1}. ${item.product_name}`, 5, y)
       doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
@@ -594,9 +586,12 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       }
     }
 
+    // Signature (left) + Stamp (right), then the thank-you footer below them
+    footerY = await drawSignatureAndStampNarrow(doc, profile, footerY + 4)
+
     doc.setFontSize(8)
-    doc.text('Thank you for your business!', 40, footerY + 7, { align: 'center' })
-    doc.text('Powered by KaySales', 40, footerY + 12, { align: 'center' })
+    doc.text('Thank you for your business!', 40, footerY, { align: 'center' })
+    doc.text('Powered by KaySales', 40, footerY + 5, { align: 'center' })
     doc.save(`Receipt_${receiptSale.product_name}_${new Date(receiptSale.created_at).toLocaleDateString()}.pdf`)
   }
 
@@ -623,7 +618,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     } else {
       const doc = new jsPDF()
       doc.setFontSize(16)
-      doc.text('KaySales Management System', 14, 15)
+      doc.text(profile?.company_name || 'KaySales Management System', 14, 15)
       doc.setFontSize(12)
       doc.text('Sales Report', 14, 25)
       doc.setFontSize(10)
@@ -665,7 +660,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     <Layout>
       <div className="p-6 space-y-6">
 
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">💰 Sales</h1>
@@ -676,7 +670,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           </button>
         </div>
 
-        {/* Filters & Export */}
         <div className="flex flex-col sm:flex-row gap-3">
           <input
             type="text"
@@ -703,7 +696,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
         </div>
 
-        {/* Revenue Summary */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
           <div>
             <p className="text-gray-400 text-sm">Total Revenue {(dateFrom || dateTo) && <span className="text-gray-500 text-xs font-normal">(filtered)</span>}</p>
@@ -715,7 +707,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           </div>
         </div>
 
-        {/* Sales Table */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading sales...</p></div>
@@ -778,7 +769,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
       </div>
 
-      {/* Add/Edit Modal */}
       {showModal && (
         <Modal title={pendingEditSale ? 'Edit Sale' : 'Record Sale'} onClose={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }}>
           <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
@@ -986,7 +976,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         </Modal>
       )}
 
-      {/* Confirm Delete */}
       {showConfirm && !showOTP && (
         <ConfirmDialog
           message="Are you sure you want to delete this sale?"
@@ -995,7 +984,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         />
       )}
 
-      {/* OTP / Password Verify */}
       {showOTP && (
         <OTPVerify
           actionLabel={otpAction === 'delete'
@@ -1013,7 +1001,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         />
       )}
 
-      {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
@@ -1040,7 +1027,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         </div>
       )}
 
-      {/* Receipt Modal */}
       {showReceipt && receiptSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
@@ -1050,10 +1036,15 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1">
               <div className="text-center mb-4">
-                <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
-                  <span className="text-white font-bold">K</span>
-                </div>
-                <p className="text-white font-bold">KaySales Management System</p>
+                {profile?.logo_url ? (
+                  <img src={profile.logo_url} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-2 rounded" />
+                ) : (
+                  <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
+                    <span className="text-white font-bold">K</span>
+                  </div>
+                )}
+                <p className="text-white font-bold">{profile?.company_name || 'KaySales Management System'}</p>
+                {profile?.company_location && <p className="text-gray-500 text-xs">{profile.company_location}</p>}
                 <p className="text-gray-400 text-xs">Sales Receipt</p>
               </div>
               <div className="border-t border-gray-700 pt-4 space-y-2">
@@ -1133,6 +1124,22 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                   </div>
                 )}
               </div>
+              {(profile?.signature_url || profile?.stamp_url) && (
+                <div className="flex justify-between items-end mt-4 pt-3 border-t border-gray-700">
+                  {profile?.signature_url ? (
+                    <div className="text-center">
+                      <img src={profile.signature_url} alt="Signature" className="h-10 object-contain mx-auto" />
+                      <p className="text-gray-500 text-[10px] mt-1">Signature</p>
+                    </div>
+                  ) : <div />}
+                  {profile?.stamp_url ? (
+                    <div className="text-center">
+                      <img src={profile.stamp_url} alt="Stamp" className="h-10 object-contain mx-auto" />
+                      <p className="text-gray-500 text-[10px] mt-1">Company Stamp</p>
+                    </div>
+                  ) : <div />}
+                </div>
+              )}
               <div className="text-center mt-4 text-gray-500 text-xs">
                 <p>Thank you for your business!</p>
                 <p>Powered by KaySales</p>
@@ -1146,7 +1153,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         </div>
       )}
 
-      {/* Undo Toast */}
       {showUndoToast && pendingDelete && (
         <UndoToast
           message="Sale deleted — stock will be restored"

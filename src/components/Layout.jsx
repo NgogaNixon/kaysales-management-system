@@ -10,6 +10,7 @@ const clientNavItems = [
   { path: '/credits', icon: '💳', labelKey: 'credits' },
   { path: '/quotations', icon: '📝', labelKey: 'quotations' },
   { path: '/analysis', icon: '📈', labelKey: 'analysis' },
+  { path: '/account-settings', icon: '🏢', labelKey: 'accountSettings' },
 ]
 
 const adminNavItems = [
@@ -19,6 +20,7 @@ const adminNavItems = [
   { path: '/admin/reports', icon: '📊', labelKey: 'reports' },
 { path: '/admin/admin-reports', icon: '📑', labelKey: 'adminReports' },
   { path: '/admin/activity', icon: '📋', labelKey: 'activity' },
+  { path: '/admin/devices', icon: '📱', labelKey: 'devices' },
 ]
 
 export default function Layout({ children }) {
@@ -174,7 +176,7 @@ export default function Layout({ children }) {
         </div>
 
         {/* Mobile Bottom Navigation — truly fixed to the real browser viewport, no JS height math */}
-        <nav className="fixed bottom-0 inset-x-0 bg-gray-900 border-t border-gray-800 z-50 safe-bottom">
+        <nav className="fixed bottom-0 inset-x-0 bg-gray-900 border-t border-gray-800 z-30 safe-bottom">
           <div className="flex items-center overflow-x-auto px-1 py-2 gap-1">
             {navItems.map((item) => (
               <button
