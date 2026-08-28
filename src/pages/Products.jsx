@@ -25,6 +25,7 @@ export default function Products() {
     quantity: '',
     selling_price: '',
     buying_price: '',
+    low_stock_threshold: '',
   })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -48,9 +49,12 @@ export default function Products() {
     setLoading(false)
   }
 
+  // A product's own low_stock_threshold if set, otherwise the app default of 3.
+  const thresholdFor = (product) => product?.low_stock_threshold || 3
+
   const openAdd = () => {
     setSelectedProduct(null)
-    setForm({ name: '', category: '', quantity: '', selling_price: '', buying_price: '' })
+    setForm({ name: '', category: '', quantity: '', selling_price: '', buying_price: '', low_stock_threshold: '' })
     setError('')
     setShowModal(true)
   }
@@ -63,6 +67,7 @@ export default function Products() {
       quantity: product.quantity,
       selling_price: product.selling_price,
       buying_price: product.buying_price || '',
+      low_stock_threshold: product.low_stock_threshold || '',
     })
     setError('')
     setShowModal(true)
@@ -89,6 +94,11 @@ export default function Products() {
       return
     }
 
+    if (!isEmpty(form.low_stock_threshold) && parseInt(form.low_stock_threshold) < 0) {
+      setError('Low stock alert number cannot be negative')
+      return
+    }
+
     const isStandard = profile?.plan_type === 'standard'
     if (!selectedProduct && isStandard && form.category) {
       const existingCategories = [...new Set(products.map(p => p.category).filter(Boolean))]
@@ -107,6 +117,7 @@ export default function Products() {
       quantity: parseInt(form.quantity),
       buying_price: parseInt(form.buying_price) || 0,
       selling_price: parseInt(form.selling_price),
+      low_stock_threshold: isEmpty(form.low_stock_threshold) ? null : parseInt(form.low_stock_threshold),
       user_id: profile.id,
     }
 
@@ -132,10 +143,10 @@ export default function Products() {
 
   const handleDownloadTemplate = () => {
     const sample = [
-      { Name: 'Example Product', Category: 'General', Quantity: 10, 'Buying Price': 1000, 'Selling Price': 1500 },
+      { Name: 'Example Product', Category: 'General', Quantity: 10, 'Buying Price': 1000, 'Selling Price': 1500, 'Low Stock Alert': '' },
     ]
     const ws = XLSX.utils.json_to_sheet(sample)
-    ws['!cols'] = [{ wch: 20 }, { wch: 15 }, { wch: 10 }, { wch: 14 }, { wch: 14 }]
+    ws['!cols'] = [{ wch: 20 }, { wch: 15 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 16 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Products')
     XLSX.writeFile(wb, 'KaySales_Product_Import_Template.xlsx')
@@ -163,9 +174,13 @@ export default function Products() {
       const rawQuantity = row.Quantity ?? row.quantity
       const rawSelling = row['Selling Price'] ?? row.selling_price
       const rawBuying = row['Buying Price'] ?? row.buying_price
+      const rawThreshold = row['Low Stock Alert'] ?? row.low_stock_threshold
       const quantity = parseInt(rawQuantity)
       const sellingPrice = parseInt(rawSelling)
       const buyingPrice = rawBuying === undefined || rawBuying === '' ? 0 : parseInt(rawBuying)
+      const lowStockThreshold = rawThreshold === undefined || rawThreshold === '' || rawThreshold === null
+        ? null
+        : parseInt(rawThreshold)
 
       if (!name) {
         skipped.push(`❌ Error: a row is missing a Name — skipped`)
@@ -195,6 +210,10 @@ export default function Products() {
         skipped.push(`❌ Error: "${name}" has an invalid Buying Price — skipped`)
         continue
       }
+      if (lowStockThreshold !== null && (isNaN(lowStockThreshold) || lowStockThreshold < 0)) {
+        skipped.push(`❌ Error: "${name}" has an invalid Low Stock Alert number — skipped`)
+        continue
+      }
       const nameLower = name.toLowerCase()
       if (existingNamesLower.has(nameLower)) {
         skipped.push(`❌ Error: "${name}" already exists in your product list — skipped`)
@@ -211,6 +230,7 @@ export default function Products() {
         quantity,
         buying_price: buyingPrice,
         selling_price: sellingPrice,
+        low_stock_threshold: lowStockThreshold,
         user_id: profile.id,
       })
     }
@@ -251,7 +271,7 @@ export default function Products() {
     p.category?.toLowerCase().includes(search.toLowerCase())
   )
 
-  const lowStock = products.filter(p => p.quantity < 3)
+  const lowStock = products.filter(p => p.quantity < thresholdFor(p))
   const isStandard = profile?.plan_type === 'standard'
 
   return (
@@ -347,7 +367,7 @@ export default function Products() {
             <div className="flex flex-wrap gap-2">
               {lowStock.map((p) => (
                 <span key={p.id} className="bg-orange-800 text-orange-200 px-3 py-1 rounded-full text-xs font-medium">
-                  {p.name} — {p.quantity} left
+                  {p.name} — {p.quantity} left (alert at {thresholdFor(p)})
                 </span>
               ))}
             </div>
@@ -384,6 +404,7 @@ export default function Products() {
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Name</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Category</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Qty</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Alert At</th>
                     {showProfit && (
                       <th className="text-left text-gray-400 px-6 py-4 font-medium">Buying Price</th>
                     )}
@@ -393,14 +414,19 @@ export default function Products() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((product) => (
+                  {filtered.map((product) => {
+                    const threshold = thresholdFor(product)
+                    return (
                     <tr key={product.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
                       <td className="px-6 py-4 text-white font-medium">{product.name}</td>
                       <td className="px-6 py-4 text-gray-300">{product.category || '—'}</td>
                       <td className="px-6 py-4">
-                        <span className={`font-bold ${product.quantity < 3 ? 'text-orange-400' : 'text-white'}`}>
+                        <span className={`font-bold ${product.quantity < threshold ? 'text-orange-400' : 'text-white'}`}>
                           {product.quantity}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 text-gray-500 text-xs">
+                        {product.low_stock_threshold ? product.low_stock_threshold : `${threshold} (default)`}
                       </td>
                       {showProfit && (
                         <td className="px-6 py-4 text-purple-300">RWF {(product.buying_price || 0).toLocaleString()}</td>
@@ -410,11 +436,11 @@ export default function Products() {
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                           product.quantity === 0
                             ? 'bg-red-900 text-red-300'
-                            : product.quantity < 3
+                            : product.quantity < threshold
                             ? 'bg-orange-900 text-orange-300'
                             : 'bg-green-900 text-green-300'
                         }`}>
-                          {product.quantity === 0 ? '❌ Out of Stock' : product.quantity < 3 ? '⚠️ Low Stock' : '✅ In Stock'}
+                          {product.quantity === 0 ? '❌ Out of Stock' : product.quantity < threshold ? '⚠️ Low Stock' : '✅ In Stock'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
@@ -424,7 +450,8 @@ export default function Products() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -488,6 +515,20 @@ export default function Products() {
                 />
               </div>
             )}
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Low Stock Alert Number (optional)</label>
+              <input
+                type="number"
+                min="0"
+                value={form.low_stock_threshold}
+                onChange={(e) => setForm({ ...form, low_stock_threshold: e.target.value })}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                placeholder="Leave blank to use default (3)"
+              />
+              <p className="text-gray-500 text-xs mt-1">
+                This product will show as "Low Stock" once quantity drops below this number. Leave blank to use the default of 3.
+              </p>
+            </div>
             <div className="flex gap-3 pt-2">
               <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
                 Cancel

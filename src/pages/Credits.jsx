@@ -38,6 +38,12 @@ export default function Credits() {
   const [notes, setNotes] = useState('')
   const [status, setStatus] = useState('unpaid')
   const [creditItems, setCreditItems] = useState([{ product_name: '', quantity: '', unit_price: '', amount: '' }])
+  const [search, setSearch] = useState('')
+
+  // Delete flow: 'single' deletes one credit record, 'all' deletes every
+  // record for a customer at once. Both share the same OTP confirmation.
+  const [deleteMode, setDeleteMode] = useState('single')
+  const [deleteAllTarget, setDeleteAllTarget] = useState(null)
 
   useEffect(() => {
     if (profile?.id) fetchCredits()
@@ -91,6 +97,13 @@ export default function Credits() {
 
   const openDelete = (credit) => {
     setSelectedCredit(credit)
+    setDeleteMode('single')
+    setShowConfirm(true)
+  }
+
+  const openDeleteAll = (group) => {
+    setDeleteAllTarget(group)
+    setDeleteMode('all')
     setShowConfirm(true)
   }
 
@@ -208,6 +221,7 @@ export default function Credits() {
 
       if (saleItems && saleItems.length > 0) {
         for (const item of saleItems) {
+          if (item.is_consignment) continue
           const { data: freshProduct } = await supabase
             .from('products')
             .select('quantity')
@@ -238,6 +252,61 @@ export default function Credits() {
 
     setShowConfirm(false)
     setShowOTP(false)
+    setSelectedCustomer(null)
+    fetchCredits()
+  }
+
+  // Deletes every credit record for one customer/supplier in the current tab
+  // in one go. For "Credits Given" entries that came from a sale, the linked
+  // sale + sale_items are removed too and stock is restored, same as a single delete.
+  const handleDeleteAll = async () => {
+    if (!deleteAllTarget) return
+    const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+    const items = deleteAllTarget.items
+
+    for (const credit of items) {
+      if (activeTab === 'given' && credit.sale_id) {
+        const { data: saleItems } = await supabase
+          .from('sale_items')
+          .select('*')
+          .eq('sale_id', credit.sale_id)
+
+        if (saleItems && saleItems.length > 0) {
+          for (const item of saleItems) {
+            if (item.is_consignment) continue
+            const { data: freshProduct } = await supabase
+              .from('products')
+              .select('quantity')
+              .eq('id', item.product_id)
+              .single()
+            if (freshProduct) {
+              await supabase
+                .from('products')
+                .update({ quantity: freshProduct.quantity + item.quantity_sold })
+                .eq('id', item.product_id)
+            }
+          }
+        }
+
+        await supabase.from('sale_items').delete().eq('sale_id', credit.sale_id)
+        await supabase.from('sales').delete().eq('id', credit.sale_id)
+      }
+    }
+
+    const ids = items.map(c => c.id)
+    await supabase.from(table).delete().in('id', ids)
+
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      'Delete All Credits',
+      `Deleted all ${items.length} credit record(s) for: ${deleteAllTarget.name} (${activeTab === 'given' ? 'Credits Given' : 'Credits Taken'})`
+    )
+
+    setShowConfirm(false)
+    setShowOTP(false)
+    setDeleteAllTarget(null)
     setSelectedCustomer(null)
     fetchCredits()
   }
@@ -472,11 +541,13 @@ export default function Credits() {
     return acc
   }, {})
 
-  const groupedList = Object.values(allGrouped).filter(group => {
-    if (statusFilter === 'unpaid') return group.unpaidAmount > 0
-    if (statusFilter === 'paid') return group.unpaidAmount === 0
-    return true
-  })
+  const groupedList = Object.values(allGrouped)
+    .filter(group => {
+      if (statusFilter === 'unpaid') return group.unpaidAmount > 0
+      if (statusFilter === 'paid') return group.unpaidAmount === 0
+      return true
+    })
+    .filter(group => group.name.toLowerCase().includes(search.toLowerCase()))
 
   const unpaidGiven = creditsGiven.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
   const unpaidTaken = creditsTaken.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
@@ -528,6 +599,14 @@ export default function Credits() {
           </div>
         </div>
 
+        <input
+          type="text"
+          placeholder={`Search by ${activeTab === 'given' ? 'customer' : 'supplier'} name...`}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+        />
+
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading credits...</p></div>
@@ -551,25 +630,34 @@ export default function Credits() {
                 </thead>
                 <tbody>
                   {groupedList.map((group) => (
-                    <tr key={group.name} className="border-t border-gray-800 hover:bg-gray-800 transition cursor-pointer" onClick={() => setSelectedCustomer(group)}>
-                      <td className="px-6 py-4 text-white font-medium">{group.name}</td>
-                      <td className="px-6 py-4 text-gray-300">{group.items.length} item{group.items.length > 1 ? 's' : ''}</td>
-                      <td className={`px-6 py-4 font-medium ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
+                    <tr key={group.name} className="border-t border-gray-800 hover:bg-gray-800 transition">
+                      <td className="px-6 py-4 text-white font-medium cursor-pointer" onClick={() => setSelectedCustomer(group)}>{group.name}</td>
+                      <td className="px-6 py-4 text-gray-300 cursor-pointer" onClick={() => setSelectedCustomer(group)}>{group.items.length} item{group.items.length > 1 ? 's' : ''}</td>
+                      <td className={`px-6 py-4 font-medium cursor-pointer ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`} onClick={() => setSelectedCustomer(group)}>
                         RWF {group.totalAmount.toLocaleString()}
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4 cursor-pointer" onClick={() => setSelectedCustomer(group)}>
                         {group.unpaidAmount > 0
                           ? <span className="text-red-400 font-medium text-xs">RWF {group.unpaidAmount.toLocaleString()}</span>
                           : <span className="text-green-400 text-xs">All paid</span>
                         }
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4 cursor-pointer" onClick={() => setSelectedCustomer(group)}>
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${group.unpaidAmount > 0 ? 'bg-red-900 text-red-300' : 'bg-green-900 text-green-300'}`}>
                           {group.unpaidAmount > 0 ? '❌ Has Unpaid' : '✅ All Paid'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
-                        <span className="text-blue-400 text-xs">View →</span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-blue-400 text-xs cursor-pointer" onClick={() => setSelectedCustomer(group)}>View →</span>
+                          <button
+                            onClick={() => openDeleteAll(group)}
+                            className="px-2 py-1 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-xs transition"
+                            title={`Delete all records for ${group.name}`}
+                          >
+                            🗑️ Delete All
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -592,6 +680,12 @@ export default function Credits() {
               <div className="flex items-center gap-3">
                 <button onClick={handleExportClientPDF} className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">
                   📄 Download PDF
+                </button>
+                <button
+                  onClick={() => openDeleteAll(selectedCustomer)}
+                  className="px-3 py-1.5 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-xs transition"
+                >
+                  🗑️ Delete All
                 </button>
                 <button onClick={() => setSelectedCustomer(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
               </div>
@@ -905,17 +999,25 @@ export default function Credits() {
 
       {showConfirm && !showOTP && (
         <ConfirmDialog
-          message={`Are you sure you want to delete this credit?${selectedCredit?.sale_id ? ' The linked sale will also be deleted and stock restored.' : ''}`}
+          message={
+            deleteMode === 'all'
+              ? `Are you sure you want to delete ALL ${deleteAllTarget?.items.length} credit record(s) for "${deleteAllTarget?.name}"? ${activeTab === 'given' ? 'Any linked sales will also be deleted and stock restored. ' : ''}This cannot be undone.`
+              : `Are you sure you want to delete this credit?${selectedCredit?.sale_id ? ' The linked sale will also be deleted and stock restored.' : ''}`
+          }
           onConfirm={() => { setShowConfirm(false); setShowOTP(true) }}
-          onCancel={() => setShowConfirm(false)}
+          onCancel={() => { setShowConfirm(false); setDeleteAllTarget(null) }}
         />
       )}
 
       {showOTP && (
         <OTPVerify
-          actionLabel={`Delete credit for: ${selectedCredit?.customer_name || selectedCredit?.supplier_name}`}
-          onVerified={handleDelete}
-          onCancel={() => setShowOTP(false)}
+          actionLabel={
+            deleteMode === 'all'
+              ? `Delete ALL credit records for: ${deleteAllTarget?.name}`
+              : `Delete credit for: ${selectedCredit?.customer_name || selectedCredit?.supplier_name}`
+          }
+          onVerified={() => (deleteMode === 'all' ? handleDeleteAll() : handleDelete())}
+          onCancel={() => { setShowOTP(false); setDeleteAllTarget(null) }}
         />
       )}
 

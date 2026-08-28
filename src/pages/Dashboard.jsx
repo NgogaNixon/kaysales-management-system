@@ -38,6 +38,9 @@ export default function Dashboard() {
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
 
+  // A product's own low_stock_threshold if set, otherwise the app default of 3.
+  const thresholdFor = (product) => product?.low_stock_threshold || 3
+
   useEffect(() => {
     if (profile?.id) {
       fetchDashboardData()
@@ -101,7 +104,7 @@ export default function Dashboard() {
     const totalProfit = salesData?.reduce((sum, s) => sum + (s.profit || 0), 0) || 0
     const stockValueCost = productsData?.reduce((sum, p) => sum + ((p.buying_price || 0) * (p.quantity || 0)), 0) || 0
     const stockValueSelling = productsData?.reduce((sum, p) => sum + ((p.selling_price || 0) * (p.quantity || 0)), 0) || 0
-    const lowStock = productsData?.filter(p => p.quantity < 3) || []
+    const lowStock = productsData?.filter(p => p.quantity < thresholdFor(p)) || []
     const recentSales = salesData?.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 10) || []
     setAllSales(salesData || [])
 

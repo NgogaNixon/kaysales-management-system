@@ -19,6 +19,7 @@ export default function Quotations() {
   const [showModal, setShowModal] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [selectedQuotation, setSelectedQuotation] = useState(null)
+  const [editingQuotation, setEditingQuotation] = useState(null)
   const [customerName, setCustomerName] = useState('')
   const [quoteDate, setQuoteDate] = useState(new Date().toISOString().split('T')[0])
   const [quoteItems, setQuoteItems] = useState([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0, is_consignment: false }])
@@ -27,6 +28,17 @@ export default function Quotations() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [converting, setConverting] = useState(false)
+
+  // View Receipt (quote preview) modal
+  const [showReceiptModal, setShowReceiptModal] = useState(false)
+  const [receiptQuotation, setReceiptQuotation] = useState(null)
+
+  // Convert to Sale — payment method modal
+  const [showConvertModal, setShowConvertModal] = useState(false)
+  const [convertQuotation, setConvertQuotation] = useState(null)
+  const [convertMethod, setConvertMethod] = useState('cash')
+  const [convertAmountPaid, setConvertAmountPaid] = useState('')
+  const [convertError, setConvertError] = useState('')
 
   useEffect(() => {
     if (profile?.id) {
@@ -56,6 +68,7 @@ export default function Quotations() {
 
   const openAdd = () => {
     setSelectedQuotation(null)
+    setEditingQuotation(null)
     setCustomerName('')
     setQuoteDate(new Date().toISOString().split('T')[0])
     setQuoteItems([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0, is_consignment: false }])
@@ -63,9 +76,41 @@ export default function Quotations() {
     setShowModal(true)
   }
 
+  const openEdit = (quotation) => {
+    setSelectedQuotation(null)
+    setEditingQuotation(quotation)
+    setCustomerName(quotation.customer_name)
+    setQuoteDate(quotation.date ? quotation.date.split('T')[0] : new Date().toISOString().split('T')[0])
+    setQuoteItems(
+      quotation.items.map(i => ({
+        product_id: i.product_id || '',
+        product_name: i.product_name,
+        quantity: i.quantity,
+        selling_price: i.selling_price,
+        total: i.total,
+        is_consignment: !!i.is_consignment,
+      }))
+    )
+    setError('')
+    setShowModal(true)
+  }
+
   const openDelete = (quotation) => {
     setSelectedQuotation(quotation)
     setShowConfirm(true)
+  }
+
+  const openReceipt = (quotation) => {
+    setReceiptQuotation(quotation)
+    setShowReceiptModal(true)
+  }
+
+  const openConvert = (quotation) => {
+    setConvertQuotation(quotation)
+    setConvertMethod('cash')
+    setConvertAmountPaid('')
+    setConvertError('')
+    setShowConvertModal(true)
   }
 
   const handleProductChange = (index, productId) => {
@@ -131,7 +176,7 @@ export default function Quotations() {
       setError('Customer name is required')
       return
     }
-    if (products.length === 0) {
+    if (products.length === 0 && !quoteItems.some(i => i.is_consignment)) {
       setError('You have no products yet — add products first before creating a quotation')
       return
     }
@@ -150,49 +195,78 @@ export default function Quotations() {
     setSaving(true)
     setError('')
 
-    const payload = {
-      user_id: profile.id,
-      customer_name: customerName,
-      date: quoteDate,
-      items: validItems.map(i => ({
-        product_id: i.is_consignment ? null : i.product_id,
-        product_name: i.product_name,
-        quantity: parseInt(i.quantity),
-        selling_price: parseInt(i.selling_price),
-        total: i.total,
-        is_consignment: !!i.is_consignment,
-      })),
-      total: grandTotal,
-      status: 'pending',
-    }
+    const itemsPayload = validItems.map(i => ({
+      product_id: i.is_consignment ? null : i.product_id,
+      product_name: i.product_name,
+      quantity: parseInt(i.quantity),
+      selling_price: parseInt(i.selling_price),
+      total: i.total,
+      is_consignment: !!i.is_consignment,
+    }))
 
     try {
-      const { data: insertedRows, error: saveError } = await supabase
-        .from('quotations')
-        .insert(payload)
-        .select()
+      if (editingQuotation) {
+        const { error: updateError } = await supabase
+          .from('quotations')
+          .update({
+            customer_name: customerName,
+            date: quoteDate,
+            items: itemsPayload,
+            total: grandTotal,
+          })
+          .eq('id', editingQuotation.id)
 
-      if (saveError) {
-        alert('DIAGNOSTIC — Supabase rejected the save:\n\n' + JSON.stringify(saveError, null, 2))
-        setError('Failed to save quotation: ' + saveError.message)
-        return
+        if (updateError) {
+          alert('DIAGNOSTIC — Supabase rejected the update:\n\n' + JSON.stringify(updateError, null, 2))
+          setError('Failed to update quotation: ' + updateError.message)
+          return
+        }
+
+        await logActivity(
+          profile.id,
+          profile.email,
+          profile.full_name,
+          'Edit Quotation',
+          `Updated quotation for: ${customerName} - RWF ${grandTotal.toLocaleString()}`
+        )
+      } else {
+        const payload = {
+          user_id: profile.id,
+          customer_name: customerName,
+          date: quoteDate,
+          items: itemsPayload,
+          total: grandTotal,
+          status: 'pending',
+        }
+
+        const { data: insertedRows, error: saveError } = await supabase
+          .from('quotations')
+          .insert(payload)
+          .select()
+
+        if (saveError) {
+          alert('DIAGNOSTIC — Supabase rejected the save:\n\n' + JSON.stringify(saveError, null, 2))
+          setError('Failed to save quotation: ' + saveError.message)
+          return
+        }
+
+        if (!insertedRows || insertedRows.length === 0) {
+          alert('DIAGNOSTIC: Supabase returned no error, but also returned no saved row. This usually means Row Level Security silently blocked the insert. Check that the "quotations" table has an INSERT policy allowing auth.uid() = user_id.')
+          setError('Save appeared to succeed but no row was returned — likely a database permissions issue.')
+          return
+        }
+
+        await logActivity(
+          profile.id,
+          profile.email,
+          profile.full_name,
+          'Add Quotation',
+          `Created quotation for: ${customerName} - RWF ${grandTotal.toLocaleString()}`
+        )
       }
-
-      if (!insertedRows || insertedRows.length === 0) {
-        alert('DIAGNOSTIC: Supabase returned no error, but also returned no saved row. This usually means Row Level Security silently blocked the insert. Check that the "quotations" table has an INSERT policy allowing auth.uid() = user_id.')
-        setError('Save appeared to succeed but no row was returned — likely a database permissions issue.')
-        return
-      }
-
-      await logActivity(
-        profile.id,
-        profile.email,
-        profile.full_name,
-        'Add Quotation',
-        `Created quotation for: ${customerName} - RWF ${grandTotal.toLocaleString()}`
-      )
 
       setShowModal(false)
+      setEditingQuotation(null)
       await fetchQuotations()
     } catch (err) {
       alert('DIAGNOSTIC — Unexpected JavaScript error:\n\n' + (err?.message || String(err)))
@@ -220,10 +294,21 @@ export default function Quotations() {
     fetchQuotations()
   }
 
-  const handleConvertToSale = async (quotation) => {
-    if (quotation.status === 'converted') return
+  // Converts a quotation into a Sale using the payment method chosen in the
+  // Convert modal — same behaviour as recording a Sale directly (cash, MTN,
+  // bank, cheque, or credit with partial payment added to Credits Given).
+  const handleConvertToSale = async () => {
+    const quotation = convertQuotation
+    if (!quotation || quotation.status === 'converted') return
+
+    setConvertError('')
+    const paidNow = parseInt(convertAmountPaid) || 0
+    if (convertMethod === 'credit' && paidNow > quotation.total) {
+      setConvertError('Amount paid now cannot exceed the total.')
+      return
+    }
+
     setConverting(true)
-    setError('')
 
     try {
       const itemsWithCost = []
@@ -247,6 +332,11 @@ export default function Quotations() {
         return sum + ((item.selling_price - item.buying_price) * item.quantity)
       }, 0)
 
+      const paymentStatus = convertMethod !== 'credit'
+        ? 'paid'
+        : paidNow >= quotation.total ? 'paid' : paidNow > 0 ? 'partial' : 'pending'
+      const amountPaidValue = convertMethod === 'credit' ? Math.min(paidNow, quotation.total) : quotation.total
+
       const { data: saleData, error: saleError } = await supabase
         .from('sales')
         .insert({
@@ -255,9 +345,9 @@ export default function Quotations() {
           quantity_sold: quotation.items.reduce((sum, i) => sum + i.quantity, 0),
           selling_price: 0,
           total: quotation.total,
-          payment_method: 'cash',
-          payment_status: 'paid',
-          extra_fees: 0,
+          payment_method: convertMethod,
+          payment_status: paymentStatus,
+          amount_paid: amountPaidValue,
           profit: totalProfit,
         })
         .select()
@@ -265,7 +355,7 @@ export default function Quotations() {
 
       if (saleError || !saleData) {
         console.error('Convert to sale error:', saleError)
-        setError('Failed to convert quotation: ' + (saleError?.message || 'unknown error'))
+        setConvertError('Failed to convert quotation: ' + (saleError?.message || 'unknown error'))
         return
       }
 
@@ -297,6 +387,28 @@ export default function Quotations() {
         }
       }
 
+      // Credit sales: whatever wasn't paid now goes into Credits Given,
+      // split across items in proportion to their share of the total —
+      // identical logic to recording a credit Sale directly.
+      if (convertMethod === 'credit') {
+        const paidRatio = quotation.total > 0 ? Math.min(paidNow / quotation.total, 1) : 0
+        for (const item of itemsWithCost) {
+          const itemPaid = Math.round(item.total * paidRatio)
+          await supabase.from('credits_given').insert({
+            user_id: profile.id,
+            customer_name: quotation.customer_name,
+            product_name: item.product_name,
+            quantity: item.quantity,
+            amount: item.total,
+            paid_amount: itemPaid,
+            date: new Date().toISOString(),
+            notes: 'Auto-added from quotation converted to sale',
+            status: itemPaid >= item.total ? 'paid' : itemPaid > 0 ? 'partial' : 'unpaid',
+            sale_id: saleData.id,
+          })
+        }
+      }
+
       await supabase
         .from('quotations')
         .update({ status: 'converted', sale_id: saleData.id })
@@ -307,14 +419,16 @@ export default function Quotations() {
         profile.email,
         profile.full_name,
         'Convert Quotation to Sale',
-        `Converted quotation for: ${quotation.customer_name} - RWF ${quotation.total.toLocaleString()}`
+        `Converted quotation for: ${quotation.customer_name} - RWF ${quotation.total.toLocaleString()} - Payment: ${convertMethod}`
       )
 
+      setShowConvertModal(false)
+      setConvertQuotation(null)
       fetchQuotations()
       fetchProducts()
     } catch (err) {
       console.error('Unexpected error converting quotation:', err)
-      setError('Something went wrong converting to sale: ' + (err?.message || 'unknown error'))
+      setConvertError('Something went wrong converting to sale: ' + (err?.message || 'unknown error'))
     } finally {
       setConverting(false)
     }
@@ -413,12 +527,20 @@ export default function Quotations() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2 flex-wrap">
+                          <button onClick={() => openReceipt(q)} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs transition">
+                            🧾 View Receipt
+                          </button>
+                          {q.status !== 'converted' && (
+                            <button onClick={() => openEdit(q)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">
+                              Edit
+                            </button>
+                          )}
                           <button onClick={() => exportPDF(q)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">
                             📄 PDF
                           </button>
                           {q.status !== 'converted' && (
                             <button
-                              onClick={() => handleConvertToSale(q)}
+                              onClick={() => openConvert(q)}
                               disabled={converting}
                               className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
                             >
@@ -439,7 +561,7 @@ export default function Quotations() {
         </div>
 
         {showModal && (
-          <Modal title="New Quotation" onClose={() => setShowModal(false)}>
+          <Modal title={editingQuotation ? 'Edit Quotation' : 'New Quotation'} onClose={() => { setShowModal(false); setEditingQuotation(null) }}>
             <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
               {error && <p className="text-red-400 text-sm">{error}</p>}
               <div>
@@ -568,9 +690,9 @@ export default function Quotations() {
               )}
 
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={() => { setShowModal(false); setEditingQuotation(null) }} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
                 <button onClick={handleSave} disabled={saving} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
-                  {saving ? 'Saving...' : 'Save Quotation'}
+                  {saving ? 'Saving...' : editingQuotation ? 'Update Quotation' : 'Save Quotation'}
                 </button>
               </div>
             </div>
@@ -587,6 +709,135 @@ export default function Quotations() {
             onConfirm={handleDelete}
             onCancel={() => setShowConfirm(false)}
           />
+        )}
+
+        {/* View Receipt — quote preview, available for every quotation */}
+        {showReceiptModal && receiptQuotation && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
+                <h2 className="text-lg font-bold text-white">Quotation Receipt</h2>
+                <button onClick={() => setShowReceiptModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
+              </div>
+              <div className="px-6 py-4 overflow-y-auto flex-1">
+                <div className="text-center mb-4">
+                  {profile?.logo_url ? (
+                    <img src={profile.logo_url} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-2 rounded" />
+                  ) : (
+                    <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
+                      <span className="text-white font-bold">K</span>
+                    </div>
+                  )}
+                  <p className="text-white font-bold">{profile?.company_name || 'KaySales Management System'}</p>
+                  {profile?.company_location && <p className="text-gray-500 text-xs">{profile.company_location}</p>}
+                  <p className="text-gray-400 text-xs">Quotation</p>
+                </div>
+                <div className="border-t border-gray-700 pt-4 space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Date</span>
+                    <span className="text-white">{new Date(receiptQuotation.date).toLocaleDateString()}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Customer</span>
+                    <span className="text-white">{receiptQuotation.customer_name}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Status</span>
+                    <span className={receiptQuotation.status === 'converted' ? 'text-green-400 font-medium' : 'text-yellow-400 font-medium'}>
+                      {receiptQuotation.status === 'converted' ? '✅ Converted to Sale' : '⏳ Pending'}
+                    </span>
+                  </div>
+                  <div className="border-t border-gray-700 pt-2">
+                    <p className="text-gray-400 text-xs mb-2">Items:</p>
+                    {receiptQuotation.items.map((item, i) => (
+                      <div key={i} className="mb-2">
+                        <p className="text-white text-sm">{item.product_name}{item.is_consignment ? ' (3rd-party)' : ''}</p>
+                        <div className="flex justify-between text-xs text-gray-400">
+                          <span>{item.quantity} x RWF {item.selling_price?.toLocaleString()}</span>
+                          <span className="text-green-400">RWF {item.total?.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border-t border-gray-700 pt-2 flex justify-between">
+                    <span className="text-white font-bold">GRAND TOTAL</span>
+                    <span className="text-green-400 font-bold text-lg">RWF {receiptQuotation.total?.toLocaleString()}</span>
+                  </div>
+                </div>
+                <div className="text-center mt-4 text-gray-500 text-xs">
+                  <p>This is a price quotation, not a receipt of payment.</p>
+                  <p>Powered by KaySales</p>
+                </div>
+                <div className="flex gap-3 mt-4">
+                  <button onClick={() => setShowReceiptModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
+                    Close
+                  </button>
+                  <button onClick={() => exportPDF(receiptQuotation)} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+                    Download PDF
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Convert to Sale — choose payment method, same options as recording a Sale */}
+        {showConvertModal && convertQuotation && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+                <h2 className="text-lg font-bold text-white">🔁 Convert to Sale</h2>
+                <button onClick={() => setShowConvertModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
+              </div>
+              <div className="px-6 py-4 space-y-4">
+                {convertError && <p className="text-red-400 text-sm">{convertError}</p>}
+                <div className="bg-gray-800 rounded-lg p-3">
+                  <p className="text-gray-400 text-xs">Customer</p>
+                  <p className="text-white font-medium">{convertQuotation.customer_name}</p>
+                  <p className="text-gray-400 text-xs mt-1">Total</p>
+                  <p className="text-green-400 font-bold">RWF {convertQuotation.total.toLocaleString()}</p>
+                </div>
+                <div>
+                  <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
+                  <select
+                    value={convertMethod}
+                    onChange={(e) => setConvertMethod(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="cash">💵 Cash</option>
+                    <option value="mtn">📱 MTN Mobile Money</option>
+                    <option value="bank">🏦 Bank Transfer</option>
+                    <option value="cheque">📄 Cheque</option>
+                    <option value="credit">💳 Credit (Add to Credits Given)</option>
+                  </select>
+                </div>
+                {convertMethod === 'credit' && (
+                  <div className="bg-yellow-900 border border-yellow-700 rounded-lg p-3 space-y-3">
+                    <p className="text-yellow-300 text-xs">⚠️ Whatever isn't paid now will be added to Credits Given as owed.</p>
+                    <div>
+                      <label className="text-yellow-200 text-xs mb-1 block">Amount Paid Now (leave blank if nothing was paid)</label>
+                      <input
+                        type="number"
+                        value={convertAmountPaid}
+                        onChange={(e) => setConvertAmountPaid(e.target.value)}
+                        className="w-full bg-gray-800 border border-yellow-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-yellow-500"
+                        placeholder="0"
+                      />
+                    </div>
+                    <p className="text-yellow-200 text-xs">
+                      Balance remaining on credit: <span className="font-bold">RWF {Math.max(convertQuotation.total - (parseInt(convertAmountPaid) || 0), 0).toLocaleString()}</span>
+                    </p>
+                  </div>
+                )}
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setShowConvertModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                  <button onClick={handleConvertToSale} disabled={converting} className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">
+                    {converting ? 'Converting...' : 'Confirm & Convert'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
       </div>
