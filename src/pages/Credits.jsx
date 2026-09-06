@@ -21,16 +21,12 @@ export default function Credits() {
   const [showModal, setShowModal] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [showExportModal, setShowExportModal] = useState(false)
-  const [showPayModal, setShowPayModal] = useState(false)
   const [showOTP, setShowOTP] = useState(false)
   const [exportType, setExportType] = useState('')
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
   const [selectedCredit, setSelectedCredit] = useState(null)
   const [selectedCustomer, setSelectedCustomer] = useState(null)
-  const [payMethod, setPayMethod] = useState('cash')
-  const [paymentAmountInput, setPaymentAmountInput] = useState('')
-  const [bulkPayMode, setBulkPayMode] = useState(false)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [customerName, setCustomerName] = useState('')
@@ -44,6 +40,13 @@ export default function Credits() {
   // record for a customer at once. Both share the same OTP confirmation.
   const [deleteMode, setDeleteMode] = useState('single')
   const [deleteAllTarget, setDeleteAllTarget] = useState(null)
+
+  // Receipt-style statement — inline "Add Payment" field with a live preview
+  // of the new remaining balance before it's confirmed and saved.
+  const [receiptPayAmount, setReceiptPayAmount] = useState('')
+  const [receiptPayMethod, setReceiptPayMethod] = useState('cash')
+  const [confirmingPayment, setConfirmingPayment] = useState(false)
+  const [receiptPayError, setReceiptPayError] = useState('')
 
   useEffect(() => {
     if (profile?.id) fetchCredits()
@@ -107,18 +110,17 @@ export default function Credits() {
     setShowConfirm(true)
   }
 
-  const openPayModal = (credit) => {
-    setSelectedCredit(credit)
-    setPayMethod('cash')
-    setBulkPayMode(false)
-    setPaymentAmountInput(String((credit.amount || 0) - (credit.paid_amount || 0)))
-    setShowPayModal(true)
+  const openCustomerReceipt = (group) => {
+    setSelectedCustomer(group)
+    setReceiptPayAmount('')
+    setReceiptPayMethod('cash')
+    setReceiptPayError('')
   }
 
-  const openBulkPayModal = () => {
-    setPayMethod('cash')
-    setBulkPayMode(true)
-    setShowPayModal(true)
+  const closeCustomerReceipt = () => {
+    setSelectedCustomer(null)
+    setReceiptPayAmount('')
+    setReceiptPayError('')
   }
 
   const addItem = () => {
@@ -155,21 +157,99 @@ export default function Credits() {
     const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
 
     if (selectedCredit) {
+      const newAmount = parseInt(validItems[0].amount)
+      const newQuantity = parseInt(validItems[0].quantity) || 0
+      const newProductName = validItems[0].product_name
+      const now = new Date().toISOString()
+
+      // Manually changing the status here should keep paid_amount honest —
+      // otherwise a credit marked "paid" with paid_amount still 0 would look
+      // unpaid everywhere that reads paid_amount (like the linked Sale).
+      let paidAmount = selectedCredit.paid_amount || 0
+      let paidAt = selectedCredit.paid_at || null
+      let paidMethod = selectedCredit.paid_method || null
+      if (status === 'paid') {
+        paidAmount = newAmount
+        paidAt = paidAt || now
+        paidMethod = paidMethod || 'cash'
+      } else if (status === 'unpaid') {
+        paidAmount = 0
+        paidAt = null
+        paidMethod = null
+      } else if (paidAmount > newAmount) {
+        // amount was reduced below what's already been paid — clamp it
+        paidAmount = newAmount
+      }
+
       await supabase.from(table).update({
         [nameField]: customerName,
-        product_name: validItems[0].product_name,
-        quantity: parseInt(validItems[0].quantity) || 0,
-        amount: parseInt(validItems[0].amount),
+        product_name: newProductName,
+        quantity: newQuantity,
+        amount: newAmount,
         date: date || new Date().toISOString(),
         notes,
         status,
+        paid_amount: paidAmount,
+        paid_at: paidAt,
+        paid_method: paidMethod,
       }).eq('id', selectedCredit.id)
 
+      // Keep the originating Sale (and its receipt) in sync with this edit —
+      // updates the matching sale_item, restores/deducts stock for the
+      // quantity difference, recomputes the sale's total, and re-syncs its
+      // payment status from all credits linked to it.
       if (activeTab === 'given' && selectedCredit.sale_id) {
-        await supabase
-          .from('sales')
-          .update({ product_name: customerName })
-          .eq('id', selectedCredit.sale_id)
+        const { data: matchingItems } = await supabase
+          .from('sale_items')
+          .select('*')
+          .eq('sale_id', selectedCredit.sale_id)
+          .eq('product_name', selectedCredit.product_name)
+
+        const saleItem = matchingItems?.[0]
+
+        if (saleItem) {
+          const newSellingPrice = newQuantity > 0 ? Math.round(newAmount / newQuantity) : saleItem.selling_price
+
+          await supabase.from('sale_items').update({
+            product_name: newProductName,
+            quantity_sold: newQuantity,
+            selling_price: newSellingPrice,
+            total: newAmount,
+          }).eq('id', saleItem.id)
+
+          if (!saleItem.is_consignment && saleItem.product_id) {
+            const quantityDelta = newQuantity - (selectedCredit.quantity || 0)
+            if (quantityDelta !== 0) {
+              const { data: freshProduct } = await supabase
+                .from('products')
+                .select('quantity')
+                .eq('id', saleItem.product_id)
+                .single()
+              if (freshProduct) {
+                await supabase
+                  .from('products')
+                  .update({ quantity: freshProduct.quantity - quantityDelta })
+                  .eq('id', saleItem.product_id)
+              }
+            }
+          }
+        }
+
+        const { data: allSaleItems } = await supabase
+          .from('sale_items')
+          .select('total, quantity_sold')
+          .eq('sale_id', selectedCredit.sale_id)
+
+        const newSaleTotal = (allSaleItems || []).reduce((sum, i) => sum + (i.total || 0), 0)
+        const newSaleQuantity = (allSaleItems || []).reduce((sum, i) => sum + (i.quantity_sold || 0), 0)
+
+        await supabase.from('sales').update({
+          product_name: customerName,
+          total: newSaleTotal,
+          quantity_sold: newSaleQuantity,
+        }).eq('id', selectedCredit.sale_id)
+
+        await syncSalePaymentStatus(selectedCredit.sale_id)
       }
     } else {
       for (const item of validItems) {
@@ -329,91 +409,101 @@ export default function Credits() {
     }).eq('id', saleId)
   }
 
-  const handleMarkPaid = async () => {
+  const handleResetToUnpaid = async (credit) => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
-    const now = new Date().toISOString()
+    await supabase.from(table).update({
+      status: 'unpaid',
+      paid_amount: 0,
+      paid_at: null,
+      paid_method: null,
+    }).eq('id', credit.id)
+    if (activeTab === 'given' && credit.sale_id) {
+      await syncSalePaymentStatus(credit.sale_id)
+    }
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      'Reset Credit to Unpaid',
+      `Reset credit to unpaid for: ${activeTab === 'given' ? credit.customer_name : credit.supplier_name} - RWF ${credit.amount?.toLocaleString()}`
+    )
+    await fetchCredits()
+    closeCustomerReceipt()
+  }
 
-    if (bulkPayMode && selectedCustomer) {
-      const unpaidItems = selectedCustomer.items.filter(c => c.status !== 'paid')
-
-      for (const item of unpaidItems) {
-        await supabase.from(table).update({
-          status: 'paid',
-          paid_amount: item.amount || 0,
-          paid_at: now,
-          paid_method: payMethod,
-        }).eq('id', item.id)
-
-        if (activeTab === 'given' && item.sale_id) {
-          await syncSalePaymentStatus(item.sale_id)
-          await supabase.from('sales').update({ payment_method: payMethod }).eq('id', item.sale_id)
-        }
-      }
-
-      await logActivity(
-        profile.id,
-        profile.email,
-        profile.full_name,
-        'Mark All Credits Paid',
-        `Marked ${unpaidItems.length} item(s) as paid for: ${selectedCustomer.name} - RWF ${selectedCustomer.unpaidAmount.toLocaleString()} - Method: ${payMethod}`
-      )
-
-      setShowPayModal(false)
-      setBulkPayMode(false)
-      await fetchCredits()
-
-      if (statusFilter === 'unpaid') {
-        setSelectedCustomer(null)
-      } else {
-        const updatedItems = selectedCustomer.items.map(c => ({ ...c, status: 'paid', paid_amount: c.amount || 0, paid_at: now, paid_method: payMethod }))
-        setSelectedCustomer({ ...selectedCustomer, items: updatedItems, unpaidAmount: 0 })
-      }
+  // Applies a payment against a customer's outstanding balance, oldest debt
+  // first, across as many credit records as the amount covers. Anything left
+  // over on an item becomes a "partial" status; fully covered items become "paid".
+  const handleConfirmReceiptPayment = async () => {
+    if (!selectedCustomer) return
+    const amountEntered = parseInt(receiptPayAmount) || 0
+    if (amountEntered <= 0) {
+      setReceiptPayError('Enter an amount greater than 0')
       return
     }
 
-    const additionalPaid = Math.max(parseInt(paymentAmountInput) || 0, 0)
-    const previouslyPaid = selectedCredit.paid_amount || 0
-    const newPaidAmount = Math.min(previouslyPaid + additionalPaid, selectedCredit.amount || 0)
-    const newStatus = newPaidAmount >= (selectedCredit.amount || 0) ? 'paid' : newPaidAmount > 0 ? 'partial' : 'unpaid'
+    setReceiptPayError('')
+    setConfirmingPayment(true)
 
-    await supabase.from(table).update({
-      status: newStatus,
-      paid_amount: newPaidAmount,
-      paid_at: newStatus !== 'unpaid' ? now : null,
-      paid_method: newStatus !== 'unpaid' ? payMethod : null,
-    }).eq('id', selectedCredit.id)
+    const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+    const now = new Date().toISOString()
+    let remainingToApply = Math.min(amountEntered, selectedCustomer.unpaidAmount)
+    const amountApplied = remainingToApply
 
-    if (activeTab === 'given' && selectedCredit.sale_id) {
-      await syncSalePaymentStatus(selectedCredit.sale_id)
-      await supabase.from('sales').update({ payment_method: payMethod }).eq('id', selectedCredit.sale_id)
+    const unpaidItemsSorted = selectedCustomer.items
+      .filter(c => c.status !== 'paid')
+      .slice()
+      .sort((a, b) => new Date(a.date || a.created_at) - new Date(b.date || b.created_at))
+
+    const updatedById = {}
+
+    for (const item of unpaidItemsSorted) {
+      if (remainingToApply <= 0) break
+      const itemBalance = (item.amount || 0) - (item.paid_amount || 0)
+      if (itemBalance <= 0) continue
+      const applyAmount = Math.min(itemBalance, remainingToApply)
+      const newPaidAmount = (item.paid_amount || 0) + applyAmount
+      const newStatus = newPaidAmount >= (item.amount || 0) ? 'paid' : newPaidAmount > 0 ? 'partial' : 'unpaid'
+
+      await supabase.from(table).update({
+        status: newStatus,
+        paid_amount: newPaidAmount,
+        paid_at: now,
+        paid_method: receiptPayMethod,
+      }).eq('id', item.id)
+
+      if (activeTab === 'given' && item.sale_id) {
+        await syncSalePaymentStatus(item.sale_id)
+        await supabase.from('sales').update({ payment_method: receiptPayMethod }).eq('id', item.sale_id)
+      }
+
+      updatedById[item.id] = { ...item, status: newStatus, paid_amount: newPaidAmount, paid_at: now, paid_method: receiptPayMethod }
+      remainingToApply -= applyAmount
     }
 
     await logActivity(
       profile.id,
       profile.email,
       profile.full_name,
-      newStatus === 'paid' ? 'Mark Credit Paid' : 'Mark Credit Unpaid',
-      `Marked credit as ${newStatus} for: ${activeTab === 'given' ? selectedCredit.customer_name : selectedCredit.supplier_name} - RWF ${selectedCredit.amount?.toLocaleString()} - Method: ${payMethod}`
+      'Record Payment',
+      `Recorded payment of RWF ${amountApplied.toLocaleString()} for: ${selectedCustomer.name} - Method: ${receiptPayMethod}`
     )
 
-    setShowPayModal(false)
-    await fetchCredits()
+    const mergedItems = selectedCustomer.items.map(c => updatedById[c.id] || c)
+    const newUnpaidAmount = mergedItems
+      .filter(c => c.status !== 'paid')
+      .reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
 
-    if (selectedCustomer) {
-      const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
-      const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
-      const updatedItems = currentData.map(c =>
-        c.id === selectedCredit.id ? { ...c, status: newStatus, paid_at: now, paid_method: payMethod } : c
-      ).filter(c => c[nameF] === selectedCustomer.name)
+    setConfirmingPayment(false)
+    setReceiptPayAmount('')
 
-      if (updatedItems.every(c => c.status === 'paid') && statusFilter === 'unpaid') {
-        setSelectedCustomer(null)
-      } else {
-        const totalAmount = updatedItems.reduce((sum, c) => sum + (c.amount || 0), 0)
-        const unpaidAmount = updatedItems.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
-        setSelectedCustomer({ ...selectedCustomer, items: updatedItems, totalAmount, unpaidAmount })
-      }
+    if (newUnpaidAmount === 0 && statusFilter === 'unpaid') {
+      setSelectedCustomer(null)
+    } else {
+      setSelectedCustomer({ ...selectedCustomer, items: mergedItems, unpaidAmount: newUnpaidAmount })
     }
+
+    fetchCredits()
   }
 
   const getPaymentLabel = (method) => {
@@ -449,9 +539,9 @@ export default function Credits() {
         c.quantity && c.amount ? Math.round(c.amount / c.quantity).toLocaleString() : '—',
         c.amount?.toLocaleString() || '0',
         c.date ? new Date(c.date).toLocaleDateString() : '—',
-        c.status === 'paid' ? 'Paid' : 'Unpaid',
-        c.status === 'paid' && c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
-        c.status === 'paid' ? (getPaymentLabel(c.paid_method) || '—') : '—',
+        c.status === 'paid' ? 'Paid' : c.status === 'partial' ? 'Partial' : 'Unpaid',
+        c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
+        c.paid_method ? (getPaymentLabel(c.paid_method) || '—') : '—',
       ]),
     })
 
@@ -552,6 +642,10 @@ export default function Credits() {
   const unpaidGiven = creditsGiven.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
   const unpaidTaken = creditsTaken.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
 
+  // Live preview: what the balance will look like if the current input is confirmed
+  const previewApplied = selectedCustomer ? Math.min(parseInt(receiptPayAmount) || 0, selectedCustomer.unpaidAmount) : 0
+  const previewRemaining = selectedCustomer ? Math.max(selectedCustomer.unpaidAmount - previewApplied, 0) : 0
+
   return (
     <Layout>
       <div className="p-6 space-y-6">
@@ -631,25 +725,25 @@ export default function Credits() {
                 <tbody>
                   {groupedList.map((group) => (
                     <tr key={group.name} className="border-t border-gray-800 hover:bg-gray-800 transition">
-                      <td className="px-6 py-4 text-white font-medium cursor-pointer" onClick={() => setSelectedCustomer(group)}>{group.name}</td>
-                      <td className="px-6 py-4 text-gray-300 cursor-pointer" onClick={() => setSelectedCustomer(group)}>{group.items.length} item{group.items.length > 1 ? 's' : ''}</td>
-                      <td className={`px-6 py-4 font-medium cursor-pointer ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`} onClick={() => setSelectedCustomer(group)}>
+                      <td className="px-6 py-4 text-white font-medium cursor-pointer" onClick={() => openCustomerReceipt(group)}>{group.name}</td>
+                      <td className="px-6 py-4 text-gray-300 cursor-pointer" onClick={() => openCustomerReceipt(group)}>{group.items.length} item{group.items.length > 1 ? 's' : ''}</td>
+                      <td className={`px-6 py-4 font-medium cursor-pointer ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`} onClick={() => openCustomerReceipt(group)}>
                         RWF {group.totalAmount.toLocaleString()}
                       </td>
-                      <td className="px-6 py-4 cursor-pointer" onClick={() => setSelectedCustomer(group)}>
+                      <td className="px-6 py-4 cursor-pointer" onClick={() => openCustomerReceipt(group)}>
                         {group.unpaidAmount > 0
                           ? <span className="text-red-400 font-medium text-xs">RWF {group.unpaidAmount.toLocaleString()}</span>
                           : <span className="text-green-400 text-xs">All paid</span>
                         }
                       </td>
-                      <td className="px-6 py-4 cursor-pointer" onClick={() => setSelectedCustomer(group)}>
+                      <td className="px-6 py-4 cursor-pointer" onClick={() => openCustomerReceipt(group)}>
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${group.unpaidAmount > 0 ? 'bg-red-900 text-red-300' : 'bg-green-900 text-green-300'}`}>
                           {group.unpaidAmount > 0 ? '❌ Has Unpaid' : '✅ All Paid'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
-                          <span className="text-blue-400 text-xs cursor-pointer" onClick={() => setSelectedCustomer(group)}>View →</span>
+                          <span className="text-blue-400 text-xs cursor-pointer" onClick={() => openCustomerReceipt(group)}>View →</span>
                           <button
                             onClick={() => openDeleteAll(group)}
                             className="px-2 py-1 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-xs transition"
@@ -669,217 +763,166 @@ export default function Credits() {
 
       </div>
 
+      {/* Customer Credit Statement — branded like every other receipt in the system */}
       {selectedCustomer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl shadow-2xl max-h-full flex flex-col">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
-              <div>
-                <h2 className="text-lg font-bold text-white">{selectedCustomer.name}</h2>
-                <p className="text-gray-400 text-xs">{selectedCustomer.items.length} item{selectedCustomer.items.length > 1 ? 's' : ''} · RWF {selectedCustomer.totalAmount.toLocaleString()} total</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <button onClick={handleExportClientPDF} className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">
-                  📄 Download PDF
-                </button>
-                <button
-                  onClick={() => openDeleteAll(selectedCustomer)}
-                  className="px-3 py-1.5 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-xs transition"
-                >
-                  🗑️ Delete All
-                </button>
-                <button onClick={() => setSelectedCustomer(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
-              </div>
+              <h2 className="text-lg font-bold text-white">Credit Statement</h2>
+              <button onClick={closeCustomerReceipt} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
-            <div className="px-6 py-4 space-y-3 overflow-y-auto flex-1">
+            <div className="px-6 py-4 overflow-y-auto flex-1">
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-gray-800 rounded-lg p-3">
-                  <p className="text-gray-400 text-xs">Total Amount</p>
-                  <p className={`text-xl font-bold ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
-                    RWF {selectedCustomer.totalAmount.toLocaleString()}
-                  </p>
+              <div className="text-center mb-4">
+                {profile?.logo_url ? (
+                  <img src={profile.logo_url} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-2 rounded" />
+                ) : (
+                  <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
+                    <span className="text-white font-bold">K</span>
+                  </div>
+                )}
+                <p className="text-white font-bold">{profile?.company_name || 'KaySales Management System'}</p>
+                {profile?.company_location && <p className="text-gray-500 text-xs">{profile.company_location}</p>}
+                <p className="text-gray-400 text-xs">{activeTab === 'given' ? 'Customer' : 'Supplier'} Credit Statement</p>
+              </div>
+
+              <div className="border-t border-gray-700 pt-4 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">{activeTab === 'given' ? 'Customer' : 'Supplier'}</span>
+                  <span className="text-white font-medium">{selectedCustomer.name}</span>
                 </div>
-                <div className="bg-gray-800 rounded-lg p-3">
-                  <p className="text-gray-400 text-xs">Unpaid Amount</p>
-                  <p className="text-red-400 text-xl font-bold">RWF {selectedCustomer.unpaidAmount.toLocaleString()}</p>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Statement Date</span>
+                  <span className="text-white">{new Date().toLocaleDateString()}</span>
+                </div>
+
+                <div className="border-t border-gray-700 pt-2">
+                  <p className="text-gray-400 text-xs mb-2">Items:</p>
+                  {selectedCustomer.items.map((credit) => (
+                    <div key={credit.id} className="mb-2">
+                      <div className="flex justify-between text-sm">
+                        <p className="text-white text-sm">{credit.product_name || '—'}</p>
+                        <span className={`text-xs font-medium ${
+                          credit.status === 'paid' ? 'text-green-400' : credit.status === 'partial' ? 'text-orange-400' : 'text-red-400'
+                        }`}>
+                          {credit.status === 'paid' ? 'Paid' : credit.status === 'partial' ? 'Partial' : 'Unpaid'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs text-gray-400">
+                        <span>
+                          {credit.quantity || '—'} x RWF {credit.quantity && credit.amount ? Math.round(credit.amount / credit.quantity).toLocaleString() : '—'}
+                        </span>
+                        <span className="text-green-400">RWF {credit.amount?.toLocaleString()}</span>
+                      </div>
+                      {credit.paid_amount > 0 && (
+                        <p className="text-gray-500 text-xs">Paid so far: RWF {credit.paid_amount.toLocaleString()}{credit.paid_method ? ` (${getPaymentLabel(credit.paid_method)})` : ''}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="border-t border-gray-700 pt-2 flex justify-between">
+                  <span className="text-white font-bold">TOTAL</span>
+                  <span className="text-white font-bold text-lg">RWF {selectedCustomer.totalAmount.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Already Paid</span>
+                  <span className="text-green-400">RWF {(selectedCustomer.totalAmount - selectedCustomer.unpaidAmount).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-white font-bold">BALANCE DUE</span>
+                  <span className={`font-bold text-lg ${selectedCustomer.unpaidAmount > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    RWF {selectedCustomer.unpaidAmount.toLocaleString()}
+                  </span>
                 </div>
               </div>
 
-              {selectedCustomer.unpaidAmount > 0 && (
-                <button
-                  onClick={openBulkPayModal}
-                  className="w-full py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm font-medium transition"
-                >
-                  ✅ Mark All as Paid (RWF {selectedCustomer.unpaidAmount.toLocaleString()})
-                </button>
+              {/* Add Payment — live preview, confirm to save */}
+              {selectedCustomer.unpaidAmount > 0 ? (
+                <div className="mt-4 bg-gray-800 rounded-lg p-4 space-y-3">
+                  <p className="text-white text-sm font-medium">➕ Add Payment</p>
+                  {receiptPayError && <p className="text-red-400 text-xs">{receiptPayError}</p>}
+                  <div>
+                    <label className="text-gray-400 text-xs mb-1 block">Amount Received Now</label>
+                    <input
+                      type="number"
+                      value={receiptPayAmount}
+                      onChange={(e) => setReceiptPayAmount(e.target.value)}
+                      max={selectedCustomer.unpaidAmount}
+                      className="w-full bg-gray-900 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      placeholder="0"
+                    />
+                    <p className="text-gray-500 text-xs mt-1">
+                      If this covers more than one unpaid item, the oldest debts are paid off first.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs mb-1 block">Payment Method</label>
+                    <select
+                      value={receiptPayMethod}
+                      onChange={(e) => setReceiptPayMethod(e.target.value)}
+                      className="w-full bg-gray-900 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="cash">💵 Cash</option>
+                      <option value="mtn">📱 MTN Mobile Money</option>
+                      <option value="bank">🏦 Bank Transfer</option>
+                      <option value="cheque">📄 Cheque</option>
+                    </select>
+                  </div>
+                  <div className="bg-gray-900 rounded-lg p-3 flex justify-between items-center">
+                    <span className="text-gray-400 text-xs">New Remaining Balance</span>
+                    <span className={`font-bold ${previewRemaining > 0 ? 'text-orange-400' : 'text-green-400'}`}>
+                      RWF {previewRemaining.toLocaleString()}
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleConfirmReceiptPayment}
+                    disabled={!receiptPayAmount || parseInt(receiptPayAmount) <= 0 || confirmingPayment}
+                    className="w-full py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition"
+                  >
+                    {confirmingPayment ? 'Saving...' : 'Confirm Payment'}
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-4 bg-green-900 border border-green-700 rounded-lg p-3 text-center">
+                  <p className="text-green-300 text-sm font-medium">✅ Fully paid — no balance due</p>
+                </div>
               )}
 
-              <div className="space-y-2">
-                {selectedCustomer.items.map((credit) => {
-                  const balance = (credit.amount || 0) - (credit.paid_amount || 0)
-                  return (
-                  <div key={credit.id} className="bg-gray-800 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="text-white font-medium">{credit.product_name || '—'}</p>
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        credit.status === 'paid' ? 'bg-green-900 text-green-300' :
-                        credit.status === 'partial' ? 'bg-orange-900 text-orange-300' :
-                        'bg-red-900 text-red-300'
-                      }`}>
-                        {credit.status === 'paid' ? '✅ Paid' : credit.status === 'partial' ? '🟠 Partial' : '❌ Unpaid'}
-                      </span>
+              {/* Per-item management */}
+              <div className="mt-5 space-y-2">
+                <p className="text-gray-500 text-xs uppercase tracking-wide">Manage Items</p>
+                {selectedCustomer.items.map((credit) => (
+                  <div key={credit.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
+                    <div>
+                      <p className="text-white text-sm">{credit.product_name || '—'}</p>
+                      <p className="text-gray-500 text-xs">RWF {credit.amount?.toLocaleString()} · {credit.status === 'paid' ? 'Paid' : credit.status === 'partial' ? 'Partial' : 'Unpaid'}</p>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-sm mb-2">
-                      <div>
-                        <p className="text-gray-400 text-xs">Quantity</p>
-                        <p className="text-white">{credit.quantity || '—'}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-400 text-xs">Unit Price</p>
-                        <p className="text-white">
-                          {credit.quantity && credit.amount
-                            ? `RWF ${Math.round(credit.amount / credit.quantity).toLocaleString()}`
-                            : '—'}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-gray-400 text-xs">Total Amount</p>
-                        <p className={`font-medium ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
-                          RWF {credit.amount?.toLocaleString()}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-gray-400 text-xs">Date</p>
-                        <p className="text-white">{credit.date ? new Date(credit.date).toLocaleDateString() : '—'}</p>
-                      </div>
-                    </div>
-                    {(credit.paid_amount > 0) && (
-                      <div className="grid grid-cols-2 gap-2 text-sm mb-2 bg-gray-900 rounded-lg p-2">
-                        <div>
-                          <p className="text-gray-400 text-xs">Paid So Far</p>
-                          <p className="text-green-400 font-medium">RWF {(credit.paid_amount || 0).toLocaleString()}</p>
-                        </div>
-                        <div>
-                          <p className="text-gray-400 text-xs">Balance</p>
-                          <p className="text-orange-400 font-medium">RWF {balance.toLocaleString()}</p>
-                        </div>
-                      </div>
-                    )}
-                    {credit.status === 'paid' && credit.paid_at && (
-                      <div className="bg-green-900 rounded-lg p-2 mb-2">
-                        <p className="text-green-300 text-xs">✅ Paid on: {new Date(credit.paid_at).toLocaleString()}</p>
-                        <p className="text-green-300 text-xs">Payment: {getPaymentLabel(credit.paid_method)}</p>
-                      </div>
-                    )}
-                    {credit.notes && <p className="text-gray-400 text-xs mb-2">📝 {credit.notes}</p>}
-                    <div className="flex gap-2 flex-wrap">
-                      {credit.status !== 'paid' ? (
-                        <button
-                          onClick={() => openPayModal(credit)}
-                          className="px-3 py-1 bg-green-700 text-white rounded-lg text-xs transition hover:bg-green-600"
-                        >
-                          {credit.status === 'partial' ? '💰 Record Payment' : '✅ Record Payment'}
-                        </button>
-                      ) : null}
+                    <div className="flex gap-2">
                       {credit.status !== 'unpaid' && (
-                        <button
-                          onClick={async () => {
-                            const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
-                            await supabase.from(table).update({
-                              status: 'unpaid',
-                              paid_amount: 0,
-                              paid_at: null,
-                              paid_method: null,
-                            }).eq('id', credit.id)
-                            if (activeTab === 'given' && credit.sale_id) {
-                              await syncSalePaymentStatus(credit.sale_id)
-                            }
-                            fetchCredits()
-                            setSelectedCustomer(null)
-                          }}
-                          className="px-3 py-1 bg-gray-700 text-gray-300 rounded-lg text-xs transition hover:bg-gray-600"
-                        >
-                          🔴 Reset to Unpaid
-                        </button>
+                        <button onClick={() => handleResetToUnpaid(credit)} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs transition">Reset</button>
                       )}
-                      <button onClick={() => { setSelectedCustomer(null); openEdit(credit) }} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
-                      <button onClick={() => { openDelete(credit) }} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
+                      <button onClick={() => { closeCustomerReceipt(); openEdit(credit) }} className="px-2 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded text-xs transition">Edit</button>
+                      <button onClick={() => openDelete(credit)} className="px-2 py-1 bg-red-700 hover:bg-red-600 text-white rounded text-xs transition">Delete</button>
                     </div>
                   </div>
-                  )
-                })}
+                ))}
               </div>
 
-              <button onClick={() => setSelectedCustomer(null)} className="w-full py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showPayModal && (bulkPayMode ? selectedCustomer : selectedCredit) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h2 className="text-lg font-bold text-white">{bulkPayMode ? '✅ Mark as Paid' : '💰 Record Payment'}</h2>
-              <button onClick={() => { setShowPayModal(false); setBulkPayMode(false) }} className="text-gray-400 hover:text-white text-xl">✕</button>
-            </div>
-            <div className="px-6 py-4 space-y-4">
-              <div className="bg-gray-800 rounded-lg p-3">
-                <p className="text-gray-400 text-xs">Customer</p>
-                <p className="text-white font-medium">
-                  {bulkPayMode ? selectedCustomer.name : (selectedCredit.customer_name || selectedCredit.supplier_name)}
-                </p>
-                {bulkPayMode && (
-                  <p className="text-gray-400 text-xs mt-1">{selectedCustomer.items.filter(c => c.status !== 'paid').length} unpaid item(s)</p>
-                )}
-                <p className="text-gray-400 text-xs mt-1">{bulkPayMode ? 'Amount' : 'Balance Owed'}</p>
-                <p className="text-green-400 font-bold">
-                  RWF {(bulkPayMode ? selectedCustomer.unpaidAmount : (selectedCredit.amount || 0) - (selectedCredit.paid_amount || 0))?.toLocaleString()}
-                </p>
-                {!bulkPayMode && selectedCredit.paid_amount > 0 && (
-                  <p className="text-gray-500 text-xs mt-1">Already paid: RWF {selectedCredit.paid_amount.toLocaleString()} of RWF {selectedCredit.amount?.toLocaleString()}</p>
-                )}
+              <div className="text-center mt-4 text-gray-500 text-xs">
+                <p>Thank you for your business!</p>
+                <p>Powered by KaySales</p>
               </div>
-              {!bulkPayMode && (
-                <div>
-                  <label className="text-gray-400 text-sm mb-1 block">Amount to Pay Now</label>
-                  <input
-                    type="number"
-                    value={paymentAmountInput}
-                    onChange={(e) => setPaymentAmountInput(e.target.value)}
-                    max={(selectedCredit.amount || 0) - (selectedCredit.paid_amount || 0)}
-                    className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                    placeholder="0"
-                  />
-                  <p className="text-gray-500 text-xs mt-1">
-                    Leave as the full balance to mark fully paid, or lower it to record a partial payment.
-                  </p>
-                </div>
-              )}
-              <div>
-                <label className="text-gray-400 text-sm mb-1 block">Payment Method</label>
-                <select
-                  value={payMethod}
-                  onChange={(e) => setPayMethod(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={closeCustomerReceipt} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Close</button>
+                <button onClick={handleExportClientPDF} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">Download PDF</button>
+                <button
+                  onClick={() => openDeleteAll(selectedCustomer)}
+                  className="px-3 py-2 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-xs transition"
+                  title="Delete all records for this customer"
                 >
-                  <option value="cash">💵 Cash</option>
-                  <option value="mtn">📱 MTN Mobile Money</option>
-                  <option value="bank">🏦 Bank Transfer</option>
-                  <option value="cheque">📄 Cheque</option>
-                </select>
-              </div>
-              <p className="text-gray-400 text-xs">Payment time will be recorded as: <span className="text-white">{new Date().toLocaleString()}</span></p>
-              <div className="flex gap-3">
-                <button onClick={() => { setShowPayModal(false); setBulkPayMode(false) }} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
-                <button onClick={handleMarkPaid} className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">
-                  {bulkPayMode
-                    ? 'Confirm Paid'
-                    : (parseInt(paymentAmountInput) || 0) >= ((selectedCredit.amount || 0) - (selectedCredit.paid_amount || 0))
-                    ? 'Confirm Full Payment'
-                    : 'Record Partial Payment'}
+                  🗑️
                 </button>
               </div>
             </div>
