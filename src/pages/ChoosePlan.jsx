@@ -18,7 +18,7 @@ export default function ChoosePlan() {
     {
       id: 'standard',
       name: 'Standard',
-      price: 25000,
+      price: 20000,
       billing: 'monthly',
       popular: false,
       features: [
@@ -33,7 +33,7 @@ export default function ChoosePlan() {
     {
       id: 'premium',
       name: 'Premium',
-      price: 50000,
+      price: 35000,
       billing: 'monthly',
       popular: true,
       features: [
@@ -48,7 +48,7 @@ export default function ChoosePlan() {
     {
       id: 'lifetime',
       name: 'Lifetime',
-      price: 800000,
+      price: 1500000,
       billing: 'once',
       popular: false,
       features: [

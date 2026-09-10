@@ -55,32 +55,32 @@ const receiptTotal = receiptLines.reduce(
 
 const features = [
   {
-    icon: '📦',
+    icon: '',
     title: 'Stock, tracked to the last unit',
     desc: 'Every product, quantity, and buying price in one place — with low-stock alerts before you run out, and Excel import for loading your whole catalogue in one go.',
   },
   {
-    icon: '💰',
+    icon: '',
     title: 'Sales, however customers pay',
     desc: 'Cash, MTN Mobile Money, bank transfer, cheque, or credit — including partial payments, where the balance owed keeps tracking itself.',
   },
   {
-    icon: '💳',
+    icon: '',
     title: 'A credit ledger that settles itself',
     desc: 'Money given or taken on credit, who owes what, and a one-tap "mark all as paid" for customers who finally clear their balance.',
   },
   {
-    icon: '📝',
+    icon: '',
     title: 'Quotations that become sales',
     desc: "Send a customer a proper quote with a PDF they can keep — and when they say yes, convert it straight into a sale without re-typing anything.",
   },
   {
-    icon: '📊',
+    icon: '',
     title: 'Know your actual profit',
     desc: 'Revenue, cost of goods, and expenses broken down by month — not just what came in, but what you actually kept.',
   },
   {
-    icon: '📱',
+    icon: '',
     title: 'Runs on the phone you already have',
     desc: 'No special hardware — record a sale, check stock, or send a quote from any phone, anywhere your business takes you.',
   },
@@ -95,7 +95,7 @@ const steps = [
 const plans = [
   {
     name: 'Standard',
-    price: '25,000',
+    price: '20,000',
     period: '/month',
     features: [
       'Up to 2 stock categories',
@@ -108,7 +108,7 @@ const plans = [
   },
   {
     name: 'Premium',
-    price: '50,000',
+    price: '35,000',
     period: '/month',
     popular: true,
     features: [
@@ -122,7 +122,7 @@ const plans = [
   },
   {
     name: 'Lifetime',
-    price: '800,000',
+    price: '1,500,000',
     period: 'one-time',
     features: [
       'Everything in Premium',

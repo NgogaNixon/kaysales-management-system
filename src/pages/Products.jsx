@@ -271,7 +271,6 @@ export default function Products() {
     p.category?.toLowerCase().includes(search.toLowerCase())
   )
 
-  const lowStock = products.filter(p => p.quantity < thresholdFor(p))
   const isStandard = profile?.plan_type === 'standard'
 
   return (
@@ -353,23 +352,6 @@ export default function Products() {
                 RWF {products.reduce((sum, p) => sum + ((p.selling_price || 0) * (p.quantity || 0)), 0).toLocaleString()}
               </p>
               <p className="text-green-400 text-sm mt-1">Total Stock Value (Selling Price)</p>
-            </div>
-          </div>
-        )}
-
-        {/* Low Stock Alert */}
-        {lowStock.length > 0 && (
-          <div className="bg-orange-900 border border-orange-700 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-xl">⚠️</span>
-              <p className="font-bold text-orange-300">Low Stock — {lowStock.length} product{lowStock.length > 1 ? 's' : ''} running low</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {lowStock.map((p) => (
-                <span key={p.id} className="bg-orange-800 text-orange-200 px-3 py-1 rounded-full text-xs font-medium">
-                  {p.name} — {p.quantity} left (alert at {thresholdFor(p)})
-                </span>
-              ))}
             </div>
           </div>
         )}
