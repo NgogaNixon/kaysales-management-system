@@ -283,8 +283,10 @@ export default function Credits() {
       const nameF = activeTab === 'given' ? 'customer_name' : 'supplier_name'
       const updatedItems = updatedData.filter(c => c[nameF] === selectedCustomer.name)
       if (updatedItems.length > 0) {
-        const totalAmount = updatedItems.reduce((sum, c) => sum + (c.amount || 0), 0)
-        const unpaidAmount = updatedItems.filter(c => c.status !== 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)
+        // Paid credits are history, not part of the open balance — excluded from Total, same as the main list.
+        const activeItems = updatedItems.filter(c => c.status !== 'paid')
+        const totalAmount = activeItems.reduce((sum, c) => sum + (c.amount || 0), 0)
+        const unpaidAmount = activeItems.reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
         setSelectedCustomer({ ...selectedCustomer, items: updatedItems, totalAmount, unpaidAmount })
       }
     }
@@ -493,6 +495,10 @@ export default function Credits() {
     const newUnpaidAmount = mergedItems
       .filter(c => c.status !== 'paid')
       .reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
+    // Total mirrors the same "exclude paid" rule as the main list.
+    const newTotalAmount = mergedItems
+      .filter(c => c.status !== 'paid')
+      .reduce((sum, c) => sum + (c.amount || 0), 0)
 
     setConfirmingPayment(false)
     setReceiptPayAmount('')
@@ -500,7 +506,7 @@ export default function Credits() {
     if (newUnpaidAmount === 0 && statusFilter === 'unpaid') {
       setSelectedCustomer(null)
     } else {
-      setSelectedCustomer({ ...selectedCustomer, items: mergedItems, unpaidAmount: newUnpaidAmount })
+      setSelectedCustomer({ ...selectedCustomer, items: mergedItems, unpaidAmount: newUnpaidAmount, totalAmount: newTotalAmount })
     }
 
     fetchCredits()
@@ -626,8 +632,12 @@ export default function Credits() {
     const name = credit[nameField] || 'Unknown'
     if (!acc[name]) acc[name] = { name, items: [], totalAmount: 0, unpaidAmount: 0 }
     acc[name].items.push(credit)
-    acc[name].totalAmount += credit.amount || 0
-    if (credit.status !== 'paid') acc[name].unpaidAmount += (credit.amount || 0) - (credit.paid_amount || 0)
+    // Paid credits are settled history, not part of the open balance —
+    // they no longer count toward Total or Unpaid; they still show under the Paid filter.
+    if (credit.status !== 'paid') {
+      acc[name].totalAmount += credit.amount || 0
+      acc[name].unpaidAmount += (credit.amount || 0) - (credit.paid_amount || 0)
+    }
     return acc
   }, {})
 
