@@ -14,6 +14,9 @@ export default function Products() {
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
+  const [showRestoreModal, setShowRestoreModal] = useState(false)
+  const [restoreQuantity, setRestoreQuantity] = useState('')
+  const [restoreError, setRestoreError] = useState('')
   const [showConfirm, setShowConfirm] = useState(false)
   const [showOTP, setShowOTP] = useState(false)
   const [otpAction, setOtpAction] = useState('')
@@ -76,6 +79,37 @@ export default function Products() {
   const openDelete = (product) => {
     setSelectedProduct(product)
     setShowConfirm(true)
+  }
+
+  const openRestore = (product) => {
+    setSelectedProduct(product)
+    setRestoreQuantity('')
+    setRestoreError('')
+    setShowRestoreModal(true)
+  }
+
+  const handleRestore = async () => {
+    const addQty = parseInt(restoreQuantity)
+    if (!restoreQuantity || isNaN(addQty) || addQty <= 0) {
+      setRestoreError('Enter a quantity greater than 0')
+      return
+    }
+    const newQuantity = (selectedProduct.quantity || 0) + addQty
+
+    await supabase.from('products').update({ quantity: newQuantity }).eq('id', selectedProduct.id)
+
+    await logActivity(
+      profile.id,
+      profile.email,
+      profile.full_name,
+      'Restore Stock',
+      `Restored ${addQty} unit(s) to product: ${selectedProduct.name} (${selectedProduct.quantity || 0} → ${newQuantity})`
+    )
+
+    setShowOTP(false)
+    setShowRestoreModal(false)
+    setRestoreQuantity('')
+    fetchProducts()
   }
 
   const handleSave = async () => {
@@ -427,6 +461,7 @@ export default function Products() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
+                          <button onClick={() => openRestore(product)} className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition">Restore</button>
                           <button onClick={() => openEdit(product)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
                           <button onClick={() => openDelete(product)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                         </div>
@@ -535,6 +570,62 @@ export default function Products() {
         </Modal>
       )}
 
+      {/* Restore Stock Modal */}
+      {showRestoreModal && selectedProduct && (
+        <Modal
+          title={`Restore Stock — ${selectedProduct.name}`}
+          onClose={() => setShowRestoreModal(false)}
+        >
+          <div className="space-y-4">
+            {restoreError && <p className="text-red-400 text-sm">{restoreError}</p>}
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Quantity to Add *</label>
+              <input
+                type="number"
+                min="1"
+                value={restoreQuantity}
+                onChange={(e) => setRestoreQuantity(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                placeholder="e.g. 10"
+              />
+            </div>
+            <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
+              <div>
+                <p className="text-gray-500 text-xs">Current Quantity</p>
+                <p className="text-white font-bold">{selectedProduct.quantity || 0}</p>
+              </div>
+              <span className="text-gray-500">→</span>
+              <div className="text-right">
+                <p className="text-gray-500 text-xs">After Restore</p>
+                <p className="text-green-400 font-bold">
+                  {(selectedProduct.quantity || 0) + (parseInt(restoreQuantity) || 0)}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => setShowRestoreModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const addQty = parseInt(restoreQuantity)
+                  if (!restoreQuantity || isNaN(addQty) || addQty <= 0) {
+                    setRestoreError('Enter a quantity greater than 0')
+                    return
+                  }
+                  setOtpAction('restore')
+                  setShowRestoreModal(false)
+                  setShowOTP(true)
+                }}
+                className="flex-1 py-2 bg-green-700 text-white rounded-lg hover:bg-green-600 transition font-medium"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {/* Confirm Delete */}
       {showConfirm && !showOTP && (
         <ConfirmDialog
@@ -549,11 +640,15 @@ export default function Products() {
         <OTPVerify
           actionLabel={otpAction === 'delete'
             ? `Delete product: ${selectedProduct?.name}`
+            : otpAction === 'restore'
+            ? `Restore stock for: ${selectedProduct?.name}`
             : `Edit product: ${selectedProduct?.name}`}
           onVerified={() => {
             setShowOTP(false)
             if (otpAction === 'delete') {
               handleDelete()
+            } else if (otpAction === 'restore') {
+              handleRestore()
             } else {
               handleSave()
             }
