@@ -29,6 +29,7 @@ export default function Layout({ children }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   const isAdmin = profile?.role === 'admin'
   const navItems = isAdmin ? adminNavItems : clientNavItems
@@ -134,65 +135,79 @@ export default function Layout({ children }) {
       <div className="md:hidden min-h-screen bg-surface">
 
         {/* Mobile Header */}
-        <header className="sticky top-0 bg-surface-elevated border-b border-surface-border px-4 py-3 flex items-center justify-between z-40">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold text-sm">K</span>
+        <header className="sticky top-0 bg-surface-elevated border-b border-surface-border z-40">
+          <div className="px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
+                <span className="text-white font-bold text-sm">K</span>
+              </div>
+              <div>
+                <span className="font-bold text-white text-sm">KaySales</span>
+                {isAdmin && <span className="block text-xs text-admin-light">Admin</span>}
+              </div>
             </div>
-            <div>
-              <span className="font-bold text-white text-sm">KaySales</span>
-              {isAdmin && <span className="block text-xs text-admin-light">Admin</span>}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={toggleLanguage}
+                className="text-xs px-2 py-1 rounded-lg bg-surface text-gray-300 hover:bg-surface-border transition font-medium"
+              >
+                {language === 'en' ? 'FR' : 'EN'}
+              </button>
+              <span className={`text-xs px-2 py-1 rounded-full ${
+                isAdmin
+                  ? 'bg-admin text-white'
+                  : profile?.plan_type === 'premium'
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-primary text-white'
+              }`}>
+                {isAdmin ? 'Admin' : profile?.plan_type === 'premium' ? 'Premium' : 'Standard'}
+              </span>
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="w-10 h-10 flex items-center justify-center rounded-lg bg-surface text-white hover:bg-surface-border transition"
+                aria-label="Open menu"
+              >
+                <div className="space-y-1.5">
+                  <span className="block w-6 h-0.5 bg-white"></span>
+                  <span className="block w-6 h-0.5 bg-white"></span>
+                  <span className="block w-6 h-0.5 bg-white"></span>
+                </div>
+              </button>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={toggleLanguage}
-              className="text-xs px-2 py-1 rounded-lg bg-surface text-gray-300 hover:bg-surface-border transition font-medium"
-            >
-              {language === 'en' ? 'FR' : 'EN'}
-            </button>
-            <span className={`text-xs px-2 py-1 rounded-full ${
-              isAdmin
-                ? 'bg-admin text-white'
-                : profile?.plan_type === 'premium'
-                ? 'bg-purple-600 text-white'
-                : 'bg-primary text-white'
-            }`}>
-              {isAdmin ? 'Admin' : profile?.plan_type === 'premium' ? 'Premium' : 'Standard'}
-            </span>
-            <button
-              onClick={handleLogout}
-              className="text-red-400 text-xs font-bold px-2 py-1 rounded hover:bg-red-900 transition"
-            >
-              Out
-            </button>
-          </div>
+
+          {/* Mobile Menu — full-width panel that drops down under the header, closes on selection */}
+          {mobileMenuOpen && (
+            <div className="border-t border-surface-border px-4 py-4">
+              <nav className="flex flex-col divide-y divide-surface-border">
+                {navItems.map((item) => (
+                  <button
+                    key={item.path}
+                    onClick={() => { navigate(item.path); setMobileMenuOpen(false) }}
+                    className={`w-full text-left py-3 text-base font-bold uppercase tracking-wide transition ${
+                      isActive(item.path)
+                        ? isAdmin ? 'text-admin-light' : 'text-primary-light'
+                        : 'text-white hover:text-gray-300'
+                    }`}
+                  >
+                    {t(item.labelKey)}
+                  </button>
+                ))}
+              </nav>
+              <button
+                onClick={handleLogout}
+                className="mt-4 w-full sm:w-auto px-6 py-3 rounded-full bg-primary hover:bg-primary-hover text-white font-bold transition"
+              >
+                {t('logout')} →
+              </button>
+            </div>
+          )}
         </header>
 
-        {/* Mobile Content — page scrolls naturally; pb-24 keeps content clear of the fixed nav below */}
-        <div className="pb-24">
+        {/* Mobile Content — page scrolls naturally, no fixed bottom nav to clear anymore */}
+        <div>
           {children}
         </div>
-
-        {/* Mobile Bottom Navigation — truly fixed to the real browser viewport, no JS height math */}
-        <nav className="fixed bottom-0 inset-x-0 bg-surface-elevated border-t border-surface-border z-30 safe-bottom">
-          <div className="flex items-center overflow-x-auto px-1 py-2 gap-1">
-            {navItems.map((item) => (
-              <button
-                key={item.path}
-                onClick={() => navigate(item.path)}
-                className={`flex flex-col items-center gap-1 px-3 py-1 rounded-lg transition flex-shrink-0 min-w-[64px] ${
-                  isActive(item.path)
-                    ? isAdmin ? 'text-admin-light' : 'text-primary-light'
-                    : 'text-gray-500'
-                }`}
-              >
-                <span className="text-xl">{item.icon}</span>
-                <span className="text-xs font-medium whitespace-nowrap">{t(item.labelKey)}</span>
-              </button>
-            ))}
-          </div>
-        </nav>
 
       </div>
 
