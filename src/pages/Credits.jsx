@@ -536,12 +536,10 @@ export default function Credits() {
     doc.text(`Credit Statement — ${selectedCustomer.name}`, 14, headerEndY)
     doc.setFontSize(10)
     doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, headerEndY + 7)
-    doc.text(`Total Amount: RWF ${selectedCustomer.totalAmount.toLocaleString()}`, 14, headerEndY + 14)
-    doc.text(`Unpaid Amount: RWF ${selectedCustomer.unpaidAmount.toLocaleString()}`, 14, headerEndY + 21)
 
     // autoTable auto-paginates on its own for long credit lists — no truncation risk
     autoTable(doc, {
-      startY: headerEndY + 29,
+      startY: headerEndY + 15,
       head: [['Product', 'Qty', 'Unit Price', 'Amount (RWF)', 'Date', 'Status', 'Paid At', 'Payment Method']],
       body: items.map(c => [
         c.product_name || '—',
@@ -557,15 +555,30 @@ export default function Credits() {
 
     let finalY = doc.lastAutoTable.finalY || 60
 
-    // If the table ran close to the bottom of the page, start a fresh page for
-    // the signature/stamp instead of letting them get cut off.
+    // Computed straight from the same items printed in the table above, so
+    // these numbers can never drift from what the table actually shows.
+    const totalAmount = items.reduce((sum, c) => sum + (c.amount || 0), 0)
+    const paidSoFar = items.reduce((sum, c) => sum + (c.paid_amount || 0), 0)
+    const unpaidAmount = totalAmount - paidSoFar
+
+    // Leave room for the 3 summary lines plus the signature/stamp block below them.
     const pageHeight = doc.internal.pageSize.getHeight()
-    if (finalY > pageHeight - 45) {
+    if (finalY > pageHeight - 65) {
       doc.addPage()
       finalY = 20
     }
 
-    await drawSignatureAndStamp(doc, profile, doc.internal.pageSize.getWidth(), finalY + 30)
+    finalY += 10
+    doc.setFontSize(10)
+    doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, finalY)
+    finalY += 7
+    doc.text(`Paid So Far: RWF ${paidSoFar.toLocaleString()}`, 14, finalY)
+    finalY += 7
+    doc.setFont(undefined, 'bold')
+    doc.text(`Unpaid (Balance Due): RWF ${unpaidAmount.toLocaleString()}`, 14, finalY)
+    doc.setFont(undefined, 'normal')
+
+    await drawSignatureAndStamp(doc, profile, doc.internal.pageSize.getWidth(), finalY + 20)
 
     doc.save(`KaySales_${label}_${selectedCustomer.name.replace(/\s+/g, '_')}_Credits.pdf`)
   }
