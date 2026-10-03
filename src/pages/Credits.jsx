@@ -523,19 +523,25 @@ export default function Credits() {
     return '💵 Cash'
   }
 
+  // A4 statement in the same structure as the Sales receipt PDF: branded
+  // header, details block, items table, right-aligned totals, signature/stamp
+  // and a thank-you footer.
   const handleExportClientPDF = async () => {
     const label = activeTab === 'given' ? 'Customer' : 'Supplier'
     const items = selectedCustomer.items
 
     const doc = new jsPDF()
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
 
     // Branded header (logo, company name, phone/location/TIN)
     const headerEndY = await drawBrandedHeader(doc, profile)
 
-    doc.setFontSize(12)
-    doc.text(`Credit Statement — ${selectedCustomer.name}`, 14, headerEndY)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(14)
+    doc.text('Credit Statement', 14, headerEndY)
+    doc.setFont('helvetica', 'normal')
     doc.setFontSize(10)
-    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, headerEndY + 7)
 
     // Computed straight from the same items printed in the table below, so
     // these numbers can never drift from what the table actually shows.
@@ -543,22 +549,20 @@ export default function Credits() {
     const paidSoFar = items.reduce((sum, c) => sum + (c.paid_amount || 0), 0)
     const unpaidAmount = totalAmount - paidSoFar
 
-    // Summary sits right under the "Generated" date, above the table.
-    let summaryY = headerEndY + 17
-    doc.setFontSize(10)
-    doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, summaryY)
-    summaryY += 7
-    doc.text(`Paid So Far: RWF ${paidSoFar.toLocaleString()}`, 14, summaryY)
-    summaryY += 7
-    doc.setFontSize(11)
-    doc.text(`Unpaid (Balance Due): RWF ${unpaidAmount.toLocaleString()}`, 14, summaryY)
-    doc.setFontSize(10)
+    // Details block — two columns
+    let infoY = headerEndY + 8
+    doc.text(`${label}: ${selectedCustomer.name}`, 14, infoY)
+    doc.text(`Date: ${new Date().toLocaleDateString()}`, 120, infoY)
+    infoY += 7
+    doc.text(`Items: ${items.length}`, 14, infoY)
+    doc.text(`Status: ${unpaidAmount > 0 ? 'Balance Due' : 'Fully Paid'}`, 120, infoY)
 
     // autoTable auto-paginates on its own for long credit lists — no truncation risk
     autoTable(doc, {
-      startY: summaryY + 8,
-      head: [['Product', 'Qty', 'Unit Price', 'Amount (RWF)', 'Date', 'Status', 'Paid At', 'Payment Method']],
-      body: items.map(c => [
+      startY: infoY + 8,
+      head: [['#', 'Product', 'Qty', 'Unit Price (RWF)', 'Amount (RWF)', 'Date', 'Status', 'Paid At', 'Payment Method']],
+      body: items.map((c, i) => [
+        i + 1,
         c.product_name || '—',
         c.quantity || '—',
         c.quantity && c.amount ? Math.round(c.amount / c.quantity).toLocaleString() : '—',
@@ -568,18 +572,58 @@ export default function Credits() {
         c.paid_at ? new Date(c.paid_at).toLocaleString() : '—',
         c.paid_method ? (getPaymentLabel(c.paid_method) || '—') : '—',
       ]),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [29, 78, 216] },
+      columnStyles: {
+        0: { cellWidth: 10 },
+        2: { halign: 'right' },
+        3: { halign: 'right' },
+        4: { halign: 'right' },
+      },
     })
 
-    let finalY = doc.lastAutoTable.finalY || 60
+    let y = doc.lastAutoTable.finalY || 60
 
-    // Leave room for the signature/stamp block below the table.
-    const pageHeight = doc.internal.pageSize.getHeight()
-    if (finalY > pageHeight - 80) {
+    // Keep the totals block together on one page
+    if (y > pageHeight - 60) {
       doc.addPage()
-      finalY = 20
+      y = 20
     }
 
-    await drawSignatureAndStamp(doc, profile, doc.internal.pageSize.getWidth(), finalY + 25)
+    // Totals — right-aligned under the table
+    const labelX = pageWidth - 90
+    const valueX = pageWidth - 14
+    y += 10
+    doc.setDrawColor(150)
+    doc.line(labelX, y - 5, valueX, y - 5)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(11)
+    doc.text('TOTAL AMOUNT', labelX, y)
+    doc.text(`RWF ${totalAmount.toLocaleString()}`, valueX, y, { align: 'right' })
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+    y += 7
+    doc.text('Paid So Far', labelX, y)
+    doc.text(`RWF ${paidSoFar.toLocaleString()}`, valueX, y, { align: 'right' })
+    y += 7
+    doc.setFont('helvetica', 'bold')
+    doc.text('Balance Due', labelX, y)
+    doc.text(`RWF ${unpaidAmount.toLocaleString()}`, valueX, y, { align: 'right' })
+    doc.setFont('helvetica', 'normal')
+
+    // Leave room for the signature/stamp block below the totals
+    if (y > pageHeight - 90) {
+      doc.addPage()
+      y = 20
+    }
+
+    await drawSignatureAndStamp(doc, profile, pageWidth, y + 30)
+
+    // Thank-you footer at the bottom of the last page
+    doc.setPage(doc.getNumberOfPages())
+    doc.setFontSize(8)
+    doc.text('Thank you for your business!', pageWidth / 2, pageHeight - 12, { align: 'center' })
+    doc.text('Powered by KaySales', pageWidth / 2, pageHeight - 8, { align: 'center' })
 
     doc.save(`KaySales_${label}_${selectedCustomer.name.replace(/\s+/g, '_')}_Credits.pdf`)
   }
@@ -642,7 +686,7 @@ export default function Credits() {
 
       let summaryY = doc.lastAutoTable.finalY || 60
       const pageHeight = doc.internal.pageSize.getHeight()
-      if (summaryY > pageHeight - 25) {
+      if (summaryY > pageHeight - 35) {
         doc.addPage()
         summaryY = 20
       }
