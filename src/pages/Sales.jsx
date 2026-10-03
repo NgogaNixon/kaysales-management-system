@@ -464,6 +464,10 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         .update({ sale_id: null, status: 'pending' })
         .eq('sale_id', pendingDelete.id)
 
+      // Keep Credits in sync — a deleted sale shouldn't leave an orphaned
+      // credit record behind (e.g. this sale was made on credit).
+      await supabase.from('credits_given').delete().eq('sale_id', pendingDelete.id)
+
       const { error: deleteSaleError } = await supabase
         .from('sales')
         .delete()

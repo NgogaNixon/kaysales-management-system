@@ -320,9 +320,13 @@ export default function Credits() {
 
       await supabase.from('sale_items').delete().eq('sale_id', selectedCredit.sale_id)
       await supabase.from('sales').delete().eq('id', selectedCredit.sale_id)
-    }
 
-    await supabase.from(table).delete().eq('id', selectedCredit.id)
+      // The sale is gone — remove every credit record tied to it, not just this
+      // one, so a multi-product sale doesn't leave sibling credits orphaned.
+      await supabase.from('credits_given').delete().eq('sale_id', selectedCredit.sale_id)
+    } else {
+      await supabase.from(table).delete().eq('id', selectedCredit.id)
+    }
 
     await logActivity(
       profile.id,
@@ -810,23 +814,13 @@ export default function Credits() {
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
                   {selectedCustomer.items.map((credit) => (
                     <div key={credit.id} className="mb-2">
-                      <div className="flex justify-between text-sm">
-                        <p className="text-white text-sm">{credit.product_name || '—'}</p>
-                        <span className={`text-xs font-medium ${
-                          credit.status === 'paid' ? 'text-green-400' : credit.status === 'partial' ? 'text-orange-400' : 'text-red-400'
-                        }`}>
-                          {credit.status === 'paid' ? 'Paid' : credit.status === 'partial' ? 'Partial' : 'Unpaid'}
-                        </span>
-                      </div>
+                      <p className="text-white text-sm">{credit.product_name || '—'}</p>
                       <div className="flex justify-between text-xs text-gray-400">
                         <span>
                           {credit.quantity || '—'} x RWF {credit.quantity && credit.amount ? Math.round(credit.amount / credit.quantity).toLocaleString() : '—'}
                         </span>
                         <span className="text-green-400">RWF {credit.amount?.toLocaleString()}</span>
                       </div>
-                      {credit.paid_amount > 0 && (
-                        <p className="text-gray-500 text-xs">Paid so far: RWF {credit.paid_amount.toLocaleString()}{credit.paid_method ? ` (${getPaymentLabel(credit.paid_method)})` : ''}</p>
-                      )}
                     </div>
                   ))}
                 </div>
