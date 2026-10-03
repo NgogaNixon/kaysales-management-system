@@ -574,9 +574,9 @@ export default function Credits() {
     finalY += 7
     doc.text(`Paid So Far: RWF ${paidSoFar.toLocaleString()}`, 14, finalY)
     finalY += 7
-    doc.setFont(undefined, 'bold')
+    doc.setFontSize(11)
     doc.text(`Unpaid (Balance Due): RWF ${unpaidAmount.toLocaleString()}`, 14, finalY)
-    doc.setFont(undefined, 'normal')
+    doc.setFontSize(10)
 
     await drawSignatureAndStamp(doc, profile, doc.internal.pageSize.getWidth(), finalY + 20)
 

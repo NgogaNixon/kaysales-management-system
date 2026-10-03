@@ -323,9 +323,23 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
         await supabase.from('credits_given').delete().eq('sale_id', editSale.id)
         if (paymentMethod === 'credit') {
-          const paidRatio = grandTotal > 0 ? Math.min(paidNow / grandTotal, 1) : 0
-          for (const item of validItems) {
-            const itemPaid = Math.round(item.total * paidRatio)
+          // Allocate the actual amount paid across items without rounding drift —
+          // each item but the last gets its proportional share; the last item
+          // absorbs whatever remains, so the per-item amounts always sum to
+          // exactly what was paid (matching sales.amount_paid).
+          const amountToAllocate = Math.min(paidNow, grandTotal)
+          let remaining = amountToAllocate
+          for (let i = 0; i < validItems.length; i++) {
+            const item = validItems[i]
+            const isLast = i === validItems.length - 1
+            let itemPaid
+            if (isLast) {
+              itemPaid = remaining
+            } else {
+              const share = grandTotal > 0 ? Math.round(item.total * (amountToAllocate / grandTotal)) : 0
+              itemPaid = Math.min(share, remaining, item.total)
+            }
+            remaining -= itemPaid
             await supabase.from('credits_given').insert({
               user_id: profile.id,
               customer_name: customerName,
@@ -400,9 +414,21 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         }
 
         if (paymentMethod === 'credit') {
-          const paidRatio = grandTotal > 0 ? Math.min(paidNow / grandTotal, 1) : 0
-          for (const item of validItems) {
-            const itemPaid = Math.round(item.total * paidRatio)
+          // Same rounding-safe allocation as the edit branch — last item
+          // absorbs the remainder so amounts always sum exactly to what was paid.
+          const amountToAllocate = Math.min(paidNow, grandTotal)
+          let remaining = amountToAllocate
+          for (let i = 0; i < validItems.length; i++) {
+            const item = validItems[i]
+            const isLast = i === validItems.length - 1
+            let itemPaid
+            if (isLast) {
+              itemPaid = remaining
+            } else {
+              const share = grandTotal > 0 ? Math.round(item.total * (amountToAllocate / grandTotal)) : 0
+              itemPaid = Math.min(share, remaining, item.total)
+            }
+            remaining -= itemPaid
             await supabase.from('credits_given').insert({
               user_id: profile.id,
               customer_name: customerName,
