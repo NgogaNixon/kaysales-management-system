@@ -7,7 +7,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
 import UndoToast from '../components/UndoToast'
 import { logActivity } from '../lib/activityLogger'
-import { drawBrandedHeaderNarrow, drawSignatureAndStampNarrow, estimateNarrowReceiptHeight } from '../lib/pdfBranding'
+import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -560,68 +560,127 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setShowReceipt(true)
   }
 
+  // A4 receipt in the same branded style as the credit statement, with its
+  // own layout: details block, items table, right-aligned totals, then the
+  // signature/stamp and a thank-you footer.
   const printReceipt = async () => {
-    // Page height is calculated from the actual number of items, so a receipt
-    // with many products never gets silently truncated at a fixed 200mm.
-    const pageHeight = estimateNarrowReceiptHeight(profile, receiptItems.length)
-    const doc = new jsPDF({ format: [80, pageHeight], unit: 'mm' })
+    const doc = new jsPDF()
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
 
-    // Branded header (logo + company name/location/phone/TIN), height varies
-    // depending on whether a logo is set — headerEndY tracks where to continue.
-    let y = await drawBrandedHeaderNarrow(doc, profile)
+    // Branded header (logo, company name, phone/location/TIN)
+    const headerEndY = await drawBrandedHeader(doc, profile)
 
-    doc.text('Sales Receipt', 40, y, { align: 'center' })
-    y += 4
-    doc.text('--------------------------------', 40, y, { align: 'center' })
-    y += 6
-    doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 5, y)
-    y += 6
-    doc.text(`Customer: ${receiptSale.product_name}`, 5, y)
-    y += 6
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(14)
+    doc.text('Sales Receipt', 14, headerEndY)
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+
     const paymentLabel = receiptSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
       receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
       receiptSale.payment_method === 'cheque' ? 'Cheque' :
       receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'
     const statusLabel = receiptSale.payment_status === 'pending' ? 'Pending' :
-      receiptSale.payment_status === 'partial' ? `Partial — Paid RWF ${(receiptSale.amount_paid || 0).toLocaleString()}, Balance RWF ${(receiptSale.total - (receiptSale.amount_paid || 0)).toLocaleString()}` :
-      'Paid'
-    doc.text(`Payment: ${paymentLabel} (${statusLabel})`, 5, y)
-    y += 4
-    doc.text('--------------------------------', 40, y, { align: 'center' })
-    y += 6
+      receiptSale.payment_status === 'partial' ? 'Partial' : 'Paid'
 
-    receiptItems.forEach((item, i) => {
-      doc.text(`${i + 1}. ${item.product_name}`, 5, y)
-      doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
-      doc.text(`   Total: RWF ${item.total?.toLocaleString()}`, 5, y + 10)
-      y += 16
+    const saleTotal = receiptSale.total || 0
+    const amountPaid = receiptSale.payment_status === 'paid' || !receiptSale.payment_status
+      ? saleTotal
+      : (receiptSale.amount_paid || 0)
+    const balanceDue = Math.max(saleTotal - amountPaid, 0)
+
+    // Details block — two columns
+    let infoY = headerEndY + 8
+    doc.text(`Customer: ${receiptSale.product_name}`, 14, infoY)
+    doc.text(`Date: ${new Date(receiptSale.created_at).toLocaleDateString()}`, 120, infoY)
+    infoY += 7
+    doc.text(`Payment: ${paymentLabel}`, 14, infoY)
+    doc.text(`Status: ${statusLabel}`, 120, infoY)
+
+    // autoTable auto-paginates on its own for long item lists
+    autoTable(doc, {
+      startY: infoY + 8,
+      head: [['#', 'Product', 'Qty', 'Unit Price (RWF)', 'Total (RWF)']],
+      body: receiptItems.map((item, i) => [
+        i + 1,
+        item.product_name || '—',
+        item.quantity_sold,
+        item.selling_price?.toLocaleString() || '0',
+        item.total?.toLocaleString() || '0',
+      ]),
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [29, 78, 216] },
+      columnStyles: {
+        0: { cellWidth: 12 },
+        2: { halign: 'right' },
+        3: { halign: 'right' },
+        4: { halign: 'right' },
+      },
     })
 
-    doc.text('--------------------------------', 40, y, { align: 'center' })
+    let y = doc.lastAutoTable.finalY || 60
+
+    // Keep the totals block together on one page
+    if (y > pageHeight - 60) {
+      doc.addPage()
+      y = 20
+    }
+
+    // Totals — right-aligned under the table
+    const labelX = pageWidth - 90
+    const valueX = pageWidth - 14
+    y += 10
+    doc.setDrawColor(150)
+    doc.line(labelX, y - 5, valueX, y - 5)
+    doc.setFont('helvetica', 'bold')
     doc.setFontSize(11)
-    doc.text(`GRAND TOTAL: RWF ${receiptSale.total?.toLocaleString()}`, 40, y + 7, { align: 'center' })
-    let footerY = y + 7
+    doc.text('GRAND TOTAL', labelX, y)
+    doc.text(`RWF ${saleTotal.toLocaleString()}`, valueX, y, { align: 'right' })
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+
+    if (receiptSale.payment_status === 'partial' || receiptSale.payment_status === 'pending') {
+      y += 7
+      doc.text('Paid So Far', labelX, y)
+      doc.text(`RWF ${amountPaid.toLocaleString()}`, valueX, y, { align: 'right' })
+      y += 7
+      doc.setFont('helvetica', 'bold')
+      doc.text('Balance Due', labelX, y)
+      doc.text(`RWF ${balanceDue.toLocaleString()}`, valueX, y, { align: 'right' })
+      doc.setFont('helvetica', 'normal')
+    }
 
     if (showProfit && (receiptSale.extra_fees || receiptSale.profit !== undefined)) {
-      doc.setFontSize(8)
       if (receiptSale.extra_fees) {
-        footerY += 6
-        doc.text(`Extra Fees: -RWF ${receiptSale.extra_fees.toLocaleString()}`, 40, footerY, { align: 'center' })
-        footerY += 5
-        doc.text(`Remaining: RWF ${(receiptSale.total - receiptSale.extra_fees).toLocaleString()}`, 40, footerY, { align: 'center' })
+        y += 7
+        doc.text('Extra Fees', labelX, y)
+        doc.text(`-RWF ${receiptSale.extra_fees.toLocaleString()}`, valueX, y, { align: 'right' })
+        y += 7
+        doc.text('Remaining', labelX, y)
+        doc.text(`RWF ${(receiptSale.total - receiptSale.extra_fees).toLocaleString()}`, valueX, y, { align: 'right' })
       }
       if (receiptSale.profit !== undefined && receiptSale.profit !== null) {
-        footerY += 5
-        doc.text(`Profit Made: RWF ${receiptSale.profit.toLocaleString()}`, 40, footerY, { align: 'center' })
+        y += 7
+        doc.text('Profit Made', labelX, y)
+        doc.text(`RWF ${receiptSale.profit.toLocaleString()}`, valueX, y, { align: 'right' })
       }
     }
 
-    // Signature (left) + Stamp (right), then the thank-you footer below them
-    footerY = await drawSignatureAndStampNarrow(doc, profile, footerY + 4)
+    // Leave room for the signature/stamp block below the totals
+    if (y > pageHeight - 90) {
+      doc.addPage()
+      y = 20
+    }
 
+    await drawSignatureAndStamp(doc, profile, pageWidth, y + 30)
+
+    // Thank-you footer at the bottom of the last page
+    doc.setPage(doc.getNumberOfPages())
     doc.setFontSize(8)
-    doc.text('Thank you for your business!', 40, footerY, { align: 'center' })
-    doc.text('Powered by KaySales', 40, footerY + 5, { align: 'center' })
+    doc.text('Thank you for your business!', pageWidth / 2, pageHeight - 12, { align: 'center' })
+    doc.text('Powered by KaySales', pageWidth / 2, pageHeight - 8, { align: 'center' })
+
     doc.save(`Receipt_${receiptSale.product_name}_${new Date(receiptSale.created_at).toLocaleDateString()}.pdf`)
   }
 
