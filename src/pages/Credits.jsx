@@ -537,9 +537,26 @@ export default function Credits() {
     doc.setFontSize(10)
     doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, headerEndY + 7)
 
+    // Computed straight from the same items printed in the table below, so
+    // these numbers can never drift from what the table actually shows.
+    const totalAmount = items.reduce((sum, c) => sum + (c.amount || 0), 0)
+    const paidSoFar = items.reduce((sum, c) => sum + (c.paid_amount || 0), 0)
+    const unpaidAmount = totalAmount - paidSoFar
+
+    // Summary sits right under the "Generated" date, above the table.
+    let summaryY = headerEndY + 17
+    doc.setFontSize(10)
+    doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, summaryY)
+    summaryY += 7
+    doc.text(`Paid So Far: RWF ${paidSoFar.toLocaleString()}`, 14, summaryY)
+    summaryY += 7
+    doc.setFontSize(11)
+    doc.text(`Unpaid (Balance Due): RWF ${unpaidAmount.toLocaleString()}`, 14, summaryY)
+    doc.setFontSize(10)
+
     // autoTable auto-paginates on its own for long credit lists — no truncation risk
     autoTable(doc, {
-      startY: headerEndY + 15,
+      startY: summaryY + 8,
       head: [['Product', 'Qty', 'Unit Price', 'Amount (RWF)', 'Date', 'Status', 'Paid At', 'Payment Method']],
       body: items.map(c => [
         c.product_name || '—',
@@ -555,30 +572,14 @@ export default function Credits() {
 
     let finalY = doc.lastAutoTable.finalY || 60
 
-    // Computed straight from the same items printed in the table above, so
-    // these numbers can never drift from what the table actually shows.
-    const totalAmount = items.reduce((sum, c) => sum + (c.amount || 0), 0)
-    const paidSoFar = items.reduce((sum, c) => sum + (c.paid_amount || 0), 0)
-    const unpaidAmount = totalAmount - paidSoFar
-
-    // Leave room for the 3 summary lines plus the signature/stamp block below them.
+    // Leave room for the signature/stamp block below the table.
     const pageHeight = doc.internal.pageSize.getHeight()
-    if (finalY > pageHeight - 65) {
+    if (finalY > pageHeight - 80) {
       doc.addPage()
       finalY = 20
     }
 
-    finalY += 10
-    doc.setFontSize(10)
-    doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, finalY)
-    finalY += 7
-    doc.text(`Paid So Far: RWF ${paidSoFar.toLocaleString()}`, 14, finalY)
-    finalY += 7
-    doc.setFontSize(11)
-    doc.text(`Unpaid (Balance Due): RWF ${unpaidAmount.toLocaleString()}`, 14, finalY)
-    doc.setFontSize(10)
-
-    await drawSignatureAndStamp(doc, profile, doc.internal.pageSize.getWidth(), finalY + 20)
+    await drawSignatureAndStamp(doc, profile, doc.internal.pageSize.getWidth(), finalY + 25)
 
     doc.save(`KaySales_${label}_${selectedCustomer.name.replace(/\s+/g, '_')}_Credits.pdf`)
   }
@@ -619,9 +620,8 @@ export default function Credits() {
       doc.text(`${label} Report`, 14, 25)
       doc.setFontSize(10)
       doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-      doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, 39)
       autoTable(doc, {
-        startY: 48,
+        startY: 40,
         head: [[activeTab === 'given' ? 'Customer' : 'Supplier', 'Product', 'Qty', 'Amount (RWF)', 'Date', 'Status', 'Paid At']],
         body: exportFiltered.map(c => [
           c[nameField],
@@ -635,6 +635,26 @@ export default function Credits() {
         styles: { fontSize: 9 },
         headStyles: { fillColor: [29, 78, 216] },
       })
+
+      // Computed from the same exportFiltered records printed in the table above.
+      const paidSoFar = exportFiltered.reduce((sum, c) => sum + (c.paid_amount || 0), 0)
+      const unpaidAmount = totalAmount - paidSoFar
+
+      let summaryY = doc.lastAutoTable.finalY || 60
+      const pageHeight = doc.internal.pageSize.getHeight()
+      if (summaryY > pageHeight - 25) {
+        doc.addPage()
+        summaryY = 20
+      }
+      summaryY += 10
+      doc.setFontSize(10)
+      doc.text(`Total Amount: RWF ${totalAmount.toLocaleString()}`, 14, summaryY)
+      summaryY += 7
+      doc.text(`Paid So Far: RWF ${paidSoFar.toLocaleString()}`, 14, summaryY)
+      summaryY += 7
+      doc.setFontSize(11)
+      doc.text(`Unpaid (Balance Due): RWF ${unpaidAmount.toLocaleString()}`, 14, summaryY)
+
       doc.save(`KaySales_${label}_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
     }
     setShowExportModal(false)
