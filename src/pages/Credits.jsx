@@ -48,6 +48,17 @@ export default function Credits() {
   const [confirmingPayment, setConfirmingPayment] = useState(false)
   const [receiptPayError, setReceiptPayError] = useState('')
 
+  // General Edit — edit every product of a customer/supplier plus the amount
+  // already paid on each, all in one place.
+  const [showGeneralEdit, setShowGeneralEdit] = useState(false)
+  const [generalEditItems, setGeneralEditItems] = useState([])
+  const [generalEditError, setGeneralEditError] = useState('')
+  const [generalSaving, setGeneralSaving] = useState(false)
+
+  // Credits <-> Sales consistency: sales whose credits don't match them
+  const [syncIssues, setSyncIssues] = useState([])
+  const [syncing, setSyncing] = useState(false)
+
   useEffect(() => {
     if (profile?.id) fetchCredits()
   }, [profile])
@@ -516,6 +527,459 @@ export default function Credits() {
     fetchCredits()
   }
 
+  // ---- Credits <-> Sales consistency ----
+  // Credits Given that came from a sale must always mirror that sale: the same
+  // items and amounts, with a total equal to the sale's total. This compares
+  // them (read-only) and returns, for each sale that doesn't match, exactly
+  // what has to be fixed. Nothing is written until the user clicks "Fix now".
+  const buildSalesSyncPlan = async () => {
+    const saleIds = [...new Set(creditsGiven.filter(c => c.sale_id).map(c => c.sale_id))]
+    if (saleIds.length === 0) return []
+
+    let salesRows = []
+    let itemRows = []
+    for (let i = 0; i < saleIds.length; i += 50) {
+      const ids = saleIds.slice(i, i + 50)
+      const { data: s } = await supabase.from('sales').select('id, product_name, total, created_at').in('id', ids)
+      const { data: it } = await supabase.from('sale_items').select('*').in('sale_id', ids)
+      salesRows = salesRows.concat(s || [])
+      itemRows = itemRows.concat(it || [])
+    }
+
+    const plans = []
+    for (const sale of salesRows) {
+      const items = itemRows.filter(i => i.sale_id === sale.id)
+      // A sale with no saved items can't be compared safely — leave it alone
+      if (items.length === 0) continue
+
+      const credits = creditsGiven
+        .filter(c => c.sale_id === sale.id)
+        .slice()
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+
+      const itemsSum = items.reduce((sum, i) => sum + (i.total || 0), 0)
+      const saleTotal = sale.total || 0
+
+      const lines = items.map(i => ({ product_name: i.product_name || '', quantity: i.quantity_sold || 0, amount: i.total || 0 }))
+
+      // The sale's total is the reference. If its items add up to less, the
+      // difference is value that was lost from the item list.
+      let addGap = 0
+      let fixSaleTotal = false
+      if (saleTotal > itemsSum) {
+        addGap = saleTotal - itemsSum
+        lines.push({ product_name: 'Other items', quantity: 1, amount: addGap })
+      } else if (saleTotal < itemsSum) {
+        // the items add up to more than the stored total — the total is what's stale
+        fixSaleTotal = true
+      }
+
+      // Pair every sale line with its credit (same product and amount first, then same product)
+      const used = new Set()
+      const rows = lines.map(line => {
+        const credit =
+          credits.find(c => !used.has(c.id) && (c.product_name || '') === line.product_name && (c.amount || 0) === line.amount) ||
+          credits.find(c => !used.has(c.id) && (c.product_name || '') === line.product_name)
+        if (credit) used.add(credit.id)
+        return {
+          credit: credit || null,
+          product_name: line.product_name,
+          quantity: line.quantity,
+          amount: line.amount,
+          paid: credit ? (credit.paid_amount || 0) : 0,
+          // marked "paid" long ago without a paid_amount recorded — leave as paid
+          legacyPaid: !!credit && credit.status === 'paid' && !credit.paid_amount,
+        }
+      })
+
+      // A line can never be paid more than it is worth. Move any excess to the
+      // oldest lines that still owe something (same rule as Add Payment).
+      let excess = 0
+      for (const r of rows) {
+        if (!r.legacyPaid && r.paid > r.amount) {
+          excess += r.paid - r.amount
+          r.paid = r.amount
+        }
+      }
+      for (const r of rows) {
+        if (excess <= 0) break
+        if (r.legacyPaid) continue
+        const room = r.amount - r.paid
+        if (room <= 0) continue
+        const add = Math.min(room, excess)
+        r.paid += add
+        excess -= add
+      }
+
+      const updateCredits = []
+      const insertCredits = []
+      for (const r of rows) {
+        const newStatus = r.legacyPaid ? 'paid' : (r.amount > 0 && r.paid >= r.amount ? 'paid' : r.paid > 0 ? 'partial' : 'unpaid')
+        if (!r.credit) {
+          insertCredits.push({ product_name: r.product_name, quantity: r.quantity, amount: r.amount, paid_amount: r.paid, status: newStatus })
+          continue
+        }
+        const c = r.credit
+        const changed =
+          (c.amount || 0) !== r.amount ||
+          (c.quantity || 0) !== r.quantity ||
+          (c.paid_amount || 0) !== r.paid ||
+          c.status !== newStatus
+        if (changed) {
+          updateCredits.push({
+            id: c.id,
+            fields: {
+              quantity: r.quantity,
+              amount: r.amount,
+              paid_amount: r.paid,
+              status: newStatus,
+              paid_at: r.paid > 0 ? (c.paid_at || null) : null,
+              paid_method: r.paid > 0 ? (c.paid_method || null) : null,
+            },
+          })
+        }
+      }
+
+      if (addGap > 0 || fixSaleTotal || updateCredits.length > 0 || insertCredits.length > 0) {
+        plans.push({ saleId: sale.id, saleName: sale.product_name, saleDate: sale.created_at, addGap, fixSaleTotal, updateCredits, insertCredits })
+      }
+    }
+    return plans
+  }
+
+  // Writes one sale's fix: restores missing item value on the sale, makes the
+  // credits mirror the sale's items, and re-syncs the sale's payment status.
+  const applySalesSyncPlan = async (plan) => {
+    const now = new Date().toISOString()
+
+    if (plan.addGap > 0) {
+      const { error: itemError } = await supabase.from('sale_items').insert({
+        sale_id: plan.saleId,
+        user_id: profile.id,
+        product_id: null,
+        product_name: 'Other items',
+        quantity_sold: 1,
+        selling_price: plan.addGap,
+        buying_price: 0,
+        total: plan.addGap,
+        is_consignment: true,
+      })
+      if (itemError) throw itemError
+    }
+
+    if (plan.addGap > 0 || plan.fixSaleTotal) {
+      const { data: allSaleItems } = await supabase
+        .from('sale_items')
+        .select('total, quantity_sold')
+        .eq('sale_id', plan.saleId)
+      if (allSaleItems && allSaleItems.length > 0) {
+        await supabase.from('sales').update({
+          total: allSaleItems.reduce((sum, i) => sum + (i.total || 0), 0),
+          quantity_sold: allSaleItems.reduce((sum, i) => sum + (i.quantity_sold || 0), 0),
+        }).eq('id', plan.saleId)
+      }
+    }
+
+    for (const u of plan.updateCredits) {
+      const { error: updateError } = await supabase.from('credits_given').update(u.fields).eq('id', u.id)
+      if (updateError) throw updateError
+    }
+
+    for (const c of plan.insertCredits) {
+      const { error: insertError } = await supabase.from('credits_given').insert({
+        user_id: profile.id,
+        customer_name: plan.saleName,
+        product_name: c.product_name,
+        quantity: c.quantity,
+        amount: c.amount,
+        paid_amount: c.paid_amount,
+        paid_at: c.paid_amount > 0 ? now : null,
+        paid_method: c.paid_amount > 0 ? 'cash' : null,
+        date: plan.saleDate || now,
+        notes: 'Added to match the sale',
+        status: c.status,
+        sale_id: plan.saleId,
+      })
+      if (insertError) throw insertError
+    }
+
+    await syncSalePaymentStatus(plan.saleId)
+  }
+
+  const handleFixSalesSync = async () => {
+    if (syncIssues.length === 0) return
+    setSyncing(true)
+    try {
+      for (const plan of syncIssues) {
+        await applySalesSyncPlan(plan)
+      }
+      await logActivity(
+        profile.id,
+        profile.email,
+        profile.full_name,
+        'Sync Credits With Sales',
+        `Matched credits to their sales for: ${syncIssues.map(p => p.saleName).join(', ')}`
+      )
+    } catch (err) {
+      alert('Could not finish matching credits to sales:\n\n' + (err?.message || String(err)))
+    }
+    setSyncing(false)
+    await fetchCredits()
+  }
+
+  // Re-check whenever the credits are (re)loaded, so a mismatch is always flagged
+  useEffect(() => {
+    if (!profile?.id || loading) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const plans = await buildSalesSyncPlan()
+        if (!cancelled) setSyncIssues(plans)
+      } catch (err) {
+        if (!cancelled) setSyncIssues([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [profile, loading, creditsGiven])
+
+  const openGeneralEdit = () => {
+    if (!selectedCustomer) return
+    setGeneralEditItems(selectedCustomer.items.map(credit => ({
+      id: credit.id,
+      original: credit,
+      product_name: credit.product_name || '',
+      quantity: credit.quantity || '',
+      unit_price: credit.quantity && credit.amount ? Math.round(credit.amount / credit.quantity) : '',
+      amount: credit.amount || '',
+      // A credit marked "paid" with no paid_amount recorded is shown as fully paid,
+      // so saving never flips it back to unpaid by accident.
+      paid_amount: credit.status === 'paid' && !credit.paid_amount ? (credit.amount || '') : (credit.paid_amount || ''),
+    })))
+    setGeneralEditError('')
+    setShowGeneralEdit(true)
+  }
+
+  const closeGeneralEdit = () => {
+    setShowGeneralEdit(false)
+    setGeneralEditItems([])
+    setGeneralEditError('')
+  }
+
+  const updateGeneralItem = (index, fields) => {
+    setGeneralEditItems(items => items.map((it, i) => (i === index ? { ...it, ...fields } : it)))
+  }
+
+  const addGeneralItem = () => {
+    setGeneralEditItems(items => [...items, { id: null, original: null, product_name: '', quantity: '', unit_price: '', amount: '', paid_amount: '' }])
+  }
+
+  const removeGeneralItem = (index) => {
+    setGeneralEditItems(items => items.filter((_, i) => i !== index))
+  }
+
+  // Saves every change made in General Edit. Only records that actually changed
+  // are written. For "Credits Given" linked to a sale, the sale item, stock and
+  // sale totals/payment status are kept in sync, same as the single Edit does.
+  const handleSaveGeneralEdit = async () => {
+    if (!selectedCustomer) return
+    const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
+    const field = activeTab === 'given' ? 'customer_name' : 'supplier_name'
+
+    // Ignore brand-new rows that were left completely blank
+    const rows = generalEditItems.filter(it => it.id || it.amount || it.product_name || it.paid_amount)
+    if (rows.length === 0) {
+      setGeneralEditError('Nothing to save')
+      return
+    }
+    for (const it of rows) {
+      const amt = parseInt(it.amount) || 0
+      const paid = parseInt(it.paid_amount) || 0
+      const label = it.product_name || 'an item'
+      if (amt <= 0) {
+        setGeneralEditError(`Please enter an amount greater than 0 for ${label}`)
+        return
+      }
+      if (paid < 0) {
+        setGeneralEditError(`Paid amount can't be negative for ${label}`)
+        return
+      }
+      if (paid > amt) {
+        setGeneralEditError(`Paid amount can't be more than the amount for ${label}`)
+        return
+      }
+    }
+
+    setGeneralSaving(true)
+    setGeneralEditError('')
+
+    try {
+      const now = new Date().toISOString()
+      const salesToRecompute = new Set()
+      const salesToSync = new Set()
+      let changedCount = 0
+
+      for (const it of rows) {
+        const newAmount = parseInt(it.amount) || 0
+        const newPaid = parseInt(it.paid_amount) || 0
+        const newQuantity = parseInt(it.quantity) || 0
+        const newName = it.product_name
+        const newStatus = newPaid >= newAmount ? 'paid' : newPaid > 0 ? 'partial' : 'unpaid'
+
+        // New product added from General Edit
+        if (!it.id) {
+          const { error: insertError } = await supabase.from(table).insert({
+            [field]: selectedCustomer.name,
+            product_name: newName,
+            quantity: newQuantity,
+            amount: newAmount,
+            paid_amount: newPaid,
+            paid_at: newPaid > 0 ? now : null,
+            paid_method: newPaid > 0 ? 'cash' : null,
+            date: now,
+            notes: '',
+            status: newStatus,
+            user_id: profile.id,
+          })
+          if (insertError) throw insertError
+          changedCount++
+          continue
+        }
+
+        const old = it.original
+        const oldPaid = old.paid_amount || 0
+        const detailsChanged =
+          newName !== (old.product_name || '') ||
+          newQuantity !== (old.quantity || 0) ||
+          newAmount !== (old.amount || 0)
+        const paidChanged = newPaid !== oldPaid
+        const statusChanged = newStatus !== old.status
+        if (!detailsChanged && !paidChanged && !statusChanged) continue
+
+        let paidAt = old.paid_at || null
+        let paidMethod = old.paid_method || null
+        if (newPaid <= 0) {
+          paidAt = null
+          paidMethod = null
+        } else {
+          if (paidChanged || !paidAt) paidAt = now
+          paidMethod = paidMethod || 'cash'
+        }
+
+        const { error: updateError } = await supabase.from(table).update({
+          product_name: newName,
+          quantity: newQuantity,
+          amount: newAmount,
+          status: newStatus,
+          paid_amount: newPaid,
+          paid_at: paidAt,
+          paid_method: paidMethod,
+        }).eq('id', old.id)
+        if (updateError) throw updateError
+        changedCount++
+
+        if (activeTab === 'given' && old.sale_id) {
+          salesToSync.add(old.sale_id)
+
+          if (detailsChanged) {
+            salesToRecompute.add(old.sale_id)
+
+            const { data: matchingItems } = await supabase
+              .from('sale_items')
+              .select('*')
+              .eq('sale_id', old.sale_id)
+              .eq('product_name', old.product_name)
+
+            const saleItem = matchingItems?.[0]
+
+            if (saleItem) {
+              const newSellingPrice = newQuantity > 0 ? Math.round(newAmount / newQuantity) : saleItem.selling_price
+
+              await supabase.from('sale_items').update({
+                product_name: newName,
+                quantity_sold: newQuantity,
+                selling_price: newSellingPrice,
+                total: newAmount,
+              }).eq('id', saleItem.id)
+
+              if (!saleItem.is_consignment && saleItem.product_id) {
+                const quantityDelta = newQuantity - (old.quantity || 0)
+                if (quantityDelta !== 0) {
+                  const { data: freshProduct } = await supabase
+                    .from('products')
+                    .select('quantity')
+                    .eq('id', saleItem.product_id)
+                    .single()
+                  if (freshProduct) {
+                    await supabase
+                      .from('products')
+                      .update({ quantity: freshProduct.quantity - quantityDelta })
+                      .eq('id', saleItem.product_id)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      for (const saleId of salesToRecompute) {
+        const { data: allSaleItems } = await supabase
+          .from('sale_items')
+          .select('total, quantity_sold')
+          .eq('sale_id', saleId)
+
+        if (allSaleItems && allSaleItems.length > 0) {
+          const newSaleTotal = allSaleItems.reduce((sum, i) => sum + (i.total || 0), 0)
+          const newSaleQuantity = allSaleItems.reduce((sum, i) => sum + (i.quantity_sold || 0), 0)
+          await supabase.from('sales').update({
+            product_name: selectedCustomer.name,
+            total: newSaleTotal,
+            quantity_sold: newSaleQuantity,
+          }).eq('id', saleId)
+        }
+      }
+
+      for (const saleId of salesToSync) {
+        await syncSalePaymentStatus(saleId)
+      }
+
+      await logActivity(
+        profile.id,
+        profile.email,
+        profile.full_name,
+        'General Edit Credit',
+        `General edit for: ${selectedCustomer.name} - ${changedCount} record(s) updated (${activeTab === 'given' ? 'Credits Given' : 'Credits Taken'})`
+      )
+
+      // Reload this customer's records so the statement shows the new numbers right away
+      const { data: fresh } = await supabase
+        .from(table)
+        .select('*')
+        .eq('user_id', profile.id)
+        .eq(field, selectedCustomer.name)
+        .order('created_at', { ascending: false })
+
+      const freshItems = fresh || []
+      // Same rule as the main list: paid credits are history, not part of the open balance
+      const openItems = freshItems.filter(c => c.status !== 'paid')
+      const freshTotal = openItems.reduce((sum, c) => sum + (c.amount || 0), 0)
+      const freshUnpaid = openItems.reduce((sum, c) => sum + (c.amount || 0) - (c.paid_amount || 0), 0)
+
+      setGeneralSaving(false)
+      closeGeneralEdit()
+      fetchCredits()
+
+      if (freshItems.length === 0 || (freshUnpaid === 0 && statusFilter === 'unpaid')) {
+        setSelectedCustomer(null)
+      } else {
+        setSelectedCustomer({ ...selectedCustomer, items: freshItems, totalAmount: freshTotal, unpaidAmount: freshUnpaid })
+      }
+    } catch (err) {
+      setGeneralSaving(false)
+      setGeneralEditError('Failed to save changes: ' + (err?.message || String(err)))
+    }
+  }
+
   const getPaymentLabel = (method) => {
     if (method === 'mtn') return '📱 MTN Mobile Money'
     if (method === 'bank') return '🏦 Bank Transfer'
@@ -737,6 +1201,10 @@ export default function Credits() {
   const previewApplied = selectedCustomer ? Math.min(parseInt(receiptPayAmount) || 0, selectedCustomer.unpaidAmount) : 0
   const previewRemaining = selectedCustomer ? Math.max(selectedCustomer.unpaidAmount - previewApplied, 0) : 0
 
+  // General Edit live totals
+  const generalTotal = generalEditItems.reduce((sum, i) => sum + (parseInt(i.amount) || 0), 0)
+  const generalPaid = generalEditItems.reduce((sum, i) => sum + (parseInt(i.paid_amount) || 0), 0)
+
   return (
     <Layout>
       <div className="p-6 space-y-6">
@@ -752,6 +1220,27 @@ export default function Credits() {
             <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm">+ Add Credit</button>
           </div>
         </div>
+
+        {syncIssues.length > 0 && (
+          <div className="bg-yellow-900 border border-yellow-700 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <p className="text-yellow-200 text-sm font-medium">
+                ⚠️ {syncIssues.length} credit sale{syncIssues.length > 1 ? 's don\'t' : ' doesn\'t'} match {syncIssues.length > 1 ? 'their sale records' : 'its sale record'}
+              </p>
+              <p className="text-yellow-300 text-xs mt-1">
+                {syncIssues.slice(0, 3).map(p => `${p.saleName}${p.addGap > 0 ? ` (RWF ${p.addGap.toLocaleString()} of items missing)` : ''}`).join(' · ')}
+                {syncIssues.length > 3 ? ` · +${syncIssues.length - 3} more` : ''}
+              </p>
+            </div>
+            <button
+              onClick={handleFixSalesSync}
+              disabled={syncing}
+              className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 text-gray-900 rounded-lg text-sm font-medium transition whitespace-nowrap"
+            >
+              {syncing ? 'Fixing...' : '🔧 Fix now'}
+            </button>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
@@ -972,7 +1461,10 @@ export default function Credits() {
 
               {/* Per-item management */}
               <div className="mt-5 space-y-2">
-                <p className="text-gray-500 text-xs uppercase tracking-wide">Manage Items</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-gray-500 text-xs uppercase tracking-wide">Manage Items</p>
+                  <button onClick={openGeneralEdit} className="px-2 py-1 bg-purple-700 hover:bg-purple-600 text-white rounded text-xs transition">✏️ General Edit</button>
+                </div>
                 {selectedCustomer.items.map((credit) => (
                   <div key={credit.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
                     <div>
@@ -1004,6 +1496,139 @@ export default function Credits() {
                   title="Delete all records for this customer"
                 >
                   🗑️
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* General Edit — edit all products and the amount paid on each */}
+      {showGeneralEdit && selectedCustomer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl max-h-full flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
+              <h2 className="text-lg font-bold text-white">✏️ General Edit — {selectedCustomer.name}</h2>
+              <button onClick={closeGeneralEdit} className="text-gray-400 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="px-6 py-4 overflow-y-auto flex-1 space-y-4">
+              <p className="text-gray-400 text-xs">Edit every product and the amount already paid on each. The status updates automatically.</p>
+              {generalEditError && <p className="text-red-400 text-sm">{generalEditError}</p>}
+
+              {generalEditItems.map((item, index) => {
+                const amt = parseInt(item.amount) || 0
+                const paid = parseInt(item.paid_amount) || 0
+                const balance = Math.max(amt - paid, 0)
+                const itemStatus = amt > 0 && paid >= amt ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid'
+                return (
+                  <div key={item.id || `new-${index}`} className="bg-gray-800 rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400 text-xs">Item {index + 1}{!item.id ? ' (new)' : ''}</span>
+                      <div className="flex items-center gap-3">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${itemStatus === 'Paid' ? 'bg-green-900 text-green-300' : itemStatus === 'Partial' ? 'bg-orange-900 text-orange-300' : 'bg-red-900 text-red-300'}`}>
+                          {itemStatus}
+                        </span>
+                        {!item.id && (
+                          <button onClick={() => removeGeneralItem(index)} className="text-red-400 hover:text-red-300 text-xs">Remove</button>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-gray-500 text-[10px] mb-1 block">Product</label>
+                      <input
+                        type="text"
+                        value={item.product_name}
+                        onChange={(e) => updateGeneralItem(index, { product_name: e.target.value })}
+                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        placeholder="Product name"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-gray-500 text-[10px] mb-1 block">Quantity</label>
+                        <input
+                          type="number"
+                          value={item.quantity}
+                          onChange={(e) => {
+                            const qty = e.target.value
+                            const price = parseInt(item.unit_price) || 0
+                            const fields = { quantity: qty }
+                            if (price > 0) fields.amount = (parseInt(qty) || 0) * price
+                            updateGeneralItem(index, fields)
+                          }}
+                          className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                          placeholder="Qty"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-gray-500 text-[10px] mb-1 block">Unit Price (RWF)</label>
+                        <input
+                          type="number"
+                          value={item.unit_price}
+                          onChange={(e) => {
+                            const price = e.target.value
+                            const qty = parseInt(item.quantity) || 0
+                            const fields = { unit_price: price }
+                            if (qty > 0) fields.amount = qty * (parseInt(price) || 0)
+                            updateGeneralItem(index, fields)
+                          }}
+                          className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                          placeholder="Unit Price"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-gray-500 text-[10px] mb-1 block">Amount (RWF)</label>
+                        <input
+                          type="number"
+                          value={item.amount}
+                          onChange={(e) => updateGeneralItem(index, { amount: e.target.value })}
+                          className="w-full bg-gray-700 border border-gray-600 text-green-400 px-3 py-2 rounded-lg text-sm font-medium focus:outline-none focus:border-blue-500"
+                          placeholder="Total"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-gray-500 text-[10px] mb-1 block">Amount Paid (RWF)</label>
+                        <input
+                          type="number"
+                          value={item.paid_amount}
+                          onChange={(e) => updateGeneralItem(index, { paid_amount: e.target.value })}
+                          className="w-full bg-gray-700 border border-orange-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-orange-500"
+                          placeholder="0"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      Balance: <span className={balance > 0 ? 'text-orange-400 font-medium' : 'text-green-400 font-medium'}>RWF {balance.toLocaleString()}</span>
+                    </p>
+                  </div>
+                )
+              })}
+
+              <button onClick={addGeneralItem} className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
+                + Add Another Product
+              </button>
+
+              <div className="bg-gray-800 rounded-lg px-4 py-3 space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Total Amount</span>
+                  <span className="text-white font-medium">RWF {generalTotal.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Paid So Far</span>
+                  <span className="text-green-400">RWF {generalPaid.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-white font-bold">Balance Due</span>
+                  <span className={`font-bold ${generalTotal - generalPaid > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    RWF {Math.max(generalTotal - generalPaid, 0).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-1">
+                <button onClick={closeGeneralEdit} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={handleSaveGeneralEdit} disabled={generalSaving} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition font-medium">
+                  {generalSaving ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
             </div>

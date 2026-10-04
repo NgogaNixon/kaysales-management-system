@@ -227,6 +227,20 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     const validItems = saleItems.filter(i =>
       (i.is_consignment ? i.product_name : i.product_id) && i.quantity_sold && i.selling_price
     )
+
+    // A row with a quantity or price but no product chosen used to be dropped
+    // silently while still being counted in the Grand Total, so the sale total
+    // and the credits no longer matched the saved items. Stop and say which one.
+    const incompleteIndex = saleItems.findIndex(i =>
+      !((i.is_consignment ? i.product_name : i.product_id) && i.quantity_sold && i.selling_price) &&
+      (i.product_id || i.product_name || i.quantity_sold || i.selling_price)
+    )
+    if (incompleteIndex !== -1) {
+      setError(`Item ${incompleteIndex + 1} is incomplete — choose a product from your stock (or tick Third-Party Item and type its name), then fill in quantity and price.`)
+      setShowModal(true)
+      return
+    }
+
     if (validItems.length === 0) {
       setError('Please add at least one product')
       return
@@ -235,11 +249,15 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setSaving(true)
     setError('')
 
+    // The sale's total always comes from the items that are actually saved, so
+    // the sale, its items and its credits can never end up with different totals.
+    const saleTotal = validItems.reduce((sum, i) => sum + (i.total || 0), 0)
+
     const paidNow = parseInt(amountPaidNow) || 0
     const paymentStatus = paymentMethod !== 'credit'
       ? 'paid'
-      : paidNow >= grandTotal ? 'paid' : paidNow > 0 ? 'partial' : 'pending'
-    const amountPaidValue = paymentMethod === 'credit' ? Math.min(paidNow, grandTotal) : grandTotal
+      : paidNow >= saleTotal ? 'paid' : paidNow > 0 ? 'partial' : 'pending'
+    const amountPaidValue = paymentMethod === 'credit' ? Math.min(paidNow, saleTotal) : saleTotal
 
     let saleData, saleError
 
@@ -254,7 +272,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         .update({
           product_name: customerName,
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
-          total: grandTotal,
+          total: saleTotal,
           payment_method: paymentMethod,
           payment_status: paymentStatus,
           amount_paid: amountPaidValue,
@@ -327,7 +345,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           // each item but the last gets its proportional share; the last item
           // absorbs whatever remains, so the per-item amounts always sum to
           // exactly what was paid (matching sales.amount_paid).
-          const amountToAllocate = Math.min(paidNow, grandTotal)
+          const amountToAllocate = Math.min(paidNow, saleTotal)
           let remaining = amountToAllocate
           for (let i = 0; i < validItems.length; i++) {
             const item = validItems[i]
@@ -336,7 +354,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
             if (isLast) {
               itemPaid = remaining
             } else {
-              const share = grandTotal > 0 ? Math.round(item.total * (amountToAllocate / grandTotal)) : 0
+              const share = saleTotal > 0 ? Math.round(item.total * (amountToAllocate / saleTotal)) : 0
               itemPaid = Math.min(share, remaining, item.total)
             }
             remaining -= itemPaid
@@ -363,7 +381,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           product_name: customerName,
           quantity_sold: validItems.reduce((sum, i) => sum + parseInt(i.quantity_sold), 0),
           selling_price: 0,
-          total: grandTotal,
+          total: saleTotal,
           payment_method: paymentMethod,
           payment_status: paymentStatus,
           amount_paid: amountPaidValue,
@@ -416,7 +434,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         if (paymentMethod === 'credit') {
           // Same rounding-safe allocation as the edit branch — last item
           // absorbs the remainder so amounts always sum exactly to what was paid.
-          const amountToAllocate = Math.min(paidNow, grandTotal)
+          const amountToAllocate = Math.min(paidNow, saleTotal)
           let remaining = amountToAllocate
           for (let i = 0; i < validItems.length; i++) {
             const item = validItems[i]
@@ -425,7 +443,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
             if (isLast) {
               itemPaid = remaining
             } else {
-              const share = grandTotal > 0 ? Math.round(item.total * (amountToAllocate / grandTotal)) : 0
+              const share = saleTotal > 0 ? Math.round(item.total * (amountToAllocate / saleTotal)) : 0
               itemPaid = Math.min(share, remaining, item.total)
             }
             remaining -= itemPaid
@@ -457,7 +475,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       profile.email,
       profile.full_name,
       editSale ? 'Edit Sale' : 'Add Sale',
-      `${editSale ? 'Updated' : 'Added'} sale for: ${customerName} - RWF ${grandTotal.toLocaleString()} - Payment: ${paymentMethod}`
+      `${editSale ? 'Updated' : 'Added'} sale for: ${customerName} - RWF ${saleTotal.toLocaleString()} - Payment: ${paymentMethod}`
     )
 
     setSaving(false)
