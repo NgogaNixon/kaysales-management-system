@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
@@ -12,26 +12,96 @@ const UPLOAD_FIELDS = [
 // These fields get a Remove button
 const REMOVABLE_FIELDS = ['logo_url', 'signature_url', 'stamp_url']
 
+// Gets the file path inside the "company-assets" bucket from a public URL
+const getStoragePath = (url) => {
+  if (!url) return null
+  const marker = '/company-assets/'
+  const index = url.indexOf(marker)
+  if (index === -1) return null
+  return url.substring(index + marker.length).split('?')[0]
+}
+
 export default function AccountSettings() {
   const { profile, refetchProfile } = useAuth()
-  const [companyName, setCompanyName] = useState(profile?.company_name || '')
-  const [companyPhone, setCompanyPhone] = useState(profile?.company_phone || '')
-  const [companyLocation, setCompanyLocation] = useState(profile?.company_location || '')
-  const [companyTin, setCompanyTin] = useState(profile?.company_tin || '')
+  const [companyName, setCompanyName] = useState('')
+  const [companyPhone, setCompanyPhone] = useState('')
+  const [companyLocation, setCompanyLocation] = useState('')
+  const [companyTin, setCompanyTin] = useState('')
   const [images, setImages] = useState({
-    logo_url: profile?.logo_url || '',
-    signature_url: profile?.signature_url || '',
-    stamp_url: profile?.stamp_url || '',
+    logo_url: '',
+    signature_url: '',
+    stamp_url: '',
   })
+  const [loaded, setLoaded] = useState(false)
   const [uploading, setUploading] = useState({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState(false)
+  const [success, setSuccess] = useState('')
+
+  // Always load the latest saved settings straight from the database,
+  // so coming back to this page shows what is really saved.
+  useEffect(() => {
+    if (!profile?.id) return
+
+    const loadFresh = async () => {
+      const { data, error: loadError } = await supabase
+        .from('profiles')
+        .select('company_name, company_phone, company_location, company_tin, logo_url, signature_url, stamp_url')
+        .eq('id', profile.id)
+        .single()
+
+      if (loadError) {
+        setError('Could not load your account settings: ' + loadError.message)
+        return
+      }
+
+      if (data) {
+        setCompanyName(data.company_name || '')
+        setCompanyPhone(data.company_phone || '')
+        setCompanyLocation(data.company_location || '')
+        setCompanyTin(data.company_tin || '')
+        setImages({
+          logo_url: data.logo_url || '',
+          signature_url: data.signature_url || '',
+          stamp_url: data.stamp_url || '',
+        })
+      }
+      setLoaded(true)
+    }
+
+    loadFresh()
+  }, [profile?.id])
+
+  // Makes the rest of the app (receipts, quotations, credit statements)
+  // use the newest settings. If the app cannot refresh by itself,
+  // the page is reloaded so every PDF picks up the change.
+  const refreshApp = async () => {
+    if (refetchProfile) {
+      await refetchProfile()
+    } else {
+      window.location.reload()
+    }
+  }
+
+  // Saves one image field to the profile right away.
+  // Returns an error message, or null when it worked.
+  const saveImageToProfile = async (fieldKey, url) => {
+    const { data, error: saveError } = await supabase
+      .from('profiles')
+      .update({ [fieldKey]: url })
+      .eq('id', profile.id)
+      .select('id')
+
+    if (saveError) return saveError.message
+    if (!data || data.length === 0) return 'Nothing was saved. The database did not allow the update.'
+    return null
+  }
 
   const handleUpload = async (fieldKey, file) => {
     if (!file) return
     setError('')
-    setUploading({ ...uploading, [fieldKey]: true })
+    setSuccess('')
+    setUploading((prev) => ({ ...prev, [fieldKey]: true }))
 
     const ext = file.name.split('.').pop()
     const path = `${profile.id}/${fieldKey}.${ext}`
@@ -42,7 +112,7 @@ export default function AccountSettings() {
 
     if (uploadError) {
       setError(`Failed to upload ${fieldKey.replace('_url', '')}: ${uploadError.message}`)
-      setUploading({ ...uploading, [fieldKey]: false })
+      setUploading((prev) => ({ ...prev, [fieldKey]: false }))
       return
     }
 
@@ -53,22 +123,56 @@ export default function AccountSettings() {
     // Cache-bust so a re-upload of the same filename shows immediately
     const bustedUrl = `${urlData.publicUrl}?t=${Date.now()}`
 
-    setImages({ ...images, [fieldKey]: bustedUrl })
-    setUploading({ ...uploading, [fieldKey]: false })
+    // Save to the profile straight away
+    const saveProblem = await saveImageToProfile(fieldKey, bustedUrl)
+    if (saveProblem) {
+      setError(`Image uploaded but not saved: ${saveProblem}`)
+      setUploading((prev) => ({ ...prev, [fieldKey]: false }))
+      return
+    }
+
+    setImages((prev) => ({ ...prev, [fieldKey]: bustedUrl }))
+    setUploading((prev) => ({ ...prev, [fieldKey]: false }))
+    setSuccess('Image saved. It will now appear on all your documents.')
+    setTimeout(() => setSuccess(''), 3000)
+
+    await refreshApp()
   }
 
-  // Clears the image from the screen. It is removed from the database when you click Save.
-  const handleRemove = (fieldKey) => {
+  // Removes the image from the profile right away, and deletes the file from storage
+  const handleRemove = async (fieldKey) => {
     setError('')
-    setImages({ ...images, [fieldKey]: '' })
+    setSuccess('')
+    setUploading((prev) => ({ ...prev, [fieldKey]: true }))
+
+    const oldPath = getStoragePath(images[fieldKey])
+
+    const saveProblem = await saveImageToProfile(fieldKey, '')
+    if (saveProblem) {
+      setError(`Could not remove the image: ${saveProblem}`)
+      setUploading((prev) => ({ ...prev, [fieldKey]: false }))
+      return
+    }
+
+    // Delete the old file too (if this fails it is not a problem)
+    if (oldPath) {
+      await supabase.storage.from('company-assets').remove([oldPath])
+    }
+
+    setImages((prev) => ({ ...prev, [fieldKey]: '' }))
+    setUploading((prev) => ({ ...prev, [fieldKey]: false }))
+    setSuccess('Image removed. It will no longer appear on your documents.')
+    setTimeout(() => setSuccess(''), 3000)
+
+    await refreshApp()
   }
 
   const handleSave = async () => {
     setSaving(true)
     setError('')
-    setSuccess(false)
+    setSuccess('')
 
-    const { error: saveError } = await supabase
+    const { data, error: saveError } = await supabase
       .from('profiles')
       .update({
         company_name: companyName,
@@ -80,6 +184,7 @@ export default function AccountSettings() {
         stamp_url: images.stamp_url,
       })
       .eq('id', profile.id)
+      .select('id')
 
     if (saveError) {
       setError('Failed to save: ' + saveError.message)
@@ -87,10 +192,17 @@ export default function AccountSettings() {
       return
     }
 
-    if (refetchProfile) await refetchProfile()
+    if (!data || data.length === 0) {
+      setError('Nothing was saved. The database did not allow the update.')
+      setSaving(false)
+      return
+    }
+
     setSaving(false)
-    setSuccess(true)
-    setTimeout(() => setSuccess(false), 3000)
+    setSuccess('Saved successfully.')
+    setTimeout(() => setSuccess(''), 3000)
+
+    await refreshApp()
   }
 
   return (
@@ -111,7 +223,7 @@ export default function AccountSettings() {
         )}
         {success && (
           <div className="bg-green-900 border border-green-700 text-green-300 p-3 rounded-lg text-sm">
-            ✅ Saved successfully.
+            ✅ {success}
           </div>
         )}
 
@@ -177,7 +289,7 @@ export default function AccountSettings() {
                 <p className="text-gray-500 text-xs mb-2">{field.hint}</p>
                 <div className="flex items-center gap-2">
                   <label className="inline-block px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-xs cursor-pointer transition">
-                    {uploading[field.key] ? 'Uploading...' : images[field.key] ? 'Replace Image' : 'Upload Image'}
+                    {uploading[field.key] ? 'Please wait...' : images[field.key] ? 'Replace Image' : 'Upload Image'}
                     <input
                       type="file"
                       accept="image/*"
@@ -186,7 +298,7 @@ export default function AccountSettings() {
                         handleUpload(field.key, e.target.files[0])
                         e.target.value = ''
                       }}
-                      disabled={uploading[field.key]}
+                      disabled={uploading[field.key] || !loaded}
                     />
                   </label>
 
@@ -208,7 +320,7 @@ export default function AccountSettings() {
 
         <button
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || !loaded}
           className="w-full py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50"
         >
           {saving ? 'Saving...' : 'Save Account Settings'}
