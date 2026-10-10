@@ -1237,7 +1237,7 @@ export default function Credits() {
               disabled={syncing}
               className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 text-gray-900 rounded-lg text-sm font-medium transition whitespace-nowrap"
             >
-              {syncing ? 'Fixing...' : '🔧 Fix now'}
+              {syncing ? 'Fixing...' : ' Fix now'}
             </button>
           </div>
         )}
@@ -1508,7 +1508,7 @@ export default function Credits() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl max-h-full flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
-              <h2 className="text-lg font-bold text-white">✏️ General Edit — {selectedCustomer.name}</h2>
+              <h2 className="text-lg font-bold text-white"> General Edit — {selectedCustomer.name}</h2>
               <button onClick={closeGeneralEdit} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1 space-y-4">

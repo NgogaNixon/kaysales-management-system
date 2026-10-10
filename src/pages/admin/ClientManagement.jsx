@@ -11,6 +11,7 @@ export default function ClientManagement() {
   const [selectedClient, setSelectedClient] = useState(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [clientToDelete, setClientToDelete] = useState(null)
+  const [actionError, setActionError] = useState('')
 
   useEffect(() => {
     fetchData()
@@ -22,6 +23,7 @@ export default function ClientManagement() {
       .from('profiles')
       .select('*')
       .neq('role', 'admin')
+      .eq('is_deleted', false)
       .order('created_at', { ascending: false })
 
     const { data: subsData } = await supabase
@@ -45,48 +47,120 @@ export default function ClientManagement() {
   }
 
   const handleApprove = async (userId) => {
-    await supabase.from('profiles').update({ approved: true }).eq('id', userId)
+    setActionError('')
+    const { error } = await supabase.from('profiles').update({ approved: true }).eq('id', userId)
+    if (error) { setActionError('Could not approve this client: ' + error.message); return }
     fetchData()
   }
 
   const handleRevoke = async (userId) => {
-    await supabase.from('profiles').update({ approved: false }).eq('id', userId)
+    setActionError('')
+    const { error } = await supabase.from('profiles').update({ approved: false }).eq('id', userId)
+    if (error) { setActionError('Could not revoke this client: ' + error.message); return }
     fetchData()
   }
 
-  const handleDeleteClient = async (userId) => {
-    await supabase.from('sale_items').delete().eq('user_id', userId)
-    await supabase.from('sales').delete().eq('user_id', userId)
-    await supabase.from('products').delete().eq('user_id', userId)
-    await supabase.from('credits_given').delete().eq('user_id', userId)
-    await supabase.from('credits_taken').delete().eq('user_id', userId)
-    await supabase.from('subscriptions').delete().eq('user_id', userId)
-    await supabase.from('payment_requests').delete().eq('user_id', userId)
-    await supabase.from('profiles').delete().eq('id', userId)
+  // Moves the client to Trash — a single update, nothing deleted. Also blocks
+  // their access by revoking approval. Restorable anytime from the Trash page.
+  const handleTrashClient = async (userId) => {
+    setActionError('')
+    const { error } = await supabase
+      .from('profiles')
+      .update({ is_deleted: true, deleted_at: new Date().toISOString(), approved: false })
+      .eq('id', userId)
+    if (error) {
+      setActionError('Could not move this client to trash: ' + error.message)
+      return
+    }
     setShowDeleteConfirm(false)
     setClientToDelete(null)
     fetchData()
   }
 
   const handlePlanChange = async (userId, plan) => {
-    await supabase.from('profiles').update({ plan_type: plan }).eq('id', userId)
+    setActionError('')
+    const { error } = await supabase.from('profiles').update({ plan_type: plan }).eq('id', userId)
+    if (error) { setActionError('Could not change plan: ' + error.message); return }
+
+    // Keep the subscription record's plan in sync — otherwise a manual plan
+    // change here silently falls out of sync with what Subscriptions.jsx shows.
+    const { error: subError } = await supabase.from('subscriptions').update({ plan_type: plan }).eq('user_id', userId)
+    if (subError) { setActionError('Plan updated, but the subscription record could not be synced: ' + subError.message); return }
+
     fetchData()
   }
 
   const handleToggleShowProfit = async (userId, currentValue) => {
-    await supabase.from('profiles').update({ show_profit: !currentValue }).eq('id', userId)
+    setActionError('')
+    const { error } = await supabase.from('profiles').update({ show_profit: !currentValue }).eq('id', userId)
+    if (error) { setActionError('Could not update profit view: ' + error.message); return }
     if (selectedClient?.id === userId) {
       setSelectedClient({ ...selectedClient, show_profit: !currentValue })
     }
     fetchData()
   }
 
+  // A client counts as lifetime if the subscription is flagged lifetime OR its
+  // plan is "lifetime" (same rule Subscriptions.jsx uses).
+  const isLifetimeClient = (client) =>
+    !!client?.subscription &&
+    (client.subscription.plan_type === 'lifetime' || !!client.subscription.is_lifetime)
+
+  // Default expiry when lifetime is switched off: 30 days from today, saved as
+  // the END of that day (same as Subscriptions.jsx). The admin can change the
+  // date afterwards from the Subscriptions page.
+  const getDefaultExpiryIso = () => {
+    const d = new Date()
+    d.setDate(d.getDate() + 30)
+    const pad = (n) => String(n).padStart(2, '0')
+    const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    return new Date(dateStr + 'T23:59:59').toISOString()
+  }
+
+  // ON  -> subscription becomes lifetime, marked paid, expiry cleared.
+  // OFF -> lifetime removed, plan goes back to standard/premium, marked paid,
+  //        and a new expiry date (30 days from today) is inserted.
   const handleToggleLifetime = async (userId, currentValue) => {
-    await supabase.from('subscriptions').update({ is_lifetime: !currentValue }).eq('user_id', userId)
+    setActionError('')
+    const client = clients.find(c => c.id === userId)
+    const existingSub = client?.subscription
+    const turningOn = !currentValue
+
+    const restoredPlan =
+      client?.plan_type && client.plan_type !== 'lifetime' ? client.plan_type : 'standard'
+
+    const subUpdates = turningOn
+      ? { is_lifetime: true, payment_status: 'paid', expiry_date: null }
+      : { is_lifetime: false, plan_type: restoredPlan, payment_status: 'paid', expiry_date: getDefaultExpiryIso() }
+
+    if (existingSub) {
+      const { error } = await supabase.from('subscriptions').update(subUpdates).eq('user_id', userId)
+      if (error) { setActionError('Could not update lifetime access: ' + error.message); return }
+    } else if (turningOn) {
+      // No subscription row yet — create one so the lifetime access is saved
+      const { error } = await supabase.from('subscriptions').insert({
+        user_id: userId,
+        plan_type: client?.plan_type && client.plan_type !== 'lifetime' ? client.plan_type : 'standard',
+        ...subUpdates,
+      })
+      if (error) { setActionError('Could not update lifetime access: ' + error.message); return }
+    } else {
+      return
+    }
+
+    // If the profile itself was saved as "lifetime", put it back to a normal plan
+    let profilePlan = client?.plan_type
+    if (!turningOn && client?.plan_type === 'lifetime') {
+      const { error: profileError } = await supabase.from('profiles').update({ plan_type: restoredPlan }).eq('id', userId)
+      if (profileError) { setActionError('Lifetime turned off, but the profile plan could not be updated: ' + profileError.message) }
+      else profilePlan = restoredPlan
+    }
+
     if (selectedClient?.id === userId) {
       setSelectedClient({
         ...selectedClient,
-        subscription: { ...selectedClient.subscription, is_lifetime: !currentValue },
+        plan_type: profilePlan,
+        subscription: { ...(selectedClient.subscription || {}), ...subUpdates },
       })
     }
     fetchData()
@@ -101,6 +175,7 @@ export default function ClientManagement() {
 
   const getSubscriptionStatus = (client) => {
     if (!client.subscription) return { label: 'No Subscription', color: 'bg-gray-800 text-gray-400' }
+    if (isLifetimeClient(client)) return { label: 'Lifetime', color: 'bg-yellow-900 text-yellow-300' }
     const days = getDaysRemaining(client.subscription.expiry_date)
     if (days === null) return { label: 'No Expiry Set', color: 'bg-gray-800 text-gray-400' }
     if (days <= 0) return { label: 'Expired', color: 'bg-red-900 text-red-300' }
@@ -121,9 +196,16 @@ export default function ClientManagement() {
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-white">👥 Client Management</h1>
+          <h1 className="text-2xl font-bold text-white">Client Management</h1>
           <p className="text-gray-400 text-sm mt-1">Manage client accounts and subscriptions</p>
         </div>
+
+        {actionError && (
+          <div className="bg-red-900 border border-red-700 rounded-xl p-4 flex items-center justify-between">
+            <p className="text-red-300 text-sm">{actionError}</p>
+            <button onClick={() => setActionError('')} className="text-red-400 hover:text-white text-sm">✕</button>
+          </div>
+        )}
 
         {/* Filters */}
         <div className="flex flex-col sm:flex-row gap-3">
@@ -211,13 +293,13 @@ export default function ClientManagement() {
                         </td>
                         <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
                           <button
-                            onClick={() => handleToggleLifetime(client.id, client.subscription?.is_lifetime)}
+                            onClick={() => handleToggleLifetime(client.id, isLifetimeClient(client))}
                             className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                              client.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
+                              isLifetimeClient(client) ? 'bg-green-600' : 'bg-gray-600'
                             }`}
                           >
                             <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
-                              client.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
+                              isLifetimeClient(client) ? 'translate-x-6' : 'translate-x-1'
                             }`} />
                           </button>
                         </td>
@@ -225,7 +307,7 @@ export default function ClientManagement() {
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             client.approved ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'
                           }`}>
-                            {client.approved ? '✅ Approved' : '⏳ Pending'}
+                            {client.approved ? 'Approved' : 'Pending'}
                           </span>
                         </td>
                         <td className="px-6 py-4">
@@ -297,7 +379,7 @@ export default function ClientManagement() {
                   <div className="flex justify-between">
                     <span className="text-gray-400 text-sm">Plan</span>
                     <span className={`text-sm font-medium ${selectedClient.plan_type === 'premium' ? 'text-purple-400' : 'text-blue-400'}`}>
-                      {selectedClient.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                      {selectedClient.plan_type === 'premium' ? 'Premium' : 'Standard'}
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
@@ -316,20 +398,20 @@ export default function ClientManagement() {
                   <div className="flex justify-between items-center">
                     <span className="text-gray-400 text-sm">Lifetime Access</span>
                     <button
-                      onClick={() => handleToggleLifetime(selectedClient.id, selectedClient.subscription?.is_lifetime)}
+                      onClick={() => handleToggleLifetime(selectedClient.id, isLifetimeClient(selectedClient))}
                       className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                        selectedClient.subscription?.is_lifetime ? 'bg-green-600' : 'bg-gray-600'
+                        isLifetimeClient(selectedClient) ? 'bg-green-600' : 'bg-gray-600'
                       }`}
                     >
                       <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
-                        selectedClient.subscription?.is_lifetime ? 'translate-x-6' : 'translate-x-1'
+                        isLifetimeClient(selectedClient) ? 'translate-x-6' : 'translate-x-1'
                       }`} />
                     </button>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-400 text-sm">Status</span>
                     <span className={`text-sm font-medium ${selectedClient.approved ? 'text-green-400' : 'text-yellow-400'}`}>
-                      {selectedClient.approved ? '✅ Approved' : '⏳ Pending'}
+                      {selectedClient.approved ? 'Approved' : 'Pending'}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -361,24 +443,30 @@ export default function ClientManagement() {
                     <div className="flex justify-between">
                       <span className="text-gray-400 text-sm">Expiry Date</span>
                       <span className="text-white text-sm">
-                        {selectedClient.subscription.expiry_date
+                        {isLifetimeClient(selectedClient)
+                          ? 'Never expires'
+                          : selectedClient.subscription.expiry_date
                           ? new Date(selectedClient.subscription.expiry_date).toLocaleDateString()
                           : 'Not set'}
                       </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400 text-sm">Days Remaining</span>
-                      <span className={`text-sm font-medium ${
-                        getDaysRemaining(selectedClient.subscription.expiry_date) <= 0
-                          ? 'text-red-400'
-                          : getDaysRemaining(selectedClient.subscription.expiry_date) <= 7
-                          ? 'text-orange-400'
-                          : 'text-green-400'
-                      }`}>
-                        {getDaysRemaining(selectedClient.subscription.expiry_date) <= 0
-                          ? 'Expired'
-                          : `${getDaysRemaining(selectedClient.subscription.expiry_date)} days`}
-                      </span>
+                      {isLifetimeClient(selectedClient) ? (
+                        <span className="text-sm font-medium text-yellow-400">Lifetime</span>
+                      ) : (
+                        <span className={`text-sm font-medium ${
+                          getDaysRemaining(selectedClient.subscription.expiry_date) <= 0
+                            ? 'text-red-400'
+                            : getDaysRemaining(selectedClient.subscription.expiry_date) <= 7
+                            ? 'text-orange-400'
+                            : 'text-green-400'
+                        }`}>
+                          {getDaysRemaining(selectedClient.subscription.expiry_date) <= 0
+                            ? 'Expired'
+                            : `${getDaysRemaining(selectedClient.subscription.expiry_date)} days`}
+                        </span>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -426,18 +514,17 @@ export default function ClientManagement() {
         </div>
       )}
 
-      {/* Delete Client Confirmation */}
+      {/* Trash Confirmation */}
       {showDeleteConfirm && clientToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
           <div className="bg-gray-900 border border-red-700 rounded-2xl w-full max-w-md mx-4 shadow-2xl p-6">
             <div className="text-center">
-              <span className="text-4xl">⚠️</span>
-              <h2 className="text-xl font-bold text-white mt-3 mb-2">Delete Client Account</h2>
+              <h2 className="text-xl font-bold text-white mt-3 mb-2">Move Client to Trash</h2>
               <p className="text-gray-400 text-sm mb-2">
-                You are about to permanently delete <span className="text-white font-bold">{clientToDelete.full_name}</span>
+                You are about to move <span className="text-white font-bold">{clientToDelete.full_name}</span> to Trash
               </p>
-              <p className="text-red-400 text-sm mb-6">
-                This will delete all their products, sales, credits and subscription data. This cannot be undone.
+              <p className="text-gray-400 text-sm mb-6">
+                Nothing is deleted — their products, sales, credits and subscription data stay intact. They'll lose access immediately, and you can restore them anytime from the Trash section.
               </p>
             </div>
             <div className="flex gap-3">
@@ -448,10 +535,10 @@ export default function ClientManagement() {
                 Cancel
               </button>
               <button
-                onClick={() => handleDeleteClient(clientToDelete.id)}
+                onClick={() => handleTrashClient(clientToDelete.id)}
                 className="flex-1 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-medium"
               >
-                Delete Permanently
+                Move to Trash
               </button>
             </div>
           </div>

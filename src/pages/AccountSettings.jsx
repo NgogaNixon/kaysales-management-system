@@ -9,6 +9,9 @@ const UPLOAD_FIELDS = [
   { key: 'stamp_url', label: 'Company Stamp', hint: 'Appears bottom-right on printed documents.' },
 ]
 
+// These fields get a Remove button
+const REMOVABLE_FIELDS = ['logo_url', 'signature_url', 'stamp_url']
+
 export default function AccountSettings() {
   const { profile, refetchProfile } = useAuth()
   const [companyName, setCompanyName] = useState(profile?.company_name || '')
@@ -52,6 +55,12 @@ export default function AccountSettings() {
 
     setImages({ ...images, [fieldKey]: bustedUrl })
     setUploading({ ...uploading, [fieldKey]: false })
+  }
+
+  // Clears the image from the screen. It is removed from the database when you click Save.
+  const handleRemove = (fieldKey) => {
+    setError('')
+    setImages({ ...images, [fieldKey]: '' })
   }
 
   const handleSave = async () => {
@@ -166,16 +175,32 @@ export default function AccountSettings() {
               <div className="flex-1">
                 <p className="text-white text-sm font-medium">{field.label}</p>
                 <p className="text-gray-500 text-xs mb-2">{field.hint}</p>
-                <label className="inline-block px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-xs cursor-pointer transition">
-                  {uploading[field.key] ? 'Uploading...' : images[field.key] ? 'Replace Image' : 'Upload Image'}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => handleUpload(field.key, e.target.files[0])}
-                    disabled={uploading[field.key]}
-                  />
-                </label>
+                <div className="flex items-center gap-2">
+                  <label className="inline-block px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-xs cursor-pointer transition">
+                    {uploading[field.key] ? 'Uploading...' : images[field.key] ? 'Replace Image' : 'Upload Image'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        handleUpload(field.key, e.target.files[0])
+                        e.target.value = ''
+                      }}
+                      disabled={uploading[field.key]}
+                    />
+                  </label>
+
+                  {REMOVABLE_FIELDS.includes(field.key) && images[field.key] && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemove(field.key)}
+                      disabled={uploading[field.key]}
+                      className="px-3 py-1.5 bg-red-900 hover:bg-red-800 text-red-200 rounded-lg text-xs transition disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ))}

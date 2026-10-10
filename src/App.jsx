@@ -21,6 +21,7 @@ import SystemReports from './pages/admin/SystemReports'
 import ActivityLog from './pages/admin/ActivityLog'
 import Devices from './pages/admin/Devices'
 import AdminReports from './pages/admin/AdminReports'
+import Trash from './pages/admin/Trash'
 import AccountSettings from './pages/AccountSettings'
 
 function App() {
@@ -54,6 +55,7 @@ function App() {
             <Route path="/admin/activity" element={<ProtectedRoute><ActivityLog /></ProtectedRoute>} />
             <Route path="/admin/devices" element={<ProtectedRoute><Devices /></ProtectedRoute>} />
             <Route path="/admin/admin-reports" element={<ProtectedRoute><AdminReports /></ProtectedRoute>} />
+            <Route path="/admin/trash" element={<ProtectedRoute><Trash /></ProtectedRoute>} />
           </Routes>
         </LanguageProvider>
       </AuthProvider>

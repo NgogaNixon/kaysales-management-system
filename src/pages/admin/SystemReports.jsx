@@ -26,6 +26,7 @@ export default function SystemReports() {
       .from('profiles')
       .select('*')
       .neq('role', 'admin')
+      .eq('is_deleted', false)
 
     const { data: subsData } = await supabase
       .from('subscriptions')
@@ -34,11 +35,14 @@ export default function SystemReports() {
     const totalClients = profilesData?.length || 0
     const approvedClients = profilesData?.filter(p => p.approved).length || 0
     const pendingClients = profilesData?.filter(p => !p.approved).length || 0
-    const standardPlans = profilesData?.filter(p => p.plan_type === 'standard').length || 0
-    const premiumPlans = profilesData?.filter(p => p.plan_type === 'premium').length || 0
+    // Only approved clients are actually active/paying — matches the same
+    // methodology AdminDashboard uses, so both pages report consistent figures.
+    const standardPlans = profilesData?.filter(p => p.plan_type === 'standard' && p.approved).length || 0
+    const premiumPlans = profilesData?.filter(p => p.plan_type === 'premium' && p.approved).length || 0
     const totalSubscriptions = subsData?.length || 0
     const paidSubscriptions = subsData?.filter(s => s.payment_status === 'paid').length || 0
-   const estimatedRevenue = (standardPlans * 45000) + (premiumPlans * 80000)
+    // Current plan pricing: Standard 20,000 RWF, Premium 35,000 RWF.
+    const estimatedRevenue = (standardPlans * 20000) + (premiumPlans * 35000)
 
     setStats({
       totalClients,
@@ -69,30 +73,15 @@ export default function SystemReports() {
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-white">📊 System Reports</h1>
+          <h1 className="text-2xl font-bold text-white">System Reports</h1>
           <p className="text-gray-400 text-sm mt-1">Overview of all clients, plans and revenue</p>
-        </div>
-
-        {/* Stats Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[
-            { label: 'Total Clients', value: stats.totalClients, icon: '👥' },
-            { label: 'Approved Clients', value: stats.approvedClients, icon: '✅' },
-            { label: 'Pending Clients', value: stats.pendingClients, icon: '⏳' },
-            { label: 'Est. Monthly Revenue', value: `RWF ${stats.estimatedRevenue.toLocaleString()}`, icon: '💰' },
-          ].map((stat, i) => (
-            <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <span className="text-2xl">{stat.icon}</span>
-              <p className="text-2xl font-bold text-white mt-2">{stat.value}</p>
-              <p className="text-gray-400 text-sm mt-1">{stat.label}</p>
-            </div>
-          ))}
         </div>
 
         {/* Plans Breakdown */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <h2 className="text-lg font-bold text-white mb-4">📦 Plans Breakdown</h2>
+            <h2 className="text-lg font-bold text-white mb-4">Plans Breakdown</h2>
+            <p className="text-gray-500 text-xs mb-4">Approved, currently active clients only</p>
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -101,7 +90,7 @@ export default function SystemReports() {
                 </div>
                 <div className="text-right">
                   <p className="text-white font-bold">{stats.standardPlans} clients</p>
-                  <p className="text-gray-500 text-xs">RWF {(stats.standardPlans * 45000).toLocaleString()}/mo</p>
+                  <p className="text-gray-500 text-xs">RWF {(stats.standardPlans * 20000).toLocaleString()}/mo</p>
                 </div>
               </div>
               <div className="w-full bg-gray-800 rounded-full h-2">
@@ -118,7 +107,7 @@ export default function SystemReports() {
                 </div>
                 <div className="text-right">
                   <p className="text-white font-bold">{stats.premiumPlans} clients</p>
-                  <p className="text-gray-500 text-xs">RWF {(stats.premiumPlans * 80000).toLocaleString()}/mo</p>
+                  <p className="text-gray-500 text-xs">RWF {(stats.premiumPlans * 35000).toLocaleString()}/mo</p>
                 </div>
               </div>
               <div className="w-full bg-gray-800 rounded-full h-2">
@@ -132,8 +121,20 @@ export default function SystemReports() {
 
           {/* Subscriptions Breakdown */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <h2 className="text-lg font-bold text-white mb-4">💳 Subscriptions Breakdown</h2>
+            <h2 className="text-lg font-bold text-white mb-4">Subscriptions Breakdown</h2>
             <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <span className="text-gray-300">Total Clients</span>
+                <span className="text-white font-bold">{stats.totalClients}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-300">Approved</span>
+                <span className="text-green-400 font-bold">{stats.approvedClients}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-300">Pending</span>
+                <span className="text-yellow-400 font-bold">{stats.pendingClients}</span>
+              </div>
               <div className="flex items-center justify-between">
                 <span className="text-gray-300">Total Subscriptions</span>
                 <span className="text-white font-bold">{stats.totalSubscriptions}</span>

@@ -31,6 +31,7 @@ export default function AdminReports() {
       .from('profiles')
       .select('*')
       .neq('role', 'admin')
+      .eq('is_deleted', false)
       .order('created_at', { ascending: false })
 
     const { data: subsData } = await supabase
@@ -87,6 +88,13 @@ export default function AdminReports() {
     return 'Active'
   }
 
+  // A client is "on trial" if they have an approved payment request whose
+  // transaction was the free trial — subscriptions.payment_status never
+  // actually gets set to 'trial' anywhere in the app, so checking that
+  // field (as this filter used to) never matched anything.
+  const isOnTrial = (userId) =>
+    payments.some(p => p.user_id === userId && p.status === 'approved' && p.transaction_id === 'FREE-TRIAL')
+
   const filteredClients = clients.filter(c => {
     const matchesSearch = c.full_name?.toLowerCase().includes(search.toLowerCase()) ||
       c.email?.toLowerCase().includes(search.toLowerCase())
@@ -97,9 +105,13 @@ export default function AdminReports() {
     if (filterStatus === 'active') matchesStatus = days !== null && days > 7
     if (filterStatus === 'expiring') matchesStatus = days !== null && days <= 7 && days > 0
     if (filterStatus === 'expired') matchesStatus = days !== null && days <= 0
-    if (filterStatus === 'trial') matchesStatus = sub?.payment_status === 'trial'
+    if (filterStatus === 'trial') matchesStatus = isOnTrial(c.id)
     return matchesSearch && matchesPlan && matchesStatus
   })
+
+  // Shared, safe filename base — replaces every run of whitespace (not just
+  // the first space) so multi-word names never leave a literal space behind.
+  const fileNameFor = (client) => client.full_name.trim().replace(/\s+/g, '_')
 
   const generateClientExcel = (client) => {
     setGenerating(true)
@@ -175,7 +187,7 @@ export default function AdminReports() {
     }))
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(paymentData.length ? paymentData : [{ Info: 'No payments' }]), 'Payment History')
 
-    XLSX.writeFile(wb, `KaySales_${client.full_name.replace(' ', '_')}_Report.xlsx`)
+    XLSX.writeFile(wb, `KaySales_${fileNameFor(client)}_Report.xlsx`)
     setGenerating(false)
   }
 
@@ -297,7 +309,7 @@ export default function AdminReports() {
       headStyles: { fillColor: [10, 22, 40] },
     })
 
-    doc.save(`KaySales_${client.full_name.replace(' ', '_')}_Report.pdf`)
+    doc.save(`KaySales_${fileNameFor(client)}_Report.pdf`)
     setGenerating(false)
   }
 
@@ -307,24 +319,8 @@ export default function AdminReports() {
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-white">📑 Admin Reports</h1>
+          <h1 className="text-2xl font-bold text-white">Admin Reports</h1>
           <p className="text-gray-400 text-sm mt-1">Generate full client reports with all their information</p>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[
-            { label: 'Total Clients', value: clients.length, icon: '👥' },
-            { label: 'Total Products', value: products.length, icon: '📦' },
-            { label: 'Total Sales', value: sales.length, icon: '💰' },
-            { label: 'Low Stock Items', value: products.filter(p => p.quantity < 3).length, icon: '⚠️' },
-          ].map((stat, i) => (
-            <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <span className="text-2xl">{stat.icon}</span>
-              <p className="text-2xl font-bold text-white mt-2">{stat.value}</p>
-              <p className="text-gray-400 text-sm mt-1">{stat.label}</p>
-            </div>
-          ))}
         </div>
 
         {/* Filters */}
@@ -386,7 +382,7 @@ export default function AdminReports() {
                       </td>
                       <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${client.plan_type === 'premium' ? 'bg-purple-900 text-purple-300' : 'bg-blue-900 text-blue-300'}`}>
-                          {client.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                          {client.plan_type === 'premium' ? 'Premium' : 'Standard'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
@@ -412,14 +408,14 @@ export default function AdminReports() {
                             disabled={generating}
                             className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
                           >
-                            📊 Excel
+                            Excel
                           </button>
                           <button
                             onClick={() => generateClientPDF(client)}
                             disabled={generating}
                             className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition"
                           >
-                            📄 PDF
+                            PDF
                           </button>
                         </div>
                       </td>

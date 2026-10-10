@@ -10,6 +10,7 @@ export default function ActivityLog() {
   const [search, setSearch] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [selectedLog, setSelectedLog] = useState(null)
 
   useEffect(() => {
     fetchLogs()
@@ -52,30 +53,25 @@ export default function ActivityLog() {
     return 'bg-blue-900 text-blue-300'
   }
 
+  const formatDate = (dateStr) =>
+    new Date(dateStr).toLocaleString('en-GB', {
+      timeZone: 'Africa/Kigali',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+
   return (
     <Layout>
       <div className="p-6 space-y-6">
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-white">📋 Activity Log</h1>
+          <h1 className="text-2xl font-bold text-white">Activity Log</h1>
           <p className="text-gray-400 text-sm mt-1">Track all user actions across the system</p>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[
-            { label: 'Total Actions', value: logs.length, icon: '📋' },
-            { label: 'Deletions', value: logs.filter(l => l.action?.toLowerCase().includes('delete')).length, icon: '🗑️' },
-            { label: 'Edits', value: logs.filter(l => l.action?.toLowerCase().includes('edit') || l.action?.toLowerCase().includes('update')).length, icon: '✏️' },
-            { label: 'Today', value: logs.filter(l => new Date(l.created_at).toDateString() === new Date().toDateString()).length, icon: '📅' },
-          ].map((stat, i) => (
-            <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <span className="text-2xl">{stat.icon}</span>
-              <p className="text-2xl font-bold text-white mt-2">{stat.value}</p>
-              <p className="text-gray-400 text-sm mt-1">{stat.label}</p>
-            </div>
-          ))}
         </div>
 
         {/* Filters */}
@@ -131,10 +127,10 @@ export default function ActivityLog() {
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">User</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Action</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Details</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Device</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">IP</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Date & Time (Rwanda)</th>
+                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -149,20 +145,18 @@ export default function ActivityLog() {
                           {log.action}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-gray-300 max-w-xs truncate">{log.details || '—'}</td>
                       <td className="px-6 py-4 text-gray-300 text-xs">
                         {log.device_id ? (deviceLabels[log.device_id] || log.browser || '—') : (log.browser || '—')}
                       </td>
                       <td className="px-6 py-4 text-gray-500 text-xs">{log.ip_address || '—'}</td>
-                      <td className="px-6 py-4 text-gray-400 text-xs">
-                        {new Date(log.created_at).toLocaleString('en-GB', {
-                          timeZone: 'Africa/Kigali',
-                          day: '2-digit',
-                          month: 'short',
-                          year: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
+                      <td className="px-6 py-4 text-gray-400 text-xs">{formatDate(log.created_at)}</td>
+                      <td className="px-6 py-4">
+                        <button
+                          onClick={() => setSelectedLog(log)}
+                          className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs transition"
+                        >
+                          View
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -173,6 +167,60 @@ export default function ActivityLog() {
         </div>
 
       </div>
+
+      {/* Log Detail Modal — full, untruncated details for one action */}
+      {selectedLog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg shadow-2xl max-h-full overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <h2 className="text-lg font-bold text-white">Action Details</h2>
+              <button onClick={() => setSelectedLog(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="px-6 py-4 space-y-3">
+              <div className="flex justify-between">
+                <span className="text-gray-400 text-sm">User</span>
+                <span className="text-white text-sm font-medium">{selectedLog.user_name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400 text-sm">Email</span>
+                <span className="text-white text-sm">{selectedLog.user_email}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-400 text-sm">Action</span>
+                <span className={`px-2 py-1 rounded-full text-xs font-medium ${getActionColor(selectedLog.action)}`}>
+                  {selectedLog.action}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-400 text-sm block mb-1">Full Details</span>
+                <p className="text-white text-sm bg-gray-800 rounded-lg p-3 whitespace-pre-wrap break-words">
+                  {selectedLog.details || '—'}
+                </p>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400 text-sm">Device</span>
+                <span className="text-white text-sm">
+                  {selectedLog.device_id ? (deviceLabels[selectedLog.device_id] || selectedLog.browser || '—') : (selectedLog.browser || '—')}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400 text-sm">IP Address</span>
+                <span className="text-white text-sm">{selectedLog.ip_address || '—'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400 text-sm">Date & Time (Rwanda)</span>
+                <span className="text-white text-sm">{formatDate(selectedLog.created_at)}</span>
+              </div>
+              <button
+                onClick={() => setSelectedLog(null)}
+                className="w-full py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition mt-2"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   )
 }

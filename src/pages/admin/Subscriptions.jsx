@@ -10,6 +10,7 @@ export default function Subscriptions() {
   const [filter, setFilter] = useState('all')
   const [activeTab, setActiveTab] = useState('payments')
   const [customExpiry, setCustomExpiry] = useState({})
+  const [actionError, setActionError] = useState('')
 
   const getDefaultExpiry = (payment) => {
     if (payment.plan_type === 'lifetime') return ''
@@ -30,6 +31,7 @@ export default function Subscriptions() {
       .from('profiles')
       .select('*')
       .neq('role', 'admin')
+      .eq('is_deleted', false)
 
     const { data: subsData } = await supabase
       .from('subscriptions')
@@ -129,25 +131,72 @@ export default function Subscriptions() {
     fetchData()
   }
 
-  const handleExpiryChange = async (subId, date) => {
-    await supabase
-      .from('subscriptions')
-      .update({ expiry_date: date })
-      .eq('id', subId)
-    fetchData()
+  // Reads an ISO timestamp back as the local calendar date, matching how the
+  // end-of-day expiry is written below.
+  const toDateInput = (iso) => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
   }
 
-  const filtered = subscriptions.filter(s => {
-    if (filter === 'paid') return s.payment_status === 'paid'
-    if (filter === 'pending') return s.payment_status === 'pending'
-    if (filter === 'expiring') {
-      const days = getDaysRemaining(s.expiry_date)
-      return days !== null && days <= 7
-    }
-    return true
-  })
+  const isLifetimeSub = (sub) => !!sub && (sub.plan_type === 'lifetime' || sub.is_lifetime)
 
-  const pendingPayments = paymentRequests.filter(p => p.status === 'pending')
+  // Adjusts a client's expiry date. Saved as the END of the chosen day (same as
+  // when a payment is approved), so the client keeps access for the whole day.
+  // If the new date moves an expired subscription into the future it goes back
+  // to Paid, and if it moves a Paid one into the past it becomes Expired.
+  const handleExpiryChange = async (sub, dateStr) => {
+    if (!dateStr) return
+    setActionError('')
+    const expiryIso = new Date(dateStr + 'T23:59:59').toISOString()
+    const isFuture = new Date(expiryIso) > new Date()
+
+    const updates = { expiry_date: expiryIso }
+    if (isFuture && sub.payment_status === 'expired') updates.payment_status = 'paid'
+    if (!isFuture && sub.payment_status === 'paid') updates.payment_status = 'expired'
+
+    setSubscriptions(prev => prev.map(s => (s.id === sub.id ? { ...s, ...updates } : s)))
+
+    const { error } = await supabase.from('subscriptions').update(updates).eq('id', sub.id)
+    if (error) {
+      setActionError('Could not update the expiry date: ' + error.message)
+      fetchData()
+    }
+  }
+
+  // "clients" only holds currently active (non-trashed) profiles — anything
+  // not in this set belongs to a client who's no longer using the system.
+  const activeClientIds = new Set(clients.map(c => c.id))
+
+  // Rejected requests shouldn't keep showing the client in this list, and a
+  // client who submitted more than once should only appear once — their most
+  // recent non-rejected request.
+  const visiblePaymentRequests = Object.values(
+    paymentRequests
+      .filter(p => activeClientIds.has(p.user_id) && p.status !== 'rejected')
+      .reduce((latestByClient, p) => {
+        const existing = latestByClient[p.user_id]
+        if (!existing || new Date(p.created_at) > new Date(existing.created_at)) {
+          latestByClient[p.user_id] = p
+        }
+        return latestByClient
+      }, {})
+  ).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+
+  const filtered = subscriptions
+    .filter(s => activeClientIds.has(s.user_id))
+    .filter(s => {
+      if (filter === 'paid') return s.payment_status === 'paid'
+      if (filter === 'pending') return s.payment_status === 'pending'
+      if (filter === 'expiring') {
+        const days = getDaysRemaining(s.expiry_date)
+        return days !== null && days <= 7
+      }
+      return true
+    })
+
+  const pendingPayments = visiblePaymentRequests.filter(p => p.status === 'pending')
 
   return (
     <Layout>
@@ -155,30 +204,20 @@ export default function Subscriptions() {
 
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-white">💳 Subscriptions</h1>
+          <h1 className="text-2xl font-bold text-white">Subscriptions</h1>
           <p className="text-gray-400 text-sm mt-1">Manage payments and subscriptions</p>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[
-            { label: 'Payment Requests', value: pendingPayments.length, icon: '⏳' },
-            { label: 'Active Subs', value: subscriptions.filter(s => s.payment_status === 'paid').length, icon: '✅' },
-            { label: 'Pending Subs', value: subscriptions.filter(s => s.payment_status === 'pending').length, icon: '🔄' },
-            { label: 'Expiring Soon', value: subscriptions.filter(s => { const d = getDaysRemaining(s.expiry_date); return d !== null && d <= 7 }).length, icon: '⚠️' },
-          ].map((stat, i) => (
-            <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <span className="text-2xl">{stat.icon}</span>
-              <p className="text-2xl font-bold text-white mt-2">{stat.value}</p>
-              <p className="text-gray-400 text-sm mt-1">{stat.label}</p>
-            </div>
-          ))}
-        </div>
+        {actionError && (
+          <div className="bg-red-900 border border-red-700 rounded-xl p-4 flex items-center justify-between">
+            <p className="text-red-300 text-sm">{actionError}</p>
+            <button onClick={() => setActionError('')} className="text-red-400 hover:text-white text-sm">✕</button>
+          </div>
+        )}
 
         {/* Pending Payment Alert */}
         {pendingPayments.length > 0 && (
           <div className="bg-yellow-900 border border-yellow-700 rounded-xl p-4 flex items-center gap-3">
-            <span className="text-2xl">💰</span>
             <p className="text-yellow-300 font-bold">
               {pendingPayments.length} payment{pendingPayments.length > 1 ? 's' : ''} waiting for verification
             </p>
@@ -195,7 +234,7 @@ export default function Subscriptions() {
                 : 'bg-gray-800 text-gray-400 hover:text-white'
             }`}
           >
-            💰 Payment Requests ({pendingPayments.length})
+            Payment Requests ({pendingPayments.length})
           </button>
           <button
             onClick={() => setActiveTab('subscriptions')}
@@ -205,7 +244,7 @@ export default function Subscriptions() {
                 : 'bg-gray-800 text-gray-400 hover:text-white'
             }`}
           >
-            📋 All Subscriptions
+            All Subscriptions
           </button>
         </div>
 
@@ -216,7 +255,7 @@ export default function Subscriptions() {
               <div className="text-center py-12">
                 <p className="text-gray-400">Loading...</p>
               </div>
-            ) : paymentRequests.length === 0 ? (
+            ) : visiblePaymentRequests.length === 0 ? (
               <div className="text-center py-12">
                 <p className="text-gray-500">No payment requests yet</p>
               </div>
@@ -232,11 +271,12 @@ export default function Subscriptions() {
                       <th className="text-left text-gray-400 px-6 py-4 font-medium">Transaction ID</th>
                       <th className="text-left text-gray-400 px-6 py-4 font-medium">Date</th>
                       <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
+                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Current Expiry</th>
                       <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {paymentRequests.map((payment) => (
+                    {visiblePaymentRequests.map((payment) => (
                       <tr key={payment.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
                         <td className="px-6 py-4">
                           <p className="text-white font-medium">{getClientName(payment.user_id)}</p>
@@ -250,7 +290,7 @@ export default function Subscriptions() {
                               ? 'bg-purple-900 text-purple-300'
                               : 'bg-blue-900 text-blue-300'
                           }`}>
-                            {payment.plan_type === 'lifetime' ? '♾️ Lifetime' : payment.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                            {payment.plan_type === 'lifetime' ? 'Lifetime' : payment.plan_type === 'premium' ? 'Premium' : 'Standard'}
                           </span>
                         </td>
                         <td className="px-6 py-4 font-medium">
@@ -277,15 +317,40 @@ export default function Subscriptions() {
                               ? 'bg-red-900 text-red-300'
                               : 'bg-yellow-900 text-yellow-300'
                           }`}>
-                            {payment.status === 'approved' ? '✅ Approved' : payment.status === 'rejected' ? '❌ Rejected' : '⏳ Pending'}
+                            {payment.status === 'approved' ? 'Approved' : payment.status === 'rejected' ? 'Rejected' : 'Pending'}
                           </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          {(() => {
+                            const clientSub = subscriptions.find(s => s.user_id === payment.user_id)
+                            if (!clientSub) return <span className="text-gray-500 text-xs">No subscription yet</span>
+                            if (isLifetimeSub(clientSub)) return <span className="text-yellow-400 text-xs font-medium">Never expires</span>
+                            const days = getDaysRemaining(clientSub.expiry_date)
+                            return (
+                              <div>
+                                <input
+                                  type="date"
+                                  value={toDateInput(clientSub.expiry_date)}
+                                  onChange={(e) => handleExpiryChange(clientSub, e.target.value)}
+                                  className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none focus:border-blue-500"
+                                />
+                                {days !== null && (
+                                  <p className={`text-xs mt-1 font-medium ${
+                                    days <= 0 ? 'text-red-400' : days <= 7 ? 'text-yellow-400' : 'text-green-400'
+                                  }`}>
+                                    {days <= 0 ? 'Expired' : `${days} days left`}
+                                  </p>
+                                )}
+                              </div>
+                            )
+                          })()}
                         </td>
                         <td className="px-6 py-4">
                           {payment.status === 'pending' && (
                             <div className="flex flex-col gap-2">
                               {payment.plan_type !== 'lifetime' && (
                                 <div>
-                                  <label className="text-gray-500 text-xs block mb-1">Expires on</label>
+                                  <label className="text-gray-500 text-xs block mb-1">New expiry on approval</label>
                                   <input
                                     type="date"
                                     value={customExpiry[payment.id] ?? getDefaultExpiry(payment)}
@@ -376,7 +441,7 @@ export default function Subscriptions() {
                                 ? 'bg-purple-900 text-purple-300'
                                 : 'bg-blue-900 text-blue-300'
                             }`}>
-                              {sub.plan_type === 'lifetime' ? '♾️ Lifetime' : sub.plan_type === 'premium' ? '⭐ Premium' : '📦 Standard'}
+                              {sub.plan_type === 'lifetime' ? 'Lifetime' : sub.plan_type === 'premium' ? 'Premium' : 'Standard'}
                             </span>
                           </td>
                           <td className="px-6 py-4">
@@ -391,15 +456,21 @@ export default function Subscriptions() {
                             </select>
                           </td>
                           <td className="px-6 py-4">
-                            <input
-                              type="date"
-                              value={sub.expiry_date ? sub.expiry_date.split('T')[0] : ''}
-                              onChange={(e) => handleExpiryChange(sub.id, e.target.value)}
-                              className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none"
-                            />
+                            {isLifetimeSub(sub) ? (
+                              <span className="text-yellow-400 text-xs font-medium">Never expires</span>
+                            ) : (
+                              <input
+                                type="date"
+                                value={toDateInput(sub.expiry_date)}
+                                onChange={(e) => handleExpiryChange(sub, e.target.value)}
+                                className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none focus:border-blue-500"
+                              />
+                            )}
                           </td>
                           <td className="px-6 py-4">
-                            {days === null ? (
+                            {isLifetimeSub(sub) ? (
+                              <span className="text-yellow-400 text-xs font-medium">Lifetime</span>
+                            ) : days === null ? (
                               <span className="text-gray-500 text-xs">No expiry set</span>
                             ) : (
                               <span className={`text-xs font-medium ${
