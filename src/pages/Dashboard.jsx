@@ -6,7 +6,7 @@ import Layout from '../components/Layout'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import { drawBrandedHeaderNarrow, drawSignatureAndStampNarrow, estimateNarrowReceiptHeight } from '../lib/pdfBranding'
+import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 
 export default function Dashboard() {
   const { profile } = useAuth()
@@ -146,60 +146,127 @@ export default function Dashboard() {
     setLoadingReceipt(false)
   }
 
+  // A4 receipt — same format and structure as the Sales page receipt:
+  // branded header, details block, items table, right-aligned totals,
+  // then the signature/stamp and a thank-you footer.
   const printReceipt = async () => {
-    const pageHeight = estimateNarrowReceiptHeight(profile, receiptItems.length)
-    const doc = new jsPDF({ format: [80, pageHeight], unit: 'mm' })
+    const doc = new jsPDF()
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
 
-    let y = await drawBrandedHeaderNarrow(doc, profile)
+    // Branded header (logo, company name, phone/location/TIN)
+    const headerEndY = await drawBrandedHeader(doc, profile)
 
-    doc.text('Sales Receipt', 40, y, { align: 'center' })
-    y += 4
-    doc.text('--------------------------------', 40, y, { align: 'center' })
-    y += 6
-    doc.text(`Date: ${new Date(selectedSale.created_at).toLocaleDateString()}`, 5, y)
-    y += 6
-    doc.text(`Customer: ${selectedSale.product_name}`, 5, y)
-    y += 6
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(14)
+    doc.text('Sales Receipt', 14, headerEndY)
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+
     const paymentLabel = selectedSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
       selectedSale.payment_method === 'bank' ? 'Bank Transfer' :
       selectedSale.payment_method === 'cheque' ? 'Cheque' :
       selectedSale.payment_method === 'credit' ? 'Credit' : 'Cash'
-    doc.text(`Payment: ${paymentLabel} (${selectedSale.payment_status === 'paid' ? 'Paid' : 'Pending'})`, 5, y)
-    y += 4
-    doc.text('--------------------------------', 40, y, { align: 'center' })
-    y += 6
+    const statusLabel = selectedSale.payment_status === 'pending' ? 'Pending' :
+      selectedSale.payment_status === 'partial' ? 'Partial' : 'Paid'
 
-    receiptItems.forEach((item, i) => {
-      doc.text(`${i + 1}. ${item.product_name}`, 5, y)
-      doc.text(`   Qty: ${item.quantity_sold} x RWF ${item.selling_price?.toLocaleString()}`, 5, y + 5)
-      doc.text(`   Total: RWF ${item.total?.toLocaleString()}`, 5, y + 10)
-      y += 16
+    const saleTotal = selectedSale.total || 0
+    const amountPaid = selectedSale.payment_status === 'paid' || !selectedSale.payment_status
+      ? saleTotal
+      : (selectedSale.amount_paid || 0)
+    const balanceDue = Math.max(saleTotal - amountPaid, 0)
+
+    // Details block — two columns
+    let infoY = headerEndY + 8
+    doc.text(`Customer: ${selectedSale.product_name}`, 14, infoY)
+    doc.text(`Date: ${new Date(selectedSale.created_at).toLocaleDateString()}`, 120, infoY)
+    infoY += 7
+    doc.text(`Payment: ${paymentLabel}`, 14, infoY)
+    doc.text(`Status: ${statusLabel}`, 120, infoY)
+
+    // autoTable auto-paginates on its own for long item lists
+    autoTable(doc, {
+      startY: infoY + 8,
+      head: [['#', 'Product', 'Qty', 'Unit Price (RWF)', 'Total (RWF)']],
+      body: receiptItems.map((item, i) => [
+        i + 1,
+        item.product_name || '—',
+        item.quantity_sold,
+        item.selling_price?.toLocaleString() || '0',
+        item.total?.toLocaleString() || '0',
+      ]),
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [29, 78, 216] },
+      columnStyles: {
+        0: { cellWidth: 12 },
+        2: { halign: 'right' },
+        3: { halign: 'right' },
+        4: { halign: 'right' },
+      },
     })
 
-    doc.text('--------------------------------', 40, y, { align: 'center' })
+    let y = doc.lastAutoTable.finalY || 60
+
+    // Keep the totals block together on one page
+    if (y > pageHeight - 60) {
+      doc.addPage()
+      y = 20
+    }
+
+    // Totals — right-aligned under the table
+    const labelX = pageWidth - 90
+    const valueX = pageWidth - 14
+    y += 10
+    doc.setDrawColor(150)
+    doc.line(labelX, y - 5, valueX, y - 5)
+    doc.setFont('helvetica', 'bold')
     doc.setFontSize(11)
-    doc.text(`GRAND TOTAL: RWF ${selectedSale.total?.toLocaleString()}`, 40, y + 7, { align: 'center' })
-    let footerY = y + 7
+    doc.text('GRAND TOTAL', labelX, y)
+    doc.text(`RWF ${saleTotal.toLocaleString()}`, valueX, y, { align: 'right' })
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+
+    if (selectedSale.payment_status === 'partial' || selectedSale.payment_status === 'pending') {
+      y += 7
+      doc.text('Paid So Far', labelX, y)
+      doc.text(`RWF ${amountPaid.toLocaleString()}`, valueX, y, { align: 'right' })
+      y += 7
+      doc.setFont('helvetica', 'bold')
+      doc.text('Balance Due', labelX, y)
+      doc.text(`RWF ${balanceDue.toLocaleString()}`, valueX, y, { align: 'right' })
+      doc.setFont('helvetica', 'normal')
+    }
 
     if (showProfit && (selectedSale.extra_fees || selectedSale.profit !== undefined)) {
-      doc.setFontSize(8)
       if (selectedSale.extra_fees) {
-        footerY += 6
-        doc.text(`Extra Fees: -RWF ${selectedSale.extra_fees.toLocaleString()}`, 40, footerY, { align: 'center' })
-        footerY += 5
-        doc.text(`Remaining: RWF ${(selectedSale.total - selectedSale.extra_fees).toLocaleString()}`, 40, footerY, { align: 'center' })
+        y += 7
+        doc.text('Extra Fees', labelX, y)
+        doc.text(`-RWF ${selectedSale.extra_fees.toLocaleString()}`, valueX, y, { align: 'right' })
+        y += 7
+        doc.text('Remaining', labelX, y)
+        doc.text(`RWF ${(selectedSale.total - selectedSale.extra_fees).toLocaleString()}`, valueX, y, { align: 'right' })
       }
       if (selectedSale.profit !== undefined && selectedSale.profit !== null) {
-        footerY += 5
-        doc.text(`Profit Made: RWF ${selectedSale.profit.toLocaleString()}`, 40, footerY, { align: 'center' })
+        y += 7
+        doc.text('Profit Made', labelX, y)
+        doc.text(`RWF ${selectedSale.profit.toLocaleString()}`, valueX, y, { align: 'right' })
       }
     }
 
-    footerY = await drawSignatureAndStampNarrow(doc, profile, footerY + 4)
+    // Leave room for the signature/stamp block below the totals
+    if (y > pageHeight - 90) {
+      doc.addPage()
+      y = 20
+    }
 
+    await drawSignatureAndStamp(doc, profile, pageWidth, y + 30)
+
+    // Thank-you footer at the bottom of the last page
+    doc.setPage(doc.getNumberOfPages())
     doc.setFontSize(8)
-    doc.text('Thank you for your business!', 40, footerY, { align: 'center' })
-    doc.text('Powered by KaySales', 40, footerY + 5, { align: 'center' })
+    doc.text('Thank you for your business!', pageWidth / 2, pageHeight - 12, { align: 'center' })
+    doc.text('Powered by KaySales', pageWidth / 2, pageHeight - 8, { align: 'center' })
+
     doc.save(`Receipt_${selectedSale.product_name}_${new Date(selectedSale.created_at).toLocaleDateString()}.pdf`)
   }
 
@@ -545,10 +612,26 @@ export default function Dashboard() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Payment Status</span>
-                  <span className={selectedSale.payment_status === 'paid' ? 'text-green-400 font-medium' : 'text-orange-400 font-medium'}>
-                    {selectedSale.payment_status === 'paid' ? 'Paid' : 'Pending'}
+                  <span className={
+                    selectedSale.payment_status === 'pending' ? 'text-yellow-400 font-medium' :
+                    selectedSale.payment_status === 'partial' ? 'text-orange-400 font-medium' : 'text-green-400 font-medium'
+                  }>
+                    {selectedSale.payment_status === 'pending' ? 'Pending' :
+                     selectedSale.payment_status === 'partial' ? 'Partial' : 'Paid'}
                   </span>
                 </div>
+                {selectedSale.payment_status === 'partial' && (
+                  <>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Paid So Far</span>
+                      <span className="text-white">RWF {(selectedSale.amount_paid || 0).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Balance on Credit</span>
+                      <span className="text-orange-400 font-medium">RWF {(selectedSale.total - (selectedSale.amount_paid || 0)).toLocaleString()}</span>
+                    </div>
+                  </>
+                )}
                 <div className="border-t border-surface-border pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
                   {loadingReceipt ? (
