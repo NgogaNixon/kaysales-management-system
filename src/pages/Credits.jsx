@@ -744,7 +744,7 @@ export default function Credits() {
 
   const openGeneralEdit = () => {
     if (!selectedCustomer) return
-    setGeneralEditItems(selectedCustomer.items.map(credit => ({
+    setGeneralEditItems(statementItems.map(credit => ({
       id: credit.id,
       original: credit,
       product_name: credit.product_name || '',
@@ -992,7 +992,7 @@ export default function Credits() {
   // and a thank-you footer.
   const handleExportClientPDF = async () => {
     const label = activeTab === 'given' ? 'Customer' : 'Supplier'
-    const items = selectedCustomer.items
+    const items = statementItems
 
     const doc = new jsPDF()
     const pageWidth = doc.internal.pageSize.getWidth()
@@ -1201,6 +1201,15 @@ export default function Credits() {
   const previewApplied = selectedCustomer ? Math.min(parseInt(receiptPayAmount) || 0, selectedCustomer.unpaidAmount) : 0
   const previewRemaining = selectedCustomer ? Math.max(selectedCustomer.unpaidAmount - previewApplied, 0) : 0
 
+  // The statement only lists credits that are still owed.
+  // Paid ones stay in the database, they are just hidden here.
+  // (If everything is already paid, we show all so the list is not empty.)
+  const statementItems = selectedCustomer
+    ? (selectedCustomer.items.some(c => c.status !== 'paid')
+        ? selectedCustomer.items.filter(c => c.status !== 'paid')
+        : selectedCustomer.items)
+    : []
+
   // General Edit live totals
   const generalTotal = generalEditItems.reduce((sum, i) => sum + (parseInt(i.amount) || 0), 0)
   const generalPaid = generalEditItems.reduce((sum, i) => sum + (parseInt(i.paid_amount) || 0), 0)
@@ -1237,7 +1246,7 @@ export default function Credits() {
               disabled={syncing}
               className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 text-gray-900 rounded-lg text-sm font-medium transition whitespace-nowrap"
             >
-              {syncing ? 'Fixing...' : ' Fix now'}
+              {syncing ? 'Fixing...' : '🔧 Fix now'}
             </button>
           </div>
         )}
@@ -1378,7 +1387,7 @@ export default function Credits() {
 
                 <div className="border-t border-gray-700 pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
-                  {selectedCustomer.items.map((credit) => (
+                  {statementItems.map((credit) => (
                     <div key={credit.id} className="mb-2">
                       <p className="text-white text-sm">{credit.product_name || '—'}</p>
                       <div className="flex justify-between text-xs text-gray-400">
@@ -1465,7 +1474,7 @@ export default function Credits() {
                   <p className="text-gray-500 text-xs uppercase tracking-wide">Manage Items</p>
                   <button onClick={openGeneralEdit} className="px-2 py-1 bg-purple-700 hover:bg-purple-600 text-white rounded text-xs transition">✏️ General Edit</button>
                 </div>
-                {selectedCustomer.items.map((credit) => (
+                {statementItems.map((credit) => (
                   <div key={credit.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
                     <div>
                       <p className="text-white text-sm">{credit.product_name || '—'}</p>
@@ -1508,7 +1517,7 @@ export default function Credits() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl max-h-full flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
-              <h2 className="text-lg font-bold text-white"> General Edit — {selectedCustomer.name}</h2>
+              <h2 className="text-lg font-bold text-white">✏️ General Edit — {selectedCustomer.name}</h2>
               <button onClick={closeGeneralEdit} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1 space-y-4">
