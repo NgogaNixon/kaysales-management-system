@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { logActivity } from '../lib/activityLogger'
+import { getMinimumPlanFor } from '../lib/planConfig'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -12,7 +14,10 @@ import autoTable from 'jspdf-autotable'
 const isEmpty = (v) => v === '' || v === null || v === undefined
 
 export default function Quotations() {
-  const { profile } = useAuth()
+  const { profile, can, planLabel } = useAuth()
+  const navigate = useNavigate()
+  // Quotations are a Premium feature (can be switched on per client by admin)
+  const quotationsAllowed = can('quotations')
   const [quotations, setQuotations] = useState([])
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -41,11 +46,11 @@ export default function Quotations() {
   const [convertError, setConvertError] = useState('')
 
   useEffect(() => {
-    if (profile?.id) {
+    if (profile?.id && quotationsAllowed) {
       fetchQuotations()
       fetchProducts()
     }
-  }, [profile])
+  }, [profile, quotationsAllowed])
 
   const fetchQuotations = async () => {
     setLoading(true)
@@ -476,24 +481,52 @@ export default function Quotations() {
     doc.save(`KaySales_Quotation_${quotation.customer_name.replace(/\s+/g, '_')}.pdf`)
   }
 
+  // Locked screen for plans without quotations. Saved quotations stay in the
+  // database untouched and become available again after an upgrade.
+  if (profile && !quotationsAllowed) {
+    const upgradePlan = getMinimumPlanFor('quotations')
+    return (
+      <Layout>
+        <div className="p-6">
+          <h1 className="text-2xl font-bold text-white">Quotations</h1>
+          <div className="mt-6 max-w-lg bg-surface-elevated border border-surface-border rounded-xl p-8 text-center mx-auto">
+            <h2 className="text-white text-lg font-bold">Quotations are not included in your {planLabel} plan</h2>
+            <p className="text-gray-400 text-sm mt-3">
+              Upgrade to {upgradePlan?.name || 'Premium'} to create price quotes for customers and convert them to sales in one step.
+            </p>
+            <p className="text-gray-500 text-xs mt-3">
+              Any quotations you already created are kept safe and will be available again after you upgrade.
+            </p>
+            <button
+              onClick={() => navigate('/choose-plan')}
+              className="mt-6 px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition"
+            >
+              View Plans
+            </button>
+          </div>
+        </div>
+      </Layout>
+    )
+  }
+
   return (
     <Layout>
       <div className="p-6 space-y-6">
 
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-white">📝 Quotations</h1>
+            <h1 className="text-2xl font-bold text-white">Quotations</h1>
             <p className="text-gray-400 text-sm mt-1">Create price quotes for customers — stock is untouched until converted to a sale</p>
           </div>
           <button
             onClick={openAdd}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition"
+            className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition"
           >
             + New Quotation
           </button>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="bg-surface-elevated border border-surface-border rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading...</p></div>
           ) : quotations.length === 0 ? (
@@ -501,7 +534,7 @@ export default function Quotations() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-800">
+                <thead className="bg-surface">
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Customer</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Items</th>
@@ -513,7 +546,7 @@ export default function Quotations() {
                 </thead>
                 <tbody>
                   {quotations.map((q) => (
-                    <tr key={q.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
+                    <tr key={q.id} className="border-t border-surface-border hover:bg-surface transition">
                       <td className="px-6 py-4 text-white font-medium">{q.customer_name}</td>
                       <td className="px-6 py-4 text-gray-300">{q.items.length} item{q.items.length > 1 ? 's' : ''}</td>
                       <td className="px-6 py-4 text-green-400 font-medium">RWF {q.total.toLocaleString()}</td>
@@ -522,21 +555,21 @@ export default function Quotations() {
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                           q.status === 'converted' ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'
                         }`}>
-                          {q.status === 'converted' ? '✅ Converted' : '⏳ Pending'}
+                          {q.status === 'converted' ? 'Converted' : 'Pending'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2 flex-wrap">
-                          <button onClick={() => openReceipt(q)} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs transition">
-                            🧾 View Receipt
+                          <button onClick={() => openReceipt(q)} className="px-3 py-1 bg-surface hover:bg-surface-border text-white rounded-lg text-xs transition">
+                            View Receipt
                           </button>
                           {q.status !== 'converted' && (
-                            <button onClick={() => openEdit(q)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">
+                            <button onClick={() => openEdit(q)} className="px-3 py-1 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs transition">
                               Edit
                             </button>
                           )}
                           <button onClick={() => exportPDF(q)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">
-                            📄 PDF
+                            PDF
                           </button>
                           {q.status !== 'converted' && (
                             <button
@@ -544,10 +577,10 @@ export default function Quotations() {
                               disabled={converting}
                               className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition"
                             >
-                              🔁 Convert to Sale
+                              Convert to Sale
                             </button>
                           )}
-                          <button onClick={() => openDelete(q)} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs transition">
+                          <button onClick={() => openDelete(q)} className="px-3 py-1 bg-surface hover:bg-surface-border text-white rounded-lg text-xs transition">
                             Delete
                           </button>
                         </div>
@@ -570,7 +603,7 @@ export default function Quotations() {
                   type="text"
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                  className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                   placeholder="Customer name"
                 />
               </div>
@@ -580,14 +613,14 @@ export default function Quotations() {
                   type="date"
                   value={quoteDate}
                   onChange={(e) => setQuoteDate(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                  className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                 />
               </div>
 
               <div className="space-y-3">
                 <label className="text-gray-400 text-sm block">Products</label>
                 {quoteItems.map((item, index) => (
-                  <div key={index} className="bg-gray-800 rounded-lg p-3 space-y-2">
+                  <div key={index} className="bg-surface-elevated border border-surface-border rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-gray-400 text-xs">Item {index + 1}</span>
                       {quoteItems.length > 1 && (
@@ -601,14 +634,14 @@ export default function Quotations() {
                         onChange={() => handleToggleConsignment(index)}
                         className="rounded"
                       />
-                      <span className="text-gray-300 text-xs">🔄 Third-Party Item</span>
+                      <span className="text-gray-300 text-xs">Third-Party Item</span>
                     </label>
                     {item.is_consignment ? (
                       <input
                         type="text"
                         value={item.product_name}
                         onChange={(e) => handleConsignmentNameChange(index, e.target.value)}
-                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                         placeholder="Product name (not in your inventory)"
                       />
                     ) : (
@@ -625,11 +658,11 @@ export default function Quotations() {
                             setShowProductDropdown({ ...showProductDropdown, [index]: true })
                           }}
                           onBlur={() => setTimeout(() => setShowProductDropdown({ ...showProductDropdown, [index]: false }), 150)}
-                          className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                          placeholder="🔍 Search your stock..."
+                          className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
+                          placeholder="Search your stock..."
                         />
                         {showProductDropdown[index] && (
-                          <div className="absolute z-20 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
+                          <div className="absolute z-20 w-full bg-surface-elevated border border-surface-border rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
                             {products
                               .filter(p => p.name?.toLowerCase().includes((productSearch[index] || '').toLowerCase()))
                               .map(p => (
@@ -640,7 +673,7 @@ export default function Quotations() {
                                     setProductSearch({ ...productSearch, [index]: '' })
                                     setShowProductDropdown({ ...showProductDropdown, [index]: false })
                                   }}
-                                  className="px-3 py-2 hover:bg-gray-700 cursor-pointer text-sm text-white border-b border-gray-700 last:border-0"
+                                  className="px-3 py-2 hover:bg-surface cursor-pointer text-sm text-white border-b border-surface-border last:border-0"
                                 >
                                   {p.name} <span className="text-gray-400">(Stock: {p.quantity})</span>
                                 </div>
@@ -657,41 +690,41 @@ export default function Quotations() {
                         type="number"
                         value={item.quantity}
                         onChange={(e) => handleQuantityChange(index, e.target.value)}
-                        className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                         placeholder="Qty"
                       />
                       <input
                         type="number"
                         value={item.selling_price}
                         onChange={(e) => handlePriceChange(index, e.target.value)}
-                        className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                         placeholder="Price"
                       />
                       <input
                         type="number"
                         value={item.total}
                         readOnly
-                        className="bg-gray-600 border border-gray-600 text-green-400 px-3 py-2 rounded-lg text-sm font-medium"
+                        className="bg-surface-border border border-surface-border text-green-400 px-3 py-2 rounded-lg text-sm font-medium"
                         placeholder="Total"
                       />
                     </div>
                   </div>
                 ))}
-                <button onClick={addItem} className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
+                <button onClick={addItem} className="w-full py-2 border border-dashed border-surface-border text-gray-400 hover:text-white hover:border-primary rounded-lg text-sm transition">
                   + Add Another Product
                 </button>
               </div>
 
               {grandTotal > 0 && (
-                <div className="bg-gray-800 rounded-lg px-4 py-3">
+                <div className="bg-surface rounded-lg px-4 py-3">
                   <p className="text-gray-400 text-sm">Grand Total</p>
                   <p className="text-green-400 text-xl font-bold">RWF {grandTotal.toLocaleString()}</p>
                 </div>
               )}
 
               <div className="flex gap-3 pt-2">
-                <button onClick={() => { setShowModal(false); setEditingQuotation(null) }} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
-                <button onClick={handleSave} disabled={saving} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+                <button onClick={() => { setShowModal(false); setEditingQuotation(null) }} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
+                <button onClick={handleSave} disabled={saving} className="flex-1 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium">
                   {saving ? 'Saving...' : editingQuotation ? 'Update Quotation' : 'Save Quotation'}
                 </button>
               </div>
@@ -714,8 +747,8 @@ export default function Quotations() {
         {/* View Receipt — quote preview, available for every quotation */}
         {showReceiptModal && receiptQuotation && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-            <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
+            <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border flex-shrink-0">
                 <h2 className="text-lg font-bold text-white">Quotation Receipt</h2>
                 <button onClick={() => setShowReceiptModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
               </div>
@@ -724,7 +757,7 @@ export default function Quotations() {
                   {profile?.logo_url ? (
                     <img src={profile.logo_url} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-2 rounded" />
                   ) : (
-                    <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
+                    <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center mx-auto mb-2">
                       <span className="text-white font-bold">K</span>
                     </div>
                   )}
@@ -732,7 +765,7 @@ export default function Quotations() {
                   {profile?.company_location && <p className="text-gray-500 text-xs">{profile.company_location}</p>}
                   <p className="text-gray-400 text-xs">Quotation</p>
                 </div>
-                <div className="border-t border-gray-700 pt-4 space-y-2">
+                <div className="border-t border-surface-border pt-4 space-y-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Date</span>
                     <span className="text-white">{new Date(receiptQuotation.date).toLocaleDateString()}</span>
@@ -744,10 +777,10 @@ export default function Quotations() {
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Status</span>
                     <span className={receiptQuotation.status === 'converted' ? 'text-green-400 font-medium' : 'text-yellow-400 font-medium'}>
-                      {receiptQuotation.status === 'converted' ? '✅ Converted to Sale' : '⏳ Pending'}
+                      {receiptQuotation.status === 'converted' ? 'Converted to Sale' : 'Pending'}
                     </span>
                   </div>
-                  <div className="border-t border-gray-700 pt-2">
+                  <div className="border-t border-surface-border pt-2">
                     <p className="text-gray-400 text-xs mb-2">Items:</p>
                     {receiptQuotation.items.map((item, i) => (
                       <div key={i} className="mb-2">
@@ -759,7 +792,7 @@ export default function Quotations() {
                       </div>
                     ))}
                   </div>
-                  <div className="border-t border-gray-700 pt-2 flex justify-between">
+                  <div className="border-t border-surface-border pt-2 flex justify-between">
                     <span className="text-white font-bold">GRAND TOTAL</span>
                     <span className="text-green-400 font-bold text-lg">RWF {receiptQuotation.total?.toLocaleString()}</span>
                   </div>
@@ -769,10 +802,10 @@ export default function Quotations() {
                   <p>Powered by KaySales</p>
                 </div>
                 <div className="flex gap-3 mt-4">
-                  <button onClick={() => setShowReceiptModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
+                  <button onClick={() => setShowReceiptModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">
                     Close
                   </button>
-                  <button onClick={() => exportPDF(receiptQuotation)} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+                  <button onClick={() => exportPDF(receiptQuotation)} className="flex-1 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium">
                     Download PDF
                   </button>
                 </div>
@@ -784,14 +817,14 @@ export default function Quotations() {
         {/* Convert to Sale — choose payment method, same options as recording a Sale */}
         {showConvertModal && convertQuotation && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-            <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-                <h2 className="text-lg font-bold text-white">🔁 Convert to Sale</h2>
+            <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-sm shadow-2xl">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border">
+                <h2 className="text-lg font-bold text-white">Convert to Sale</h2>
                 <button onClick={() => setShowConvertModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
               </div>
               <div className="px-6 py-4 space-y-4">
                 {convertError && <p className="text-red-400 text-sm">{convertError}</p>}
-                <div className="bg-gray-800 rounded-lg p-3">
+                <div className="bg-surface rounded-lg p-3">
                   <p className="text-gray-400 text-xs">Customer</p>
                   <p className="text-white font-medium">{convertQuotation.customer_name}</p>
                   <p className="text-gray-400 text-xs mt-1">Total</p>
@@ -802,25 +835,25 @@ export default function Quotations() {
                   <select
                     value={convertMethod}
                     onChange={(e) => setConvertMethod(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                    className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                   >
-                    <option value="cash">💵 Cash</option>
-                    <option value="mtn">📱 MTN Mobile Money</option>
-                    <option value="bank">🏦 Bank Transfer</option>
-                    <option value="cheque">📄 Cheque</option>
-                    <option value="credit">💳 Credit (Add to Credits Given)</option>
+                    <option value="cash">Cash</option>
+                    <option value="mtn">MTN Mobile Money</option>
+                    <option value="bank">Bank Transfer</option>
+                    <option value="cheque">Cheque</option>
+                    <option value="credit">Credit (Add to Credits Given)</option>
                   </select>
                 </div>
                 {convertMethod === 'credit' && (
                   <div className="bg-yellow-900 border border-yellow-700 rounded-lg p-3 space-y-3">
-                    <p className="text-yellow-300 text-xs">⚠️ Whatever isn't paid now will be added to Credits Given as owed.</p>
+                    <p className="text-yellow-300 text-xs">Whatever isn't paid now will be added to Credits Given as owed.</p>
                     <div>
                       <label className="text-yellow-200 text-xs mb-1 block">Amount Paid Now (leave blank if nothing was paid)</label>
                       <input
                         type="number"
                         value={convertAmountPaid}
                         onChange={(e) => setConvertAmountPaid(e.target.value)}
-                        className="w-full bg-gray-800 border border-yellow-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-yellow-500"
+                        className="w-full bg-surface border border-yellow-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-yellow-500"
                         placeholder="0"
                       />
                     </div>
@@ -830,7 +863,7 @@ export default function Quotations() {
                   </div>
                 )}
                 <div className="flex gap-3 pt-2">
-                  <button onClick={() => setShowConvertModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                  <button onClick={() => setShowConvertModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
                   <button onClick={handleConvertToSale} disabled={converting} className="flex-1 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium">
                     {converting ? 'Converting...' : 'Confirm & Convert'}
                   </button>

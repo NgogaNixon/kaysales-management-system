@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { PLANS } from '../lib/planConfig'
 
 // Lightweight scroll-reveal — fades/lifts an element in once it enters the
 // viewport. No animation library dependency, just IntersectionObserver.
@@ -72,7 +73,7 @@ const features = [
   {
     icon: '',
     title: 'Quotations that become sales',
-    desc: "Send a customer a proper quote with a PDF they can keep — and when they say yes, convert it straight into a sale without re-typing anything.",
+    desc: "Send a customer a proper quote with a PDF they can keep — and when they say yes, convert it straight into a sale without re-typing anything. Included in Premium.",
   },
   {
     icon: '',
@@ -92,42 +93,29 @@ const steps = [
   { n: '03', title: 'Run your business from your phone', desc: 'Stock, sales, credits, and quotes — wherever you are.' },
 ]
 
+// Names and prices come from planConfig.js; the wording below is marketing copy.
 const plans = [
   {
-    name: 'Standard',
-    price: '20,000',
-    period: '/month',
+    id: 'standard',
     features: [
-      'Up to 2 stock categories',
+      'Up to 3 stock categories',
       'Sales & product management',
+      'Excel import for your product catalogue',
       'Credits tracking (given & taken)',
-      'Quotations with PDF export',
       'Basic dashboard & low-stock alerts',
       'Single user account',
     ],
   },
   {
-    name: 'Premium',
-    price: '35,000',
-    period: '/month',
+    id: 'premium',
     popular: true,
     features: [
       'Unlimited stock categories',
       'Everything in Standard',
-      'Convert quotations to sales in one tap',
-      'Excel import/export for products',
+      'Quotations with PDF, converted to sales in one tap',
+      'Advanced analytics & revenue charts',
       'Full financial breakdown (profit & expenses)',
       'Priority support',
-    ],
-  },
-  {
-    name: 'Lifetime',
-    price: '1,500,000',
-    period: 'one-time',
-    features: [
-      'Everything in Premium',
-      'One payment — never expires',
-      'Priority support for life',
     ],
   },
 ]
@@ -188,7 +176,7 @@ export default function Landing() {
         <div>
           <Reveal>
             <span className="inline-flex items-center gap-2 font-mono-plex text-xs uppercase tracking-widest text-[#F0A63C]">
-              🇷🇼 Built for Rwandan businesses
+              Built for Rwandan businesses
             </span>
           </Reveal>
           <Reveal delay={100}>
@@ -320,9 +308,9 @@ export default function Landing() {
           <span className="font-mono-plex text-xs uppercase tracking-widest text-[#F0A63C]">Pricing</span>
           <h2 className="font-display text-3xl font-bold mt-3">Start free. Pay when you're ready.</h2>
         </Reveal>
-        <div className="grid md:grid-cols-3 gap-6 mt-12 items-start">
+        <div className={`grid gap-6 mt-12 items-start ${plans.length >= 3 ? 'md:grid-cols-3' : 'md:grid-cols-2 max-w-3xl mx-auto'}`}>
           {plans.map((plan, i) => (
-            <Reveal key={plan.name} delay={i * 100}>
+            <Reveal key={plan.id} delay={i * 100}>
               <div
                 className={`relative rounded-lg p-7 h-full border ${
                   plan.popular
@@ -340,10 +328,10 @@ export default function Landing() {
                     Most Popular
                   </span>
                 )}
-                <h3 className="font-display font-semibold text-lg">{plan.name}</h3>
+                <h3 className="font-display font-semibold text-lg">{PLANS[plan.id].name}</h3>
                 <div className="mt-3 font-mono-plex">
-                  <span className="text-3xl font-medium">RWF {plan.price}</span>
-                  <span className={`text-sm ml-1 ${plan.popular ? 'text-[#151B3D]/50' : 'text-white/40'}`}>{plan.period}</span>
+                  <span className="text-3xl font-medium">RWF {PLANS[plan.id].price.toLocaleString()}</span>
+                  <span className={`text-sm ml-1 ${plan.popular ? 'text-[#151B3D]/50' : 'text-white/40'}`}>/month</span>
                 </div>
                 <ul className="mt-6 space-y-3 text-sm">
                   {plan.features.map((feat) => (
@@ -394,7 +382,7 @@ export default function Landing() {
             <span className="font-display font-semibold text-white">KaySales Management System</span>
           </div>
           <div className="text-xs text-center font-mono-plex">
-            © 2026 KaySales Management System. All rights reserved. 🇷🇼 Rwanda
+            © 2026 KaySales Management System. All rights reserved. Rwanda
           </div>
           <div className="flex gap-6 text-sm">
             <button onClick={() => navigate('/login')} className="hover:text-white transition">Login</button>

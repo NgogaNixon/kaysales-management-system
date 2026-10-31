@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
@@ -10,9 +11,11 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
 export default function Analysis() {
-  const { profile } = useAuth()
+  const { profile, can, planLabel } = useAuth()
+  const navigate = useNavigate()
   const showProfit = profile?.show_profit === true
-  const isPremium = profile?.plan_type === 'premium'
+  // Advanced charts come with the Premium and Organization plans
+  const hasAdvancedAnalytics = can('advancedAnalytics')
   const [saleItems, setSaleItems] = useState([])
   const [sales, setSales] = useState([])
   const [products, setProducts] = useState([])
@@ -159,7 +162,7 @@ export default function Analysis() {
   }, {})
   const profitChartData = Object.entries(profitByDay).map(([date, profit]) => ({ date, profit }))
 
-  const COLORS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444']
+  const COLORS = ['#818cf8', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444']
 
   const totalRevenue = filteredSales.reduce((sum, s) => sum + (s.total || 0), 0)
   const totalProfit = filteredSales.reduce((sum, s) => sum + (s.profit || 0), 0)
@@ -235,17 +238,17 @@ export default function Analysis() {
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-white">📈 Analysis</h1>
+            <h1 className="text-2xl font-bold text-white">Analysis</h1>
             <p className="text-gray-400 text-sm mt-1">
               Visual insights from your sales data
-              {isPremium && <span className="ml-2 text-xs bg-purple-800 text-purple-300 px-2 py-0.5 rounded-full">⭐ Premium</span>}
+              {hasAdvancedAnalytics && <span className="ml-2 text-xs bg-primary text-white px-2 py-0.5 rounded-full">{planLabel}</span>}
             </p>
           </div>
           <button
             onClick={() => setShowExportModal(true)}
             className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium"
           >
-            📄 Export PDF
+            Export PDF
           </button>
         </div>
 
@@ -255,14 +258,14 @@ export default function Analysis() {
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500 flex-1 min-w-[130px]"
+            className="bg-surface-elevated border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary flex-1 min-w-[130px]"
           />
           <span className="text-gray-400 text-sm">to</span>
           <input
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500 flex-1 min-w-[130px]"
+            className="bg-surface-elevated border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary flex-1 min-w-[130px]"
           />
           <button
             onClick={() => {
@@ -271,13 +274,13 @@ export default function Analysis() {
               setDateFrom(d.toISOString().split('T')[0])
               setDateTo(new Date().toISOString().split('T')[0])
             }}
-            className="px-3 py-2 bg-gray-800 text-gray-400 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
+            className="px-3 py-2 bg-surface-elevated border border-surface-border text-gray-400 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
           >
             Last 30 Days
           </button>
           <button
             onClick={() => { setDateFrom(''); setDateTo('') }}
-            className="px-3 py-2 bg-gray-800 text-gray-400 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
+            className="px-3 py-2 bg-surface-elevated border border-surface-border text-gray-400 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
           >
             All Time
           </button>
@@ -286,14 +289,13 @@ export default function Analysis() {
         {/* Stats */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
-            { label: 'Total Revenue', value: `RWF ${totalRevenue.toLocaleString()}`, icon: '💵', color: 'text-green-400' },
-            { label: 'Total Sales', value: totalSalesCount, icon: '🧾', color: 'text-white' },
-            { label: 'Items Sold', value: totalItemsSold, icon: '📦', color: 'text-white' },
-            { label: 'Avg Sale Value', value: `RWF ${avgSaleValue.toLocaleString()}`, icon: '📊', color: 'text-blue-400' },
+            { label: 'Total Revenue', value: `RWF ${totalRevenue.toLocaleString()}`, color: 'text-green-400' },
+            { label: 'Total Sales', value: totalSalesCount, color: 'text-white' },
+            { label: 'Items Sold', value: totalItemsSold, color: 'text-white' },
+            { label: 'Avg Sale Value', value: `RWF ${avgSaleValue.toLocaleString()}`, color: 'text-primary-light' },
           ].map((stat, i) => (
-            <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <span className="text-2xl">{stat.icon}</span>
-              <p className={`text-lg font-bold mt-2 ${stat.color}`}>{stat.value}</p>
+            <div key={i} className="bg-surface-elevated border border-surface-border rounded-xl p-4">
+              <p className={`text-lg font-bold ${stat.color}`}>{stat.value}</p>
               <p className="text-gray-400 text-xs mt-1">{stat.label}</p>
             </div>
           ))}
@@ -301,51 +303,50 @@ export default function Analysis() {
 
         {/* Profit stat for show_profit users */}
         {showProfit && (
-          <div className="bg-purple-900 border border-purple-700 rounded-xl p-4 flex items-center justify-between">
+          <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 flex items-center justify-between">
             <div>
-              <p className="text-purple-400 text-sm">Total Profit (selected period)</p>
-              <p className={`text-2xl font-bold ${totalProfit >= 0 ? 'text-purple-300' : 'text-red-400'}`}>
+              <p className="text-gray-400 text-sm">Total Profit (selected period)</p>
+              <p className={`text-2xl font-bold ${totalProfit >= 0 ? 'text-primary-light' : 'text-red-400'}`}>
                 RWF {totalProfit.toLocaleString()}
               </p>
             </div>
-            <span className="text-4xl">💎</span>
           </div>
         )}
 
         {/* Chart 1 — Revenue Over Time */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-6">
-          <h2 className="text-lg font-bold text-white mb-4">📈 Revenue Over Time</h2>
+        <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
+          <h2 className="text-lg font-bold text-white mb-4">Revenue Over Time</h2>
           {revenueChartData.length === 0 ? (
             <p className="text-gray-500 text-center py-8">No data available</p>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={revenueChartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#232733" />
                 <XAxis dataKey="date" stroke="#9ca3af" tick={{ fontSize: 9 }} interval="preserveStartEnd" />
                 <YAxis stroke="#9ca3af" tick={{ fontSize: 9 }} width={70} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                   formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
                 />
-                <Line type="monotone" dataKey="total" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="total" stroke="#818cf8" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           )}
         </div>
 
         {/* Chart 2 — Best Selling Products */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-6">
-          <h2 className="text-lg font-bold text-white mb-4">🏆 Best Selling Products</h2>
+        <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
+          <h2 className="text-lg font-bold text-white mb-4">Best Selling Products</h2>
           {bestSellingData.length === 0 ? (
             <p className="text-gray-500 text-center py-8">No data available</p>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={bestSellingData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#232733" />
                 <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 9 }} />
                 <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 9 }} width={90} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                   formatter={(value) => [value, 'Units Sold']}
                 />
                 <Bar dataKey="qty" fill="#10b981" radius={[0, 4, 4, 0]} />
@@ -358,8 +359,8 @@ export default function Analysis() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
           {/* Revenue by Product */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-6">
-            <h2 className="text-lg font-bold text-white mb-4">💰 Revenue by Product</h2>
+          <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
+            <h2 className="text-lg font-bold text-white mb-4">Revenue by Product</h2>
             {revenueByProductData.length === 0 ? (
               <p className="text-gray-500 text-center py-8">No data available</p>
             ) : (
@@ -378,7 +379,7 @@ export default function Analysis() {
                     ))}
                   </Pie>
                   <Tooltip
-                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                    contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                     formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
                   />
                   <Legend iconSize={10} wrapperStyle={{ fontSize: '11px' }} />
@@ -388,8 +389,8 @@ export default function Analysis() {
           </div>
 
           {/* Payment Method Breakdown */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-6">
-            <h2 className="text-lg font-bold text-white mb-4">💳 Payment Methods</h2>
+          <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
+            <h2 className="text-lg font-bold text-white mb-4">Payment Methods</h2>
             {paymentMethodData.length === 0 ? (
               <p className="text-gray-500 text-center py-8">No data available</p>
             ) : (
@@ -408,7 +409,7 @@ export default function Analysis() {
                     ))}
                   </Pie>
                   <Tooltip
-                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                    contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                     formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
                   />
                   <Legend iconSize={10} wrapperStyle={{ fontSize: '11px' }} />
@@ -419,18 +420,18 @@ export default function Analysis() {
         </div>
 
         {/* Revenue by Category */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-6">
-          <h2 className="text-lg font-bold text-white mb-4">🗂️ Revenue by Category</h2>
+        <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
+          <h2 className="text-lg font-bold text-white mb-4">Revenue by Category</h2>
           {categoryData.length === 0 ? (
             <p className="text-gray-500 text-center py-8">No data available</p>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={categoryData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#232733" />
                 <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 9 }} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
                 <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 9 }} width={90} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                   formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
                 />
                 <Bar dataKey="value" fill="#f59e0b" radius={[0, 4, 4, 0]} />
@@ -441,16 +442,16 @@ export default function Analysis() {
 
         {/* Profit Over Time — show_profit users only */}
         {showProfit && profitChartData.length > 0 && (
-          <div className="bg-gray-900 border border-purple-800 rounded-xl p-4 sm:p-6">
-            <h2 className="text-lg font-bold text-white mb-1">💎 Profit Over Time</h2>
+          <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
+            <h2 className="text-lg font-bold text-white mb-1">Profit Over Time</h2>
             <p className="text-gray-400 text-xs mb-4">Daily profit trend</p>
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={profitChartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#232733" />
                 <XAxis dataKey="date" stroke="#9ca3af" tick={{ fontSize: 9 }} interval="preserveStartEnd" />
                 <YAxis stroke="#9ca3af" tick={{ fontSize: 9 }} width={70} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                   formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Profit']}
                 />
                 <Line type="monotone" dataKey="profit" stroke="#a855f7" strokeWidth={2} dot={false} />
@@ -460,18 +461,18 @@ export default function Analysis() {
         )}
 
         {/* Daily Sales Count */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-6">
-          <h2 className="text-lg font-bold text-white mb-4">📅 Daily Sales Count</h2>
+        <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
+          <h2 className="text-lg font-bold text-white mb-4">Daily Sales Count</h2>
           {dailySalesData.length === 0 ? (
             <p className="text-gray-500 text-center py-8">No data available</p>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={dailySalesData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#232733" />
                 <XAxis dataKey="date" stroke="#9ca3af" tick={{ fontSize: 9 }} interval="preserveStartEnd" />
                 <YAxis stroke="#9ca3af" tick={{ fontSize: 9 }} width={30} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                   formatter={(value) => [value, 'Sales']}
                 />
                 <Bar dataKey="count" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
@@ -481,21 +482,21 @@ export default function Analysis() {
         </div>
 
         {/* PREMIUM CHARTS */}
-        {isPremium ? (
+        {hasAdvancedAnalytics ? (
           <>
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-6">
+            <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
               <h2 className="text-lg font-bold text-white mb-1">
-                📆 Best Selling Day of Week
-                <span className="text-xs bg-purple-800 text-purple-300 px-2 py-0.5 rounded-full ml-2">⭐ Premium</span>
+                Best Selling Day of Week
+                <span className="text-xs bg-primary text-white px-2 py-0.5 rounded-full ml-2">Premium</span>
               </h2>
               <p className="text-gray-400 text-xs mb-4">Which day of the week brings most revenue</p>
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={dayOfWeekData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#232733" />
                   <XAxis dataKey="day" stroke="#9ca3af" tick={{ fontSize: 9 }} />
                   <YAxis stroke="#9ca3af" tick={{ fontSize: 9 }} width={70} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
                   <Tooltip
-                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                    contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                     formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
                   />
                   <Bar dataKey="total" fill="#f59e0b" radius={[4, 4, 0, 0]} />
@@ -503,10 +504,10 @@ export default function Analysis() {
               </ResponsiveContainer>
             </div>
 
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 sm:p-6">
+            <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
               <h2 className="text-lg font-bold text-white mb-1">
-                📊 Monthly Revenue Trend
-                <span className="text-xs bg-purple-800 text-purple-300 px-2 py-0.5 rounded-full ml-2">⭐ Premium</span>
+                Monthly Revenue Trend
+                <span className="text-xs bg-primary text-white px-2 py-0.5 rounded-full ml-2">Premium</span>
               </h2>
               <p className="text-gray-400 text-xs mb-4">Month by month revenue comparison</p>
               {monthlyData.length === 0 ? (
@@ -514,11 +515,11 @@ export default function Analysis() {
               ) : (
                 <ResponsiveContainer width="100%" height={220}>
                   <LineChart data={monthlyData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#232733" />
                     <XAxis dataKey="month" stroke="#9ca3af" tick={{ fontSize: 9 }} />
                     <YAxis stroke="#9ca3af" tick={{ fontSize: 9 }} width={70} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
                     <Tooltip
-                      contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                      contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
                       formatter={(value) => [`RWF ${value.toLocaleString()}`, 'Revenue']}
                     />
                     <Line type="monotone" dataKey="total" stroke="#ec4899" strokeWidth={2} dot={false} />
@@ -528,11 +529,16 @@ export default function Analysis() {
             </div>
           </>
         ) : (
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 text-center">
-            <span className="text-4xl">⭐</span>
-            <h3 className="text-white font-bold text-lg mt-3">Unlock Premium Charts</h3>
+          <div className="bg-surface-elevated border border-surface-border rounded-xl p-6 text-center">
+            <h3 className="text-white font-bold text-lg">Unlock Premium Charts</h3>
             <p className="text-gray-400 text-sm mt-2">Upgrade to Premium to access Day of Week analysis and Monthly Revenue Trend charts.</p>
             <p className="text-gray-500 text-xs mt-2">Contact admin to upgrade your plan.</p>
+            <button
+              onClick={() => navigate('/choose-plan')}
+              className="mt-4 px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition"
+            >
+              View Plans
+            </button>
           </div>
         )}
 
@@ -541,23 +547,23 @@ export default function Analysis() {
       {/* Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h2 className="text-lg font-bold text-white">📄 Export PDF Report</h2>
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border">
+              <h2 className="text-lg font-bold text-white">Export PDF Report</h2>
               <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-4">
               <p className="text-gray-400 text-sm">Select date range. Leave blank to export all data.</p>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">From Date</label>
-                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">To Date</label>
-                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
               </div>
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
                 <button onClick={handleExport} className="flex-1 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg transition font-medium">Download</button>
               </div>
             </div>

@@ -8,8 +8,13 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
 import * as XLSX from 'xlsx'
 
+// Compare categories ignoring case and extra spaces ("Drinks" = " drinks ")
+const normCat = (c) => String(c ?? '').trim().toLowerCase()
+
 export default function Products() {
-  const { profile } = useAuth()
+  const { profile, limit, planLabel } = useAuth()
+  // Maximum stock categories for this client's plan (null = unlimited)
+  const categoryLimit = limit('maxCategories')
   const showProfit = profile?.show_profit === true
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -133,11 +138,16 @@ export default function Products() {
       return
     }
 
-    const isStandard = profile?.plan_type === 'standard'
-    if (!selectedProduct && isStandard && form.category) {
-      const existingCategories = [...new Set(products.map(p => p.category).filter(Boolean))]
-      if (existingCategories.length >= 2 && !existingCategories.includes(form.category)) {
-        setError('Standard plan only allows 2 stock categories. Upgrade to Premium for more.')
+    // Category limit applies when adding AND when moving a product to a new category
+    if (categoryLimit !== null && form.category) {
+      const otherCategories = new Set(
+        products
+          .filter(p => p.id !== selectedProduct?.id)
+          .map(p => normCat(p.category))
+          .filter(Boolean)
+      )
+      if (!otherCategories.has(normCat(form.category)) && otherCategories.size >= categoryLimit) {
+        setError(`Your ${planLabel} plan allows up to ${categoryLimit} stock categories. Upgrade to Premium for unlimited categories.`)
         return
       }
     }
@@ -201,6 +211,7 @@ export default function Products() {
     const seenInFile = new Set()
     const toInsert = []
     const skipped = []
+    const knownCategories = new Set(products.map(p => normCat(p.category)).filter(Boolean))
 
     for (const row of rows) {
       const name = String(row.Name ?? row.name ?? '').trim()
@@ -217,45 +228,52 @@ export default function Products() {
         : parseInt(rawThreshold)
 
       if (!name) {
-        skipped.push(`❌ Error: a row is missing a Name — skipped`)
+        skipped.push(`Error: a row is missing a Name — skipped`)
         continue
       }
       if (!category) {
-        skipped.push(`❌ Error: "${name}" is missing a Category — skipped`)
+        skipped.push(`Error: "${name}" is missing a Category — skipped`)
         continue
       }
       if (rawQuantity === undefined || rawQuantity === '' || isNaN(quantity)) {
-        skipped.push(`❌ Error: "${name}" has an invalid or missing Quantity — skipped`)
+        skipped.push(`Error: "${name}" has an invalid or missing Quantity — skipped`)
         continue
       }
       if (quantity < 0) {
-        skipped.push(`❌ Error: "${name}" has a negative Quantity — skipped`)
+        skipped.push(`Error: "${name}" has a negative Quantity — skipped`)
         continue
       }
       if (rawSelling === undefined || rawSelling === '' || isNaN(sellingPrice)) {
-        skipped.push(`❌ Error: "${name}" has an invalid or missing Selling Price — skipped`)
+        skipped.push(`Error: "${name}" has an invalid or missing Selling Price — skipped`)
         continue
       }
       if (sellingPrice < 0) {
-        skipped.push(`❌ Error: "${name}" has a negative Selling Price — skipped`)
+        skipped.push(`Error: "${name}" has a negative Selling Price — skipped`)
         continue
       }
       if (isNaN(buyingPrice) || buyingPrice < 0) {
-        skipped.push(`❌ Error: "${name}" has an invalid Buying Price — skipped`)
+        skipped.push(`Error: "${name}" has an invalid Buying Price — skipped`)
         continue
       }
       if (lowStockThreshold !== null && (isNaN(lowStockThreshold) || lowStockThreshold < 0)) {
-        skipped.push(`❌ Error: "${name}" has an invalid Low Stock Alert number — skipped`)
+        skipped.push(`Error: "${name}" has an invalid Low Stock Alert number — skipped`)
         continue
       }
       const nameLower = name.toLowerCase()
       if (existingNamesLower.has(nameLower)) {
-        skipped.push(`❌ Error: "${name}" already exists in your product list — skipped`)
+        skipped.push(`Error: "${name}" already exists in your product list — skipped`)
         continue
       }
       if (seenInFile.has(nameLower)) {
-        skipped.push(`❌ Error: "${name}" is duplicated within the file — skipped`)
+        skipped.push(`Error: "${name}" is duplicated within the file — skipped`)
         continue
+      }
+      if (categoryLimit !== null && !knownCategories.has(normCat(category))) {
+        if (knownCategories.size >= categoryLimit) {
+          skipped.push(`Error: "${name}" uses the new category "${category}", but your ${planLabel} plan allows up to ${categoryLimit} stock categories — skipped`)
+          continue
+        }
+        knownCategories.add(normCat(category))
       }
       seenInFile.add(nameLower)
       toInsert.push({
@@ -305,7 +323,7 @@ export default function Products() {
     p.category?.toLowerCase().includes(search.toLowerCase())
   )
 
-  const isStandard = profile?.plan_type === 'standard'
+  const usedCategories = new Set(products.map(p => normCat(p.category)).filter(Boolean)).size
 
   return (
     <Layout>
@@ -314,27 +332,27 @@ export default function Products() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">📦 Products</h1>
+            <h1 className="text-2xl font-bold text-white">Products</h1>
             <p className="text-gray-400 text-sm mt-1">Manage your stock and inventory</p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            {isStandard && (
+            {categoryLimit !== null && (
               <span className="text-xs text-yellow-400 bg-yellow-900 px-3 py-2 rounded-lg">
-                Standard Plan — up to 2 categories
+                {planLabel} Plan — {usedCategories} of {categoryLimit} categories used
               </span>
             )}
             <button
               onClick={handleDownloadTemplate}
-              className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition font-medium text-sm"
+              className="px-4 py-2 bg-surface-elevated border border-surface-border text-white rounded-lg hover:bg-surface transition font-medium text-sm"
             >
-              📥 Download Template
+              Download Template
             </button>
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={importing}
-              className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition font-medium text-sm"
+              className="px-4 py-2 bg-surface-elevated border border-surface-border text-white rounded-lg hover:bg-surface transition font-medium text-sm"
             >
-              {importing ? 'Importing...' : '📤 Import Excel'}
+              {importing ? 'Importing...' : 'Import Excel'}
             </button>
             <input
               type="file"
@@ -345,7 +363,7 @@ export default function Products() {
             />
             <button
               onClick={openAdd}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm"
+              className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium text-sm"
             >
               + Add Product
             </button>
@@ -357,7 +375,7 @@ export default function Products() {
           <div className={`rounded-xl p-4 border ${importResult.skipped.length > 0 ? 'bg-yellow-900 border-yellow-700' : 'bg-green-900 border-green-700'}`}>
             <div className="flex items-center justify-between">
               <p className={`text-sm font-medium ${importResult.skipped.length > 0 ? 'text-yellow-300' : 'text-green-300'}`}>
-                ✅ {importResult.added} product{importResult.added !== 1 ? 's' : ''} imported successfully
+                {importResult.added} product{importResult.added !== 1 ? 's' : ''} imported successfully
                 {importResult.skipped.length > 0 && ` — ${importResult.skipped.length} error${importResult.skipped.length !== 1 ? 's' : ''} found`}
               </p>
               <button onClick={() => setImportResult(null)} className="text-gray-400 hover:text-white text-sm">✕</button>
@@ -373,16 +391,14 @@ export default function Products() {
         {/* Stock Inventory Value - Esther only */}
         {showProfit && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="bg-blue-900 border border-blue-700 rounded-xl p-4">
-              <span className="text-2xl">📦</span>
-              <p className="text-blue-300 text-xl font-bold mt-2">
+            <div className="bg-surface-elevated border border-surface-border rounded-xl p-4">
+              <p className="text-primary-light text-xl font-bold">
                 RWF {products.reduce((sum, p) => sum + ((p.buying_price || 0) * (p.quantity || 0)), 0).toLocaleString()}
               </p>
-              <p className="text-blue-400 text-sm mt-1">Total Stock Value (Cost)</p>
+              <p className="text-gray-400 text-sm mt-1">Total Stock Value (Cost)</p>
             </div>
             <div className="bg-green-900 border border-green-700 rounded-xl p-4">
-              <span className="text-2xl">💰</span>
-              <p className="text-green-300 text-xl font-bold mt-2">
+              <p className="text-green-300 text-xl font-bold">
                 RWF {products.reduce((sum, p) => sum + ((p.selling_price || 0) * (p.quantity || 0)), 0).toLocaleString()}
               </p>
               <p className="text-green-400 text-sm mt-1">Total Stock Value (Selling Price)</p>
@@ -396,11 +412,11 @@ export default function Products() {
           placeholder="Search products..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+          className="w-full bg-surface-elevated border border-surface-border text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
         />
 
         {/* Products Table */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="bg-surface-elevated border border-surface-border rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12">
               <p className="text-gray-400">Loading products...</p>
@@ -408,14 +424,14 @@ export default function Products() {
           ) : filtered.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500 mb-3">No products found</p>
-              <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">
+              <button onClick={openAdd} className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary-hover transition">
                 Add First Product
               </button>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-800">
+                <thead className="bg-surface">
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Name</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Category</th>
@@ -433,7 +449,7 @@ export default function Products() {
                   {filtered.map((product) => {
                     const threshold = thresholdFor(product)
                     return (
-                    <tr key={product.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
+                    <tr key={product.id} className="border-t border-surface-border hover:bg-surface transition">
                       <td className="px-6 py-4 text-white font-medium">{product.name}</td>
                       <td className="px-6 py-4 text-gray-300">{product.category || '—'}</td>
                       <td className="px-6 py-4">
@@ -445,7 +461,7 @@ export default function Products() {
                         {product.low_stock_threshold ? product.low_stock_threshold : `${threshold} (default)`}
                       </td>
                       {showProfit && (
-                        <td className="px-6 py-4 text-purple-300">RWF {(product.buying_price || 0).toLocaleString()}</td>
+                        <td className="px-6 py-4 text-primary-light">RWF {(product.buying_price || 0).toLocaleString()}</td>
                       )}
                       <td className="px-6 py-4 text-gray-300">RWF {product.selling_price?.toLocaleString()}</td>
                       <td className="px-6 py-4">
@@ -456,13 +472,13 @@ export default function Products() {
                             ? 'bg-orange-900 text-orange-300'
                             : 'bg-green-900 text-green-300'
                         }`}>
-                          {product.quantity === 0 ? '❌ Out of Stock' : product.quantity < threshold ? '⚠️ Low Stock' : '✅ In Stock'}
+                          {product.quantity === 0 ? 'Out of Stock' : product.quantity < threshold ? 'Low Stock' : 'In Stock'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
                           <button onClick={() => openRestore(product)} className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition">Restore</button>
-                          <button onClick={() => openEdit(product)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
+                          <button onClick={() => openEdit(product)} className="px-3 py-1 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs transition">Edit</button>
                           <button onClick={() => openDelete(product)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                         </div>
                       </td>
@@ -491,7 +507,7 @@ export default function Products() {
                 type="text"
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
               />
             </div>
             <div>
@@ -500,7 +516,7 @@ export default function Products() {
                 type="text"
                 value={form.category}
                 onChange={(e) => setForm({ ...form, category: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
               />
             </div>
             <div>
@@ -509,7 +525,7 @@ export default function Products() {
                 type="number"
                 value={form.quantity}
                 onChange={(e) => setForm({ ...form, quantity: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
               />
             </div>
             <div>
@@ -518,7 +534,7 @@ export default function Products() {
                 type="number"
                 value={form.selling_price}
                 onChange={(e) => setForm({ ...form, selling_price: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
               />
             </div>
             {showProfit && (
@@ -528,7 +544,7 @@ export default function Products() {
                   type="number"
                   value={form.buying_price}
                   onChange={(e) => setForm({ ...form, buying_price: e.target.value })}
-                  className="w-full bg-gray-800 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+                  className="w-full bg-surface border border-primary text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary-light"
                 />
               </div>
             )}
@@ -539,7 +555,7 @@ export default function Products() {
                 min="0"
                 value={form.low_stock_threshold}
                 onChange={(e) => setForm({ ...form, low_stock_threshold: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                 placeholder="Leave blank to use default (3)"
               />
               <p className="text-gray-500 text-xs mt-1">
@@ -547,7 +563,7 @@ export default function Products() {
               </p>
             </div>
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
+              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">
                 Cancel
               </button>
               <button
@@ -561,7 +577,7 @@ export default function Products() {
                   }
                 }}
                 disabled={saving}
-                className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+                className="flex-1 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium"
               >
                 {saving ? 'Saving...' : selectedProduct ? 'Update' : 'Add Product'}
               </button>
@@ -585,11 +601,11 @@ export default function Products() {
                 min="1"
                 value={restoreQuantity}
                 onChange={(e) => setRestoreQuantity(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                 placeholder="e.g. 10"
               />
             </div>
-            <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
+            <div className="bg-surface rounded-lg p-4 flex items-center justify-between">
               <div>
                 <p className="text-gray-500 text-xs">Current Quantity</p>
                 <p className="text-white font-bold">{selectedProduct.quantity || 0}</p>
@@ -603,7 +619,7 @@ export default function Products() {
               </div>
             </div>
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowRestoreModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">
+              <button onClick={() => setShowRestoreModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">
                 Cancel
               </button>
               <button

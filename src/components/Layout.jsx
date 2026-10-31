@@ -3,12 +3,14 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useLanguage } from '../context/LanguageContext'
 
+// feature: the plan feature a link needs. Links whose feature is not included
+// in the client's plan are hidden (see can() in AuthContext / planConfig.js).
 const clientNavItems = [
   { path: '/dashboard', icon: '', labelKey: 'dashboard' },
   { path: '/products', icon: '', labelKey: 'products' },
   { path: '/sales', icon: '', labelKey: 'sales' },
   { path: '/credits', icon: '', labelKey: 'credits' },
-  { path: '/quotations', icon: '', labelKey: 'quotations' },
+  { path: '/quotations', icon: '', labelKey: 'quotations', feature: 'quotations' },
   { path: '/analysis', icon: '', labelKey: 'analysis' },
   { path: '/account-settings', icon: '', labelKey: 'accountSettings' },
 ]
@@ -25,7 +27,7 @@ const adminNavItems = [
 ]
 
 export default function Layout({ children }) {
-  const { profile, logout } = useAuth()
+  const { profile, logout, can, planId, planLabel, isTrial } = useAuth()
   const { language, toggleLanguage, t } = useLanguage()
   const navigate = useNavigate()
   const location = useLocation()
@@ -33,7 +35,19 @@ export default function Layout({ children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   const isAdmin = profile?.role === 'admin'
-  const navItems = isAdmin ? adminNavItems : clientNavItems
+  const navItems = isAdmin
+    ? adminNavItems
+    : clientNavItems.filter((item) => !item.feature || can(item.feature))
+
+  // Badge shown under the user's name (desktop) and in the mobile header
+  const planBadgeText = isAdmin ? 'Admin' : isTrial ? `${planLabel} Trial` : planLabel
+  const planBadgeColor = isAdmin
+    ? 'bg-admin text-white'
+    : planId === 'premium'
+    ? 'bg-purple-600 text-white'
+    : planId === 'organization'
+    ? 'bg-emerald-600 text-white'
+    : 'bg-primary text-white'
 
   const handleLogout = async () => {
     await logout()
@@ -95,14 +109,8 @@ export default function Layout({ children }) {
             <div className="px-3 py-2 mb-2">
               <p className="text-white text-sm font-medium truncate">{profile?.full_name}</p>
               <p className="text-gray-500 text-xs truncate">{profile?.email}</p>
-              <span className={`text-xs px-2 py-0.5 rounded-full mt-1 inline-block ${
-                isAdmin
-                  ? 'bg-admin text-white'
-                  : profile?.plan_type === 'premium'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-primary text-white'
-              }`}>
-                {isAdmin ? 'Admin' : profile?.plan_type === 'premium' ? 'Premium' : 'Standard'}
+              <span className={`text-xs px-2 py-0.5 rounded-full mt-1 inline-block ${planBadgeColor}`}>
+                {planBadgeText}
               </span>
             </div>
           )}
@@ -154,14 +162,8 @@ export default function Layout({ children }) {
               >
                 {language === 'en' ? 'FR' : 'EN'}
               </button>
-              <span className={`text-xs px-2 py-1 rounded-full ${
-                isAdmin
-                  ? 'bg-admin text-white'
-                  : profile?.plan_type === 'premium'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-primary text-white'
-              }`}>
-                {isAdmin ? 'Admin' : profile?.plan_type === 'premium' ? 'Premium' : 'Standard'}
+              <span className={`text-xs px-2 py-1 rounded-full ${planBadgeColor}`}>
+                {planBadgeText}
               </span>
               <button
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}

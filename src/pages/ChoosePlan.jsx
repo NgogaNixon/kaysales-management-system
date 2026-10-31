@@ -2,6 +2,35 @@ import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
+import { PLANS, PLAN_ORDER, formatRwf } from '../lib/planConfig'
+
+// Plans a client can buy by themselves. Plans that an admin sets up for the
+// client (requiresAdminSetup) are not listed here.
+const SELF_SERVE_PLANS = PLAN_ORDER.map((id) => PLANS[id]).filter((plan) => !plan.requiresAdminSetup)
+
+// Features a client gets during the 7-day free trial (the Standard plan)
+const TRIAL_FEATURES = [
+  'Dashboard Access',
+  'Products Management',
+  'Sales Tracking',
+  'Credits Tracking',
+  'Basic Analysis',
+  'Excel & PDF Reports',
+]
+
+function Bullet({ className = 'bg-primary-light' }) {
+  return <span className={`inline-block w-1.5 h-1.5 rounded-full mr-2 align-middle ${className}`}></span>
+}
+
+function ContactBox() {
+  return (
+    <div className="bg-surface border border-surface-border rounded-xl p-4 text-left space-y-2">
+      <p className="text-white font-bold text-sm">Need quick access? Contact us:</p>
+      <p className="text-gray-300 text-sm">Email: <a href="mailto:nixonngoga@gmail.com" className="text-primary-light hover:text-white">nixonngoga@gmail.com</a></p>
+      <p className="text-gray-300 text-sm">Phone: <a href="tel:+250785422754" className="text-primary-light hover:text-white">+250 785 422 754</a></p>
+    </div>
+  )
+}
 
 export default function ChoosePlan() {
   const { profile } = useAuth()
@@ -13,55 +42,6 @@ export default function ChoosePlan() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const [trialSuccess, setTrialSuccess] = useState(false)
-
-  const plans = [
-    {
-      id: 'standard',
-      name: 'Standard',
-      price: 20000,
-      billing: 'monthly',
-      popular: false,
-      features: [
-        'Up to 2 Stock Categories',
-        'Sales Tracking',
-        'Product Management',
-        'Credits Tracking',
-        'Basic Dashboard',
-        'Email Support',
-      ],
-    },
-    {
-      id: 'premium',
-      name: 'Premium',
-      price: 35000,
-      billing: 'monthly',
-      popular: true,
-      features: [
-        'Unlimited Stock Categories',
-        'Advanced Analytics',
-        'Sales & Product Management',
-        'Full Dashboard Access',
-        'Priority Support',
-        'Revenue Charts & Reports',
-      ],
-    },
-    {
-      id: 'lifetime',
-      name: 'Lifetime',
-      price: 1500000,
-      billing: 'once',
-      popular: false,
-      features: [
-        'Unlimited Stock Categories',
-        'Advanced Analytics',
-        'Sales & Product Management',
-        'Full Dashboard Access',
-        'Priority Support',
-        'Revenue Charts & Reports',
-        'One-Time Payment — Never Expires',
-      ],
-    },
-  ]
 
   const handleFreeTrial = async () => {
     setLoading(true)
@@ -125,21 +105,18 @@ export default function ChoosePlan() {
 
   if (trialSuccess) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
-        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 w-full max-w-md text-center">
-          <span className="text-5xl">🎉</span>
-          <h2 className="text-2xl font-bold text-white mt-4 mb-2">Trial Request Submitted!</h2>
+      <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+        <div className="bg-surface-elevated border border-surface-border rounded-2xl p-8 w-full max-w-md text-center">
+          <h2 className="text-2xl font-bold text-white mb-2">Trial Request Submitted!</h2>
           <p className="text-gray-400 mb-4">
-            Your free trial request has been sent to the admin for approval. You will get 7 days of full access once approved.
+            Your free trial request has been sent to the admin for approval. You will get 7 days of access once approved.
           </p>
-          <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 mb-6 text-left space-y-2">
-            <p className="text-white font-bold text-sm">Need quick access? Contact us:</p>
-            <p className="text-gray-300 text-sm">📧 <a href="mailto:nixonngoga@gmail.com" className="text-blue-400 hover:text-blue-300">nixonngoga@gmail.com</a></p>
-            <p className="text-gray-300 text-sm">📱 <a href="tel:+250785422754" className="text-blue-400 hover:text-blue-300">+250 785 422 754</a></p>
+          <div className="mb-6">
+            <ContactBox />
           </div>
           <button
             onClick={() => navigate('/login')}
-            className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition"
+            className="w-full py-3 bg-primary text-white rounded-xl font-bold hover:bg-primary-hover transition"
           >
             Back to Login
           </button>
@@ -150,26 +127,23 @@ export default function ChoosePlan() {
 
   if (success) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
-        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 w-full max-w-md text-center">
-          <span className="text-5xl">🎉</span>
-          <h2 className="text-2xl font-bold text-white mt-4 mb-2">Payment Submitted!</h2>
+      <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+        <div className="bg-surface-elevated border border-surface-border rounded-2xl p-8 w-full max-w-md text-center">
+          <h2 className="text-2xl font-bold text-white mb-2">Payment Submitted!</h2>
           <p className="text-gray-400 mb-4">
             Your payment confirmation has been sent to the admin for verification. You will receive access once verified.
           </p>
-          <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 mb-4 text-left space-y-2">
-            <p className="text-white font-bold text-sm">Need quick access? Contact us:</p>
-            <p className="text-gray-300 text-sm">📧 <a href="mailto:nixonngoga@gmail.com" className="text-blue-400 hover:text-blue-300">nixonngoga@gmail.com</a></p>
-            <p className="text-gray-300 text-sm">📱 <a href="tel:+250785422754" className="text-blue-400 hover:text-blue-300">+250 785 422 754</a></p>
+          <div className="mb-4">
+            <ContactBox />
           </div>
-          <div className="bg-gray-800 rounded-xl p-4 mb-6 text-left">
+          <div className="bg-surface rounded-xl p-4 mb-6 text-left">
             <p className="text-gray-400 text-sm">Plan: <span className="text-white font-medium capitalize">{selectedPlan.name}</span></p>
-            <p className="text-gray-400 text-sm mt-1">Amount: <span className="text-white font-medium">RWF {selectedPlan.price.toLocaleString()}</span></p>
+            <p className="text-gray-400 text-sm mt-1">Amount: <span className="text-white font-medium">{formatRwf(selectedPlan.price)}</span></p>
             <p className="text-gray-400 text-sm mt-1">Transaction ID: <span className="text-white font-medium">{form.transaction_id}</span></p>
           </div>
           <button
             onClick={() => navigate('/login')}
-            className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition"
+            className="w-full py-3 bg-primary text-white rounded-xl font-bold hover:bg-primary-hover transition"
           >
             Back to Login
           </button>
@@ -179,7 +153,7 @@ export default function ChoosePlan() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 px-4 py-12">
+    <div className="min-h-screen bg-surface px-4 py-12">
 
       {/* Header */}
       <div className="text-center mb-10">
@@ -187,7 +161,7 @@ export default function ChoosePlan() {
           onClick={() => navigate('/')}
           className="flex items-center justify-center gap-2 mb-4 cursor-pointer"
         >
-          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center hover:bg-blue-700 transition">
+          <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center hover:bg-primary-hover transition">
             <span className="text-white font-bold">K</span>
           </div>
           <span className="text-white font-bold text-xl">KaySales Management System</span>
@@ -216,17 +190,10 @@ export default function ChoosePlan() {
               START HERE
             </div>
             <h2 className="text-2xl font-bold text-white mb-2">7-Day Free Trial</h2>
-            <p className="text-green-300 mb-4">Full access to all features — no payment required</p>
+            <p className="text-green-300 mb-4">Try the Standard plan free — no payment required</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-6 text-left max-w-lg mx-auto">
-              {[
-                '✅ Full Dashboard Access',
-                '✅ Products Management',
-                '✅ Sales Tracking',
-                '✅ Credits Tracking',
-                '✅ Analysis & Charts',
-                '✅ Excel & PDF Reports',
-              ].map((f, i) => (
-                <p key={i} className="text-green-200 text-sm">{f}</p>
+              {TRIAL_FEATURES.map((f, i) => (
+                <p key={i} className="text-green-200 text-sm"><Bullet className="bg-green-400" />{f}</p>
               ))}
             </div>
             {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
@@ -242,20 +209,20 @@ export default function ChoosePlan() {
 
           {/* Divider */}
           <div className="flex items-center gap-4">
-            <div className="flex-1 border-t border-gray-700"></div>
+            <div className="flex-1 border-t border-surface-border"></div>
             <span className="text-gray-500 text-sm">or choose a paid plan</span>
-            <div className="flex-1 border-t border-gray-700"></div>
+            <div className="flex-1 border-t border-surface-border"></div>
           </div>
 
           {/* Paid Plans */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-            {plans.map((plan) => (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 max-w-3xl mx-auto">
+            {SELF_SERVE_PLANS.map((plan) => (
               <div
                 key={plan.id}
                 className={`relative rounded-2xl p-8 border ${
                   plan.popular
-                    ? 'bg-blue-600 border-blue-500'
-                    : 'bg-gray-900 border-gray-800'
+                    ? 'bg-primary border-primary-light'
+                    : 'bg-surface-elevated border-surface-border'
                 }`}
               >
                 {plan.popular && (
@@ -265,13 +232,13 @@ export default function ChoosePlan() {
                 )}
                 <h2 className="text-xl font-bold text-white mb-1">{plan.name}</h2>
                 <div className="text-4xl font-extrabold text-white mb-1">
-                  RWF {plan.price.toLocaleString()}
+                  {formatRwf(plan.price)}
                 </div>
-                <p className={`text-sm mb-6 ${plan.popular ? 'text-blue-200' : 'text-gray-500'}`}>{plan.billing === 'once' ? 'one-time payment' : 'per month'}</p>
+                <p className={`text-sm mb-6 ${plan.popular ? 'text-indigo-200' : 'text-gray-500'}`}>per month</p>
                 <ul className="space-y-2 mb-8">
-                  {plan.features.map((f, i) => (
+                  {plan.highlights.map((f, i) => (
                     <li key={i} className={`text-sm ${plan.popular ? 'text-white' : 'text-gray-300'}`}>
-                      ✅ {f}
+                      <Bullet className={plan.popular ? 'bg-white' : 'bg-primary-light'} />{f}
                     </li>
                   ))}
                 </ul>
@@ -279,8 +246,8 @@ export default function ChoosePlan() {
                   onClick={() => handleSelectPlan(plan)}
                   className={`w-full py-3 rounded-xl font-bold transition ${
                     plan.popular
-                      ? 'bg-white text-blue-600 hover:bg-blue-50'
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                      ? 'bg-white text-primary hover:bg-indigo-50'
+                      : 'bg-primary text-white hover:bg-primary-hover'
                   }`}
                 >
                   Choose {plan.name}
@@ -295,8 +262,8 @@ export default function ChoosePlan() {
       {step === 2 && selectedPlan && (
         <div className="max-w-md mx-auto space-y-4">
 
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-            <h3 className="text-white font-bold text-lg mb-4">📋 Payment Summary</h3>
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl p-6">
+            <h3 className="text-white font-bold text-lg mb-4">Payment Summary</h3>
             <div className="space-y-2">
               <div className="flex justify-between">
                 <span className="text-gray-400">Plan</span>
@@ -304,17 +271,17 @@ export default function ChoosePlan() {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">Amount</span>
-                <span className="text-green-400 font-bold">RWF {selectedPlan.price.toLocaleString()}</span>
+                <span className="text-green-400 font-bold">{formatRwf(selectedPlan.price)}</span>
               </div>
             </div>
           </div>
 
           <div className="bg-yellow-900 border border-yellow-700 rounded-2xl p-6">
-            <h3 className="text-yellow-300 font-bold text-lg mb-4">📱 MTN Mobile Money Payment</h3>
+            <h3 className="text-yellow-300 font-bold text-lg mb-4">MTN Mobile Money Payment</h3>
             <div className="space-y-3">
               {[
                 'Open your MTN Mobile Money app or dial *182#',
-                `Send RWF ${selectedPlan.price.toLocaleString()} to number: 0785422754`,
+                `Send ${formatRwf(selectedPlan.price)} to number: 0785422754`,
                 'Use your full name as the payment reference',
                 'Copy the transaction ID from your SMS and fill in below',
               ].map((step, i) => (
@@ -326,8 +293,8 @@ export default function ChoosePlan() {
             </div>
           </div>
 
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-            <h3 className="text-white font-bold text-lg mb-4">✅ Confirm Your Payment</h3>
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl p-6">
+            <h3 className="text-white font-bold text-lg mb-4">Confirm Your Payment</h3>
             {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
             <div className="space-y-4">
               <div>
@@ -336,7 +303,7 @@ export default function ChoosePlan() {
                   type="text"
                   value={form.sender_name}
                   onChange={(e) => setForm({ ...form, sender_name: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                  className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                   placeholder="Enter your full name"
                 />
               </div>
@@ -346,21 +313,21 @@ export default function ChoosePlan() {
                   type="text"
                   value={form.transaction_id}
                   onChange={(e) => setForm({ ...form, transaction_id: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                  className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                   placeholder="e.g. 1234567890"
                 />
               </div>
               <div className="flex gap-3 pt-2">
                 <button
                   onClick={() => setStep(1)}
-                  className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition"
+                  className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition"
                 >
                   Back
                 </button>
                 <button
                   onClick={handleSubmitPayment}
                   disabled={loading}
-                  className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition"
+                  className="flex-1 py-3 bg-primary text-white rounded-xl font-bold hover:bg-primary-hover transition"
                 >
                   {loading ? 'Submitting...' : 'Submit Payment'}
                 </button>

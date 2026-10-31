@@ -1,8 +1,24 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import { useAuth } from '../../context/AuthContext'
+import { PLANS, formatRwf } from '../../lib/planConfig'
 import Layout from '../../components/Layout'
 
+// Packages the admin can assign from this page.
+const ASSIGNABLE_PLANS = ['standard', 'premium']
+
+const pad = (n) => String(n).padStart(2, '0')
+const toDateInput = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+const defaultExpiryDate = () => {
+  const d = new Date()
+  d.setDate(d.getDate() + 30)
+  return toDateInput(d)
+}
+// Expiry is saved as the END of the chosen day (same as Subscriptions.jsx)
+const endOfDayIso = (dateStr) => new Date(dateStr + 'T23:59:59').toISOString()
+
 export default function ClientManagement() {
+  const { user } = useAuth()
   const [clients, setClients] = useState([])
   const [subscriptions, setSubscriptions] = useState([])
   const [loading, setLoading] = useState(true)
@@ -12,6 +28,8 @@ export default function ClientManagement() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [clientToDelete, setClientToDelete] = useState(null)
   const [actionError, setActionError] = useState('')
+  const [planForm, setPlanForm] = useState({ plan: 'standard', expiry: '', recordPayment: false, reference: '' })
+  const [applyingPlan, setApplyingPlan] = useState(false)
 
   useEffect(() => {
     fetchData()
@@ -77,6 +95,8 @@ export default function ClientManagement() {
     fetchData()
   }
 
+  // Quick plan change from the table. Does not touch the expiry date or the
+  // trial status — use "Change Package" in the client profile for that.
   const handlePlanChange = async (userId, plan) => {
     setActionError('')
     const { error } = await supabase.from('profiles').update({ plan_type: plan }).eq('id', userId)
@@ -84,7 +104,10 @@ export default function ClientManagement() {
 
     // Keep the subscription record's plan in sync — otherwise a manual plan
     // change here silently falls out of sync with what Subscriptions.jsx shows.
-    const { error: subError } = await supabase.from('subscriptions').update({ plan_type: plan }).eq('user_id', userId)
+    const { error: subError } = await supabase
+      .from('subscriptions')
+      .update({ plan_type: plan, plan_changed_by: user?.id || null, plan_changed_at: new Date().toISOString() })
+      .eq('user_id', userId)
     if (subError) { setActionError('Plan updated, but the subscription record could not be synced: ' + subError.message); return }
 
     fetchData()
@@ -100,69 +123,79 @@ export default function ClientManagement() {
     fetchData()
   }
 
-  // A client counts as lifetime if the subscription is flagged lifetime OR its
-  // plan is "lifetime" (same rule Subscriptions.jsx uses).
-  const isLifetimeClient = (client) =>
-    !!client?.subscription &&
-    (client.subscription.plan_type === 'lifetime' || !!client.subscription.is_lifetime)
-
-  // Default expiry when lifetime is switched off: 30 days from today, saved as
-  // the END of that day (same as Subscriptions.jsx). The admin can change the
-  // date afterwards from the Subscriptions page.
-  const getDefaultExpiryIso = () => {
-    const d = new Date()
-    d.setDate(d.getDate() + 30)
-    const pad = (n) => String(n).padStart(2, '0')
-    const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-    return new Date(dateStr + 'T23:59:59').toISOString()
+  // Opens the client profile and prepares the "Change Package" form
+  const openClient = (client) => {
+    const sub = client.subscription
+    const hasFutureExpiry = sub?.expiry_date && new Date(sub.expiry_date) > new Date()
+    // A trial being converted starts a fresh paid period; otherwise keep the
+    // current expiry when it is still in the future.
+    const keepExpiry = hasFutureExpiry && !sub?.is_trial
+    setPlanForm({
+      plan: ASSIGNABLE_PLANS.includes(client.plan_type) ? client.plan_type : 'standard',
+      expiry: keepExpiry ? toDateInput(new Date(sub.expiry_date)) : defaultExpiryDate(),
+      recordPayment: !!sub?.is_trial,
+      reference: '',
+    })
+    setSelectedClient(client)
   }
 
-  // ON  -> subscription becomes lifetime, marked paid, expiry cleared.
-  // OFF -> lifetime removed, plan goes back to standard/premium, marked paid,
-  //        and a new expiry date (30 days from today) is inserted.
-  const handleToggleLifetime = async (userId, currentValue) => {
+  // Sets the package for a client: plan, paid status, expiry date, and ends the
+  // free trial. Optionally records the payment so revenue reports stay correct.
+  const handleApplyPackage = async () => {
+    if (!selectedClient) return
     setActionError('')
-    const client = clients.find(c => c.id === userId)
-    const existingSub = client?.subscription
-    const turningOn = !currentValue
+    if (!planForm.expiry) { setActionError('Choose an expiry date.'); return }
+    const expiryIso = endOfDayIso(planForm.expiry)
+    if (new Date(expiryIso) <= new Date()) { setActionError('The expiry date must be today or later.'); return }
 
-    const restoredPlan =
-      client?.plan_type && client.plan_type !== 'lifetime' ? client.plan_type : 'standard'
+    setApplyingPlan(true)
+    const userId = selectedClient.id
+    const subUpdates = {
+      plan_type: planForm.plan,
+      is_trial: false,
+      payment_status: 'paid',
+      expiry_date: expiryIso,
+      plan_changed_by: user?.id || null,
+      plan_changed_at: new Date().toISOString(),
+    }
 
-    const subUpdates = turningOn
-      ? { is_lifetime: true, payment_status: 'paid', expiry_date: null }
-      : { is_lifetime: false, plan_type: restoredPlan, payment_status: 'paid', expiry_date: getDefaultExpiryIso() }
-
-    if (existingSub) {
-      const { error } = await supabase.from('subscriptions').update(subUpdates).eq('user_id', userId)
-      if (error) { setActionError('Could not update lifetime access: ' + error.message); return }
-    } else if (turningOn) {
-      // No subscription row yet — create one so the lifetime access is saved
-      const { error } = await supabase.from('subscriptions').insert({
-        user_id: userId,
-        plan_type: client?.plan_type && client.plan_type !== 'lifetime' ? client.plan_type : 'standard',
-        ...subUpdates,
-      })
-      if (error) { setActionError('Could not update lifetime access: ' + error.message); return }
-    } else {
+    const { error: profileError } = await supabase.from('profiles').update({ plan_type: planForm.plan }).eq('id', userId)
+    if (profileError) {
+      setActionError('Could not change the package: ' + profileError.message)
+      setApplyingPlan(false)
       return
     }
 
-    // If the profile itself was saved as "lifetime", put it back to a normal plan
-    let profilePlan = client?.plan_type
-    if (!turningOn && client?.plan_type === 'lifetime') {
-      const { error: profileError } = await supabase.from('profiles').update({ plan_type: restoredPlan }).eq('id', userId)
-      if (profileError) { setActionError('Lifetime turned off, but the profile plan could not be updated: ' + profileError.message) }
-      else profilePlan = restoredPlan
+    const subResult = selectedClient.subscription
+      ? await supabase.from('subscriptions').update(subUpdates).eq('user_id', userId)
+      : await supabase.from('subscriptions').insert({ user_id: userId, ...subUpdates })
+    if (subResult.error) {
+      setActionError('Package changed, but the subscription could not be saved: ' + subResult.error.message)
+      setApplyingPlan(false)
+      fetchData()
+      return
     }
 
-    if (selectedClient?.id === userId) {
-      setSelectedClient({
-        ...selectedClient,
-        plan_type: profilePlan,
-        subscription: { ...(selectedClient.subscription || {}), ...subUpdates },
+    if (planForm.recordPayment) {
+      const { error: payError } = await supabase.from('payment_requests').insert({
+        user_id: userId,
+        plan_type: planForm.plan,
+        amount: PLANS[planForm.plan].price,
+        transaction_id: planForm.reference.trim() || 'ADMIN-MANUAL',
+        sender_name: selectedClient.full_name,
+        status: 'approved',
       })
+      if (payError) {
+        setActionError('Package applied, but the payment record could not be saved: ' + payError.message)
+      }
     }
+
+    setApplyingPlan(false)
+    setSelectedClient({
+      ...selectedClient,
+      plan_type: planForm.plan,
+      subscription: { ...(selectedClient.subscription || {}), ...subUpdates },
+    })
     fetchData()
   }
 
@@ -174,10 +207,9 @@ export default function ClientManagement() {
   }
 
   const getSubscriptionStatus = (client) => {
-    if (!client.subscription) return { label: 'No Subscription', color: 'bg-gray-800 text-gray-400' }
-    if (isLifetimeClient(client)) return { label: 'Lifetime', color: 'bg-yellow-900 text-yellow-300' }
+    if (!client.subscription) return { label: 'No Subscription', color: 'bg-surface text-gray-400' }
     const days = getDaysRemaining(client.subscription.expiry_date)
-    if (days === null) return { label: 'No Expiry Set', color: 'bg-gray-800 text-gray-400' }
+    if (days === null) return { label: 'No Expiry Set', color: 'bg-surface text-gray-400' }
     if (days <= 0) return { label: 'Expired', color: 'bg-red-900 text-red-300' }
     if (days <= 7) return { label: `${days} days left`, color: 'bg-orange-900 text-orange-300' }
     return { label: `${days} days left`, color: 'bg-green-900 text-green-300' }
@@ -189,6 +221,8 @@ export default function ClientManagement() {
       c.email?.toLowerCase().includes(search.toLowerCase())
     return matchesFilter && matchesSearch
   })
+
+  const selectedIsTrial = !!selectedClient?.subscription?.is_trial
 
   return (
     <Layout>
@@ -214,7 +248,7 @@ export default function ClientManagement() {
             placeholder="Search by name or email..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500"
+            className="bg-surface-elevated border border-surface-border text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-admin-light"
           />
           <div className="flex gap-2">
             {['all', 'pending', 'approved'].map((f) => (
@@ -222,7 +256,7 @@ export default function ClientManagement() {
                 key={f}
                 onClick={() => setFilter(f)}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                  filter === f ? 'bg-yellow-500 text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'
+                  filter === f ? 'bg-admin text-white' : 'bg-surface-elevated border border-surface-border text-gray-400 hover:text-white'
                 }`}
               >
                 {f.charAt(0).toUpperCase() + f.slice(1)}
@@ -232,7 +266,7 @@ export default function ClientManagement() {
         </div>
 
         {/* Clients Table */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="bg-surface-elevated border border-surface-border rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12">
               <p className="text-gray-400">Loading clients...</p>
@@ -244,13 +278,12 @@ export default function ClientManagement() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-800">
+                <thead className="bg-surface">
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Name</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Email</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Plan</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Profit View</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Lifetime</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Subscription</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Joined</th>
@@ -263,43 +296,37 @@ export default function ClientManagement() {
                     return (
                       <tr
                         key={client.id}
-                        className="border-t border-gray-800 hover:bg-gray-800 transition cursor-pointer"
-                        onClick={() => setSelectedClient(client)}
+                        className="border-t border-surface-border hover:bg-surface transition cursor-pointer"
+                        onClick={() => openClient(client)}
                       >
                         <td className="px-6 py-4 text-white font-medium">{client.full_name}</td>
                         <td className="px-6 py-4 text-gray-300">{client.email}</td>
                         <td className="px-6 py-4">
-                          <select
-                            value={client.plan_type || 'standard'}
-                            onChange={(e) => { e.stopPropagation(); handlePlanChange(client.id, e.target.value) }}
-                            onClick={(e) => e.stopPropagation()}
-                            className="bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded border border-gray-700 focus:outline-none"
-                          >
-                            <option value="standard">Standard</option>
-                            <option value="premium">Premium</option>
-                          </select>
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={ASSIGNABLE_PLANS.includes(client.plan_type) ? client.plan_type : 'standard'}
+                              onChange={(e) => { e.stopPropagation(); handlePlanChange(client.id, e.target.value) }}
+                              onClick={(e) => e.stopPropagation()}
+                              className="bg-surface text-gray-300 text-xs px-2 py-1 rounded border border-surface-border focus:outline-none"
+                            >
+                              {ASSIGNABLE_PLANS.map((id) => (
+                                <option key={id} value={id}>{PLANS[id].name}</option>
+                              ))}
+                            </select>
+                            {client.subscription?.is_trial && (
+                              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-900 text-yellow-300">Trial</span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
                           <button
                             onClick={() => handleToggleShowProfit(client.id, client.show_profit)}
                             className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                              client.show_profit ? 'bg-purple-600' : 'bg-gray-600'
+                              client.show_profit ? 'bg-primary' : 'bg-surface-border'
                             }`}
                           >
                             <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
                               client.show_profit ? 'translate-x-6' : 'translate-x-1'
-                            }`} />
-                          </button>
-                        </td>
-                        <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            onClick={() => handleToggleLifetime(client.id, isLifetimeClient(client))}
-                            className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                              isLifetimeClient(client) ? 'bg-green-600' : 'bg-gray-600'
-                            }`}
-                          >
-                            <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
-                              isLifetimeClient(client) ? 'translate-x-6' : 'translate-x-1'
                             }`} />
                           </button>
                         </td>
@@ -357,15 +384,15 @@ export default function ClientManagement() {
       {/* Client Profile Modal */}
       {selectedClient && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg mx-4 shadow-2xl max-h-screen overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-lg mx-4 shadow-2xl max-h-screen overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border">
               <h2 className="text-lg font-bold text-white">Client Profile</h2>
               <button onClick={() => setSelectedClient(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-4">
 
               {/* Basic Info */}
-              <div className="bg-gray-800 rounded-xl p-4">
+              <div className="bg-surface rounded-xl p-4">
                 <h3 className="text-gray-400 text-xs uppercase tracking-wider mb-3">Account Info</h3>
                 <div className="space-y-2">
                   <div className="flex justify-between">
@@ -376,10 +403,15 @@ export default function ClientManagement() {
                     <span className="text-gray-400 text-sm">Email</span>
                     <span className="text-white text-sm">{selectedClient.email}</span>
                   </div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between items-center">
                     <span className="text-gray-400 text-sm">Plan</span>
-                    <span className={`text-sm font-medium ${selectedClient.plan_type === 'premium' ? 'text-purple-400' : 'text-blue-400'}`}>
-                      {selectedClient.plan_type === 'premium' ? 'Premium' : 'Standard'}
+                    <span className="flex items-center gap-2">
+                      {selectedIsTrial && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-900 text-yellow-300">Free Trial</span>
+                      )}
+                      <span className={`text-sm font-medium ${selectedClient.plan_type === 'premium' ? 'text-purple-400' : 'text-primary-light'}`}>
+                        {selectedClient.plan_type === 'premium' ? 'Premium' : 'Standard'}
+                      </span>
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
@@ -387,24 +419,11 @@ export default function ClientManagement() {
                     <button
                       onClick={() => handleToggleShowProfit(selectedClient.id, selectedClient.show_profit)}
                       className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                        selectedClient.show_profit ? 'bg-purple-600' : 'bg-gray-600'
+                        selectedClient.show_profit ? 'bg-primary' : 'bg-surface-border'
                       }`}
                     >
                       <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
                         selectedClient.show_profit ? 'translate-x-6' : 'translate-x-1'
-                      }`} />
-                    </button>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-gray-400 text-sm">Lifetime Access</span>
-                    <button
-                      onClick={() => handleToggleLifetime(selectedClient.id, isLifetimeClient(selectedClient))}
-                      className={`relative inline-flex items-center w-11 h-6 rounded-full transition-colors focus:outline-none ${
-                        isLifetimeClient(selectedClient) ? 'bg-green-600' : 'bg-gray-600'
-                      }`}
-                    >
-                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition-transform ${
-                        isLifetimeClient(selectedClient) ? 'translate-x-6' : 'translate-x-1'
                       }`} />
                     </button>
                   </div>
@@ -422,7 +441,7 @@ export default function ClientManagement() {
               </div>
 
               {/* Subscription Info */}
-              <div className="bg-gray-800 rounded-xl p-4">
+              <div className="bg-surface rounded-xl p-4">
                 <h3 className="text-gray-400 text-xs uppercase tracking-wider mb-3">Subscription</h3>
                 {selectedClient.subscription ? (
                   <div className="space-y-2">
@@ -443,17 +462,15 @@ export default function ClientManagement() {
                     <div className="flex justify-between">
                       <span className="text-gray-400 text-sm">Expiry Date</span>
                       <span className="text-white text-sm">
-                        {isLifetimeClient(selectedClient)
-                          ? 'Never expires'
-                          : selectedClient.subscription.expiry_date
+                        {selectedClient.subscription.expiry_date
                           ? new Date(selectedClient.subscription.expiry_date).toLocaleDateString()
                           : 'Not set'}
                       </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400 text-sm">Days Remaining</span>
-                      {isLifetimeClient(selectedClient) ? (
-                        <span className="text-sm font-medium text-yellow-400">Lifetime</span>
+                      {getDaysRemaining(selectedClient.subscription.expiry_date) === null ? (
+                        <span className="text-sm font-medium text-gray-400">Not set</span>
                       ) : (
                         <span className={`text-sm font-medium ${
                           getDaysRemaining(selectedClient.subscription.expiry_date) <= 0
@@ -474,15 +491,77 @@ export default function ClientManagement() {
                 )}
               </div>
 
+              {/* Change Package / Convert Free Trial */}
+              <div className="bg-surface rounded-xl p-4">
+                <h3 className="text-gray-400 text-xs uppercase tracking-wider mb-3">
+                  {selectedIsTrial ? 'Convert Free Trial' : 'Change Package'}
+                </h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-gray-400 text-xs block mb-1">Package</label>
+                    <select
+                      value={planForm.plan}
+                      onChange={(e) => setPlanForm({ ...planForm, plan: e.target.value })}
+                      className="w-full bg-surface-elevated border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-admin-light"
+                    >
+                      {ASSIGNABLE_PLANS.map((id) => (
+                        <option key={id} value={id}>{PLANS[id].name} - {formatRwf(PLANS[id].price)} per month</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-gray-400 text-xs block mb-1">Expiry date</label>
+                    <input
+                      type="date"
+                      min={toDateInput(new Date())}
+                      value={planForm.expiry}
+                      onChange={(e) => setPlanForm({ ...planForm, expiry: e.target.value })}
+                      className="w-full bg-surface-elevated border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-admin-light"
+                    />
+                  </div>
+                  <label className="flex items-start gap-2 text-sm text-gray-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={planForm.recordPayment}
+                      onChange={(e) => setPlanForm({ ...planForm, recordPayment: e.target.checked })}
+                      className="mt-1"
+                    />
+                    <span>
+                      Client has paid - record a payment of {formatRwf(PLANS[planForm.plan].price)}
+                      <span className="block text-gray-500 text-xs">Leave unticked if you are giving the package for free.</span>
+                    </span>
+                  </label>
+                  {planForm.recordPayment && (
+                    <input
+                      type="text"
+                      placeholder="Payment reference (optional)"
+                      value={planForm.reference}
+                      onChange={(e) => setPlanForm({ ...planForm, reference: e.target.value })}
+                      className="w-full bg-surface-elevated border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-admin-light"
+                    />
+                  )}
+                  <button
+                    onClick={handleApplyPackage}
+                    disabled={applyingPlan}
+                    className="w-full py-2 bg-admin text-white rounded-lg hover:bg-admin-light transition font-medium text-sm disabled:opacity-50"
+                  >
+                    {applyingPlan ? 'Saving...' : selectedIsTrial ? 'Convert to Paid Package' : 'Apply Package'}
+                  </button>
+                  <p className="text-gray-500 text-xs">
+                    Sets the package, marks the subscription as paid, sets the expiry date{selectedIsTrial ? ' and ends the free trial' : ''}.
+                  </p>
+                </div>
+              </div>
+
               {/* Payment History */}
-              <div className="bg-gray-800 rounded-xl p-4">
+              <div className="bg-surface rounded-xl p-4">
                 <h3 className="text-gray-400 text-xs uppercase tracking-wider mb-3">Payment History</h3>
                 {selectedClient.payments?.length === 0 ? (
                   <p className="text-gray-500 text-sm">No payment history</p>
                 ) : (
                   <div className="space-y-2">
                     {selectedClient.payments?.map((payment) => (
-                      <div key={payment.id} className="flex items-center justify-between py-2 border-b border-gray-700">
+                      <div key={payment.id} className="flex items-center justify-between py-2 border-b border-surface-border">
                         <div>
                           <p className="text-white text-sm">RWF {payment.amount?.toLocaleString()}</p>
                           <p className="text-gray-500 text-xs">{payment.transaction_id}</p>
@@ -505,7 +584,7 @@ export default function ClientManagement() {
 
               <button
                 onClick={() => setSelectedClient(null)}
-                className="w-full py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition"
+                className="w-full py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition"
               >
                 Close
               </button>
@@ -517,7 +596,7 @@ export default function ClientManagement() {
       {/* Trash Confirmation */}
       {showDeleteConfirm && clientToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-red-700 rounded-2xl w-full max-w-md mx-4 shadow-2xl p-6">
+          <div className="bg-surface-elevated border border-red-700 rounded-2xl w-full max-w-md mx-4 shadow-2xl p-6">
             <div className="text-center">
               <h2 className="text-xl font-bold text-white mt-3 mb-2">Move Client to Trash</h2>
               <p className="text-gray-400 text-sm mb-2">
@@ -530,7 +609,7 @@ export default function ClientManagement() {
             <div className="flex gap-3">
               <button
                 onClick={() => { setShowDeleteConfirm(false); setClientToDelete(null) }}
-                className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition font-medium"
+                className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition font-medium"
               >
                 Cancel
               </button>

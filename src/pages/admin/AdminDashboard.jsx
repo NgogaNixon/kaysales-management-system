@@ -3,6 +3,18 @@ import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../context/AuthContext'
 import Layout from '../../components/Layout'
 import { useNavigate } from 'react-router-dom'
+import { PLANS } from '../../lib/planConfig'
+
+// Plan name and badge colour. Records for plans that no longer exist show as "Old plan".
+const planName = (id) => PLANS[id]?.name || 'Old plan'
+const planBadge = (id) =>
+  id === 'premium'
+    ? 'bg-purple-900 text-purple-300'
+    : id === 'organization'
+    ? 'bg-emerald-900 text-emerald-300'
+    : id === 'standard'
+    ? 'bg-surface text-primary-light'
+    : 'bg-surface text-gray-400'
 
 export default function AdminDashboard() {
   const { profile } = useAuth()
@@ -67,8 +79,11 @@ export default function AdminDashboard() {
     const totalClients = profilesData?.length || 0
     const pendingApprovals = profilesData?.filter(p => !p.approved).length || 0
     const activeSubscriptions = subsData?.filter(s => s.payment_status === 'paid' && new Date(s.expiry_date) >= today).length || 0
-    const standardPlans = profilesData?.filter(p => p.plan_type === 'standard' && p.approved).length || 0
-    const premiumPlans = profilesData?.filter(p => p.plan_type === 'premium' && p.approved).length || 0
+    // Free-trial clients do not pay, so they are left out of the revenue estimate
+    const trialUserIds = new Set(subsData?.filter(s => s.is_trial).map(s => s.user_id))
+    const monthlyRevenue = (profilesData || [])
+      .filter(p => p.approved && !trialUserIds.has(p.id))
+      .reduce((sum, p) => sum + (PLANS[p.plan_type]?.price || 0), 0)
 
     setExpiringSoonClients(expiring)
     setExpiredClients(expired)
@@ -79,9 +94,8 @@ export default function AdminDashboard() {
       activeSubscriptions,
       expiringSoon: expiring.length,
       expired: expired.length,
-      // Matches current plan pricing (Standard: 20,000 RWF, Premium: 35,000 RWF).
-      // Lifetime plans are a one-time payment, so they're excluded from a monthly estimate.
-      estimatedRevenue: (standardPlans * 20000) + (premiumPlans * 35000),
+      // Monthly estimate from planConfig prices (every plan is billed monthly)
+      estimatedRevenue: monthlyRevenue,
     })
     setLoading(false)
   }
@@ -129,32 +143,30 @@ export default function AdminDashboard() {
         {stats.pendingApprovals > 0 && (
           <div
             onClick={() => navigate('/admin/clients')}
-            className="bg-blue-900 border border-blue-700 rounded-xl p-4 flex items-center justify-between cursor-pointer hover:bg-blue-800 transition"
+            className="bg-surface-elevated border border-primary rounded-xl p-4 flex items-center justify-between cursor-pointer hover:bg-surface transition"
           >
-            <p className="text-blue-300 font-bold">
+            <p className="text-primary-light font-bold">
               {stats.pendingApprovals} client{stats.pendingApprovals > 1 ? 's' : ''} waiting for approval
             </p>
-            <span className="text-blue-400 text-sm">View →</span>
+            <span className="text-primary-light text-sm">View →</span>
           </div>
         )}
 
         {/* Expiring Soon */}
         {expiringSoonClients.length > 0 && (
-          <div className="bg-gray-900 border border-orange-700 rounded-xl p-6">
+          <div className="bg-surface-elevated border border-orange-700 rounded-xl p-6">
             <h2 className="text-lg font-bold text-orange-300 mb-4">Expiring Soon</h2>
             <div className="space-y-3">
               {expiringSoonClients.map((client) => (
-                <div key={client.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
+                <div key={client.id} className="flex items-center justify-between bg-surface rounded-lg px-4 py-3">
                   <div>
                     <p className="text-white font-medium">{client.full_name}</p>
                     <p className="text-gray-400 text-xs">{client.email}</p>
                   </div>
                   <div className="flex items-center gap-3">
                     <div className="text-right">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        client.plan_type === 'premium' ? 'bg-purple-900 text-purple-300' : 'bg-blue-900 text-blue-300'
-                      }`}>
-                        {client.plan_type === 'premium' ? 'Premium' : 'Standard'}
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${planBadge(client.plan_type)}`}>
+                        {planName(client.plan_type)}{client.subscription?.is_trial ? ' (Trial)' : ''}
                       </span>
                       <p className="text-orange-400 text-xs mt-1 font-medium">
                         {getDaysRemaining(client.subscription.expiry_date)} days left
@@ -162,7 +174,7 @@ export default function AdminDashboard() {
                     </div>
                     <button
                       onClick={() => setSelectedClient(client)}
-                      className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs transition"
+                      className="px-3 py-1.5 bg-surface-elevated border border-surface-border hover:border-primary text-white rounded-lg text-xs transition"
                     >
                       View
                     </button>
@@ -175,21 +187,19 @@ export default function AdminDashboard() {
 
         {/* Expired Clients */}
         {expiredClients.length > 0 && (
-          <div className="bg-gray-900 border border-red-700 rounded-xl p-6">
+          <div className="bg-surface-elevated border border-red-700 rounded-xl p-6">
             <h2 className="text-lg font-bold text-red-300 mb-4">Expired Subscriptions</h2>
             <div className="space-y-3">
               {expiredClients.map((client) => (
-                <div key={client.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
+                <div key={client.id} className="flex items-center justify-between bg-surface rounded-lg px-4 py-3">
                   <div>
                     <p className="text-white font-medium">{client.full_name}</p>
                     <p className="text-gray-400 text-xs">{client.email}</p>
                   </div>
                   <div className="flex items-center gap-3">
                     <div className="text-right">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        client.plan_type === 'premium' ? 'bg-purple-900 text-purple-300' : 'bg-blue-900 text-blue-300'
-                      }`}>
-                        {client.plan_type === 'premium' ? 'Premium' : 'Standard'}
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${planBadge(client.plan_type)}`}>
+                        {planName(client.plan_type)}{client.subscription?.is_trial ? ' (Trial)' : ''}
                       </span>
                       <p className="text-red-400 text-xs mt-1 font-medium">
                         Expired {new Date(client.subscription.expiry_date).toLocaleDateString()}
@@ -197,7 +207,7 @@ export default function AdminDashboard() {
                     </div>
                     <button
                       onClick={() => setSelectedClient(client)}
-                      className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs transition"
+                      className="px-3 py-1.5 bg-surface-elevated border border-surface-border hover:border-primary text-white rounded-lg text-xs transition"
                     >
                       View
                     </button>
@@ -213,8 +223,8 @@ export default function AdminDashboard() {
       {/* Client Detail Modal */}
       {selectedClient && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl max-h-full overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-md shadow-2xl max-h-full overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border">
               <h2 className="text-lg font-bold text-white">Client Details</h2>
               <button onClick={() => setSelectedClient(null)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
@@ -230,7 +240,7 @@ export default function AdminDashboard() {
               <div className="flex justify-between">
                 <span className="text-gray-400 text-sm">Plan</span>
                 <span className="text-white text-sm font-medium">
-                  {selectedClient.plan_type === 'premium' ? 'Premium' : 'Standard'}
+                  {planName(selectedClient.plan_type)}{selectedClient.subscription?.is_trial ? ' (Free Trial)' : ''}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -271,7 +281,7 @@ export default function AdminDashboard() {
               </button>
               <button
                 onClick={() => setSelectedClient(null)}
-                className="w-full py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition"
+                className="w-full py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition"
               >
                 Close
               </button>

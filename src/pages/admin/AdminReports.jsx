@@ -4,6 +4,18 @@ import Layout from '../../components/Layout'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import { PLANS, PLAN_ORDER } from '../../lib/planConfig'
+
+// Plan name and badge colour. Records for plans that no longer exist show as "Old plan".
+const planName = (id) => PLANS[id]?.name || 'Old plan'
+const planBadge = (id) =>
+  id === 'premium'
+    ? 'bg-purple-900 text-purple-300'
+    : id === 'organization'
+    ? 'bg-emerald-900 text-emerald-300'
+    : id === 'standard'
+    ? 'bg-surface text-primary-light'
+    : 'bg-surface text-gray-400'
 
 export default function AdminReports() {
   const [clients, setClients] = useState([])
@@ -88,12 +100,17 @@ export default function AdminReports() {
     return 'Active'
   }
 
-  // A client is "on trial" if they have an approved payment request whose
-  // transaction was the free trial — subscriptions.payment_status never
-  // actually gets set to 'trial' anywhere in the app, so checking that
-  // field (as this filter used to) never matched anything.
-  const isOnTrial = (userId) =>
-    payments.some(p => p.user_id === userId && p.status === 'approved' && p.transaction_id === 'FREE-TRIAL')
+  // A client is "on trial" while their subscription is marked as a trial. The
+  // marker is set when a free trial is approved and cleared as soon as the
+  // client moves to a paid package (the old payment-record check kept showing
+  // converted clients as trials forever).
+  const isOnTrial = (userId) => !!getSubscription(userId)?.is_trial
+
+  // Plans offered in the filter: Standard and Premium, plus any other plan
+  // that at least one client is currently on.
+  const planFilterOptions = PLAN_ORDER.filter(
+    (id) => id === 'standard' || id === 'premium' || clients.some(c => c.plan_type === id)
+  )
 
   const filteredClients = clients.filter(c => {
     const matchesSearch = c.full_name?.toLowerCase().includes(search.toLowerCase()) ||
@@ -127,7 +144,8 @@ export default function AdminReports() {
     const infoData = [
       { Field: 'Full Name', Value: client.full_name },
       { Field: 'Email', Value: client.email },
-      { Field: 'Plan', Value: client.plan_type },
+      { Field: 'Plan', Value: planName(client.plan_type) },
+      { Field: 'Free Trial', Value: sub?.is_trial ? 'Yes' : 'No' },
       { Field: 'Account Status', Value: client.approved ? 'Approved' : 'Pending' },
       { Field: 'Subscription Status', Value: getSubStatus(client.id) },
       { Field: 'Subscription Start', Value: sub?.start_date ? new Date(sub.start_date).toLocaleDateString() : '—' },
@@ -178,7 +196,7 @@ export default function AdminReports() {
 
     // Sheet 6 — Payment History
     const paymentData = clientPayments.map(p => ({
-      'Plan': p.plan_type,
+      'Plan': planName(p.plan_type),
       'Amount (RWF)': p.amount === 0 ? 'Free Trial' : p.amount,
       'Transaction ID': p.transaction_id,
       'Sender Name': p.sender_name,
@@ -218,7 +236,8 @@ export default function AdminReports() {
       body: [
         ['Full Name', client.full_name],
         ['Email', client.email],
-        ['Plan', client.plan_type],
+        ['Plan', planName(client.plan_type)],
+        ['Free Trial', sub?.is_trial ? 'Yes' : 'No'],
         ['Account Status', client.approved ? 'Approved' : 'Pending'],
         ['Subscription Status', getSubStatus(client.id)],
         ['Expiry Date', sub?.expiry_date ? new Date(sub.expiry_date).toLocaleDateString() : '—'],
@@ -299,7 +318,7 @@ export default function AdminReports() {
       startY: y + 5,
       head: [['Plan', 'Amount', 'Transaction ID', 'Status', 'Date']],
       body: clientPayments.length ? clientPayments.map(p => [
-        p.plan_type,
+        planName(p.plan_type),
         p.amount === 0 ? 'Free Trial' : `RWF ${p.amount?.toLocaleString()}`,
         p.transaction_id,
         p.status,
@@ -330,21 +349,22 @@ export default function AdminReports() {
             placeholder="Search client by name or email..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500"
+            className="bg-surface-elevated border border-surface-border text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-admin-light"
           />
           <select
             value={filterPlan}
             onChange={(e) => setFilterPlan(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+            className="bg-surface-elevated border border-surface-border text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-admin-light"
           >
             <option value="all">All Plans</option>
-            <option value="standard">Standard</option>
-            <option value="premium">Premium</option>
+            {planFilterOptions.map((id) => (
+              <option key={id} value={id}>{PLANS[id].name}</option>
+            ))}
           </select>
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+            className="bg-surface-elevated border border-surface-border text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-admin-light"
           >
             <option value="all">All Status</option>
             <option value="active">Active</option>
@@ -355,7 +375,7 @@ export default function AdminReports() {
         </div>
 
         {/* Clients List */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="bg-surface-elevated border border-surface-border rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading clients...</p></div>
           ) : filteredClients.length === 0 ? (
@@ -363,7 +383,7 @@ export default function AdminReports() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-800">
+                <thead className="bg-surface">
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Client</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Plan</th>
@@ -375,22 +395,27 @@ export default function AdminReports() {
                 </thead>
                 <tbody>
                   {filteredClients.map((client) => (
-                    <tr key={client.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
+                    <tr key={client.id} className="border-t border-surface-border hover:bg-surface transition">
                       <td className="px-6 py-4">
                         <p className="text-white font-medium">{client.full_name}</p>
                         <p className="text-gray-500 text-xs">{client.email}</p>
                       </td>
                       <td className="px-6 py-4">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${client.plan_type === 'premium' ? 'bg-purple-900 text-purple-300' : 'bg-blue-900 text-blue-300'}`}>
-                          {client.plan_type === 'premium' ? 'Premium' : 'Standard'}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${planBadge(client.plan_type)}`}>
+                            {planName(client.plan_type)}
+                          </span>
+                          {isOnTrial(client.id) && (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-900 text-yellow-300">Trial</span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                           getSubStatus(client.id) === 'Active' ? 'bg-green-900 text-green-300' :
                           getSubStatus(client.id).includes('Expiring') ? 'bg-orange-900 text-orange-300' :
                           getSubStatus(client.id) === 'Expired' ? 'bg-red-900 text-red-300' :
-                          'bg-gray-800 text-gray-400'
+                          'bg-surface text-gray-400'
                         }`}>
                           {getSubStatus(client.id)}
                         </span>

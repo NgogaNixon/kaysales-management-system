@@ -2,9 +2,10 @@ import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { useEffect, useState } from 'react'
+import { PLANS, PLAN_ORDER, formatRwf, getPlan } from '../lib/planConfig'
 
 export default function ProtectedRoute({ children }) {
-  const { user, profile, loading } = useAuth()
+  const { user, profile, loading, planId } = useAuth()
   const navigate = useNavigate()
   const [subscription, setSubscription] = useState(null)
   const [pendingPayment, setPendingPayment] = useState(null)
@@ -46,9 +47,9 @@ export default function ProtectedRoute({ children }) {
 
   if (loading || subLoading) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+      <div className="min-h-screen bg-surface flex items-center justify-center">
         <div className="text-center">
-          <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <div className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-gray-400 text-sm">Loading...</p>
         </div>
       </div>
@@ -61,9 +62,9 @@ export default function ProtectedRoute({ children }) {
 
   if (!profile) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+      <div className="min-h-screen bg-surface flex items-center justify-center">
         <div className="text-center">
-          <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <div className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-gray-400 text-sm">Loading profile...</p>
         </div>
       </div>
@@ -77,10 +78,9 @@ export default function ProtectedRoute({ children }) {
   if (profile.role !== 'admin' && isExpired()) {
     if (pendingPayment) {
       return (
-        <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
-          <div className="bg-gray-900 border border-yellow-800 rounded-2xl p-8 w-full max-w-md text-center">
-            <span className="text-5xl">⏳</span>
-            <h2 className="text-2xl font-bold text-white mt-4 mb-2">
+        <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+          <div className="bg-surface-elevated border border-yellow-800 rounded-2xl p-8 w-full max-w-md text-center">
+            <h2 className="text-2xl font-bold text-white mb-2">
               Payment Under Review
             </h2>
             <p className="text-gray-400 mb-2">
@@ -106,27 +106,32 @@ export default function ProtectedRoute({ children }) {
       )
     }
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
-        <div className="bg-gray-900 border border-red-800 rounded-2xl p-8 w-full max-w-md text-center">
-          <span className="text-5xl">🔒</span>
-          <h2 className="text-2xl font-bold text-white mt-4 mb-2">
-            Subscription Expired
+      <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+        <div className="bg-surface-elevated border border-red-800 rounded-2xl p-8 w-full max-w-md text-center">
+          <h2 className="text-2xl font-bold text-white mb-2">
+            {subscription?.is_trial ? 'Free Trial Ended' : 'Subscription Expired'}
           </h2>
           <p className="text-gray-400 mb-2">
-            Your subscription expired on{' '}
+            {subscription?.is_trial ? 'Your free trial ended on' : 'Your subscription expired on'}{' '}
             <span className="text-white font-medium">
               {new Date(subscription.expiry_date).toLocaleDateString()}
             </span>
           </p>
           <p className="text-gray-400 mb-6">
-            Please renew your subscription to continue using KaySales.
+            {subscription?.is_trial
+              ? 'Choose a plan to keep using KaySales.'
+              : 'Please renew your subscription to continue using KaySales.'}
           </p>
           <div className="bg-yellow-900 border border-yellow-700 rounded-xl p-4 mb-6 text-left">
-            <p className="text-yellow-300 font-bold mb-2">How to renew:</p>
+            <p className="text-yellow-300 font-bold mb-2">{subscription?.is_trial ? 'How to subscribe:' : 'How to renew:'}</p>
             <p className="text-yellow-200 text-sm">1. Send payment via MTN Mobile Money</p>
             <p className="text-yellow-200 text-sm">2. Number: <strong className="text-white">0785422754</strong></p>
             <p className="text-yellow-200 text-sm">3. Amount: <strong className="text-white">
-              RWF {subscription?.plan_type === 'premium' ? '50,000' : '25,000'}
+              {subscription?.is_trial
+                ? PLAN_ORDER.filter((id) => !PLANS[id].requiresAdminSetup)
+                    .map((id) => `${PLANS[id].name} ${formatRwf(PLANS[id].price)}`)
+                    .join(' or ')
+                : formatRwf(getPlan(planId).price)}
             </strong></p>
             <p className="text-yellow-200 text-sm">4. Contact admin with your transaction ID</p>
           </div>
