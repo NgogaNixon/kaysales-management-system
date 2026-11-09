@@ -95,9 +95,9 @@ export const PLANS = {
     price: 80000,
     billing: 'monthly',
     popular: false,
-    // An admin creates and switches on the company account; clients cannot
-    // self-activate this plan.
-    requiresAdminSetup: true,
+    // Bought like the other plans (choose, pay by MTN, wait for admin approval).
+    // When the admin approves the payment, the company is created automatically.
+    requiresAdminSetup: false,
     limits: {
       maxCategories: null,
       maxSeats: 10, // default; admin can change per company (subscriptions.seat_limit)

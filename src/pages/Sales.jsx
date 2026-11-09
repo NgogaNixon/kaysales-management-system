@@ -1,20 +1,33 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useRecorderNames } from '../lib/useRecorderNames'
+import { useApprovalGate } from '../lib/useApprovalGate'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
 import UndoToast from '../components/UndoToast'
 import { logActivity } from '../lib/activityLogger'
+import { changeStock } from '../lib/stock'
+import { localDate } from '../lib/dates'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
 export default function Sales() {
-  const { profile } = useAuth()
-  const showProfit = profile?.show_profit === true
+  const { profile, canWrite, canView, isOrgStaff, isCeo } = useAuth()
+  // In a company, each sale shows the person who recorded it
+  const recorderNames = useRecorderNames()
+  const showRecorder = isCeo || isOrgStaff
+  const { gate, approvalDialog, consumeApproval } = useApprovalGate()
+  // The owner's profit switch decides whether profit is RECORDED on every sale (also
+  // for company staff). Whether it is SHOWN also needs the financial permission.
+  const profitTracking = profile?.show_profit === true
+  const showProfit = profitTracking && canView('financials')
+  // View-only company staff can read sales but not record, change or remove them
+  const canEdit = canWrite('sales')
   const [sales, setSales] = useState([])
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -34,17 +47,17 @@ export default function Sales() {
   const [search, setSearch] = useState('')
   const getMonthStart = () => {
     const d = new Date()
-    return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split('T')[0]
+    return localDate(new Date(d.getFullYear(), d.getMonth(), 1))
   }
   const getMonthEnd = () => {
     const d = new Date()
-    return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split('T')[0]
+    return localDate(new Date(d.getFullYear(), d.getMonth() + 1, 0))
   }
   const [dateFrom, setDateFrom] = useState(getMonthStart())
   const [dateTo, setDateTo] = useState(getMonthEnd())
   const [customerName, setCustomerName] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
-  const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0])
+  const [saleDate, setSaleDate] = useState(localDate(new Date()))
   const [saleItems, setSaleItems] = useState([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0, is_consignment: false }])
 const [extraFees, setExtraFees] = useState('')
   const [amountPaidNow, setAmountPaidNow] = useState('')
@@ -55,6 +68,8 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
   const [pendingDelete, setPendingDelete] = useState(null)
   const [showUndoToast, setShowUndoToast] = useState(false)
   const [saleItemsBySale, setSaleItemsBySale] = useState({})
+  // Staff edit: the approval used to open the editor, used up only once the edit is saved
+  const [editApprovalId, setEditApprovalId] = useState(null)
 
   useEffect(() => {
     if (profile?.id) {
@@ -101,7 +116,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setPendingEditSale(null)
     setCustomerName('')
     setPaymentMethod('cash')
-    setSaleDate(new Date().toISOString().split('T')[0])
+    setSaleDate(localDate(new Date()))
     setSaleItems([{ product_id: '', product_name: '', quantity_sold: '', selling_price: '', buying_price: '', total: 0, is_consignment: false }])
     setExtraFees('')
     setAmountPaidNow('')
@@ -109,12 +124,12 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setShowModal(true)
   }
 
-  const openEdit = async (sale) => {
+  const openEditForm = async (sale) => {
     setSelectedSale(sale)
     setPendingEditSale(sale)
     setCustomerName(sale.product_name)
     setPaymentMethod(sale.payment_method || 'cash')
-    setSaleDate(sale.created_at ? sale.created_at.split('T')[0] : new Date().toISOString().split('T')[0])
+    setSaleDate(sale.created_at ? localDate(new Date(sale.created_at)) : localDate(new Date()))
     setExtraFees(sale.extra_fees ? String(sale.extra_fees) : '')
     setAmountPaidNow(sale.amount_paid ? String(sale.amount_paid) : '')
     setError('')
@@ -141,8 +156,40 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setShowModal(true)
   }
 
+  // Company staff need the owner's approval to change a sale (their password is not asked)
+  const openEdit = (sale) => {
+    if (!isOrgStaff) {
+      openEditForm(sale)
+      return
+    }
+    gate({
+      entityType: 'sale',
+      entityId: sale.id,
+      action: 'edit',
+      summary: `Edit sale for: ${sale.product_name} (RWF ${(sale.total || 0).toLocaleString()})`,
+      deferConsume: true,
+      onProceed: async (approval) => {
+        setEditApprovalId(approval.id)
+        await openEditForm(sale)
+      },
+    })
+  }
+
   const openDelete = (sale) => {
     setSelectedSale(sale)
+    if (isOrgStaff) {
+      gate({
+        entityType: 'sale',
+        entityId: sale.id,
+        action: 'delete',
+        summary: `Delete sale for: ${sale.product_name} (RWF ${(sale.total || 0).toLocaleString()})`,
+        onProceed: async () => {
+          const ok = await confirmDelete(sale)
+          if (!ok) throw new Error('The sale could not be deleted. Your approval is still valid, please try again.')
+        },
+      })
+      return
+    }
     setShowConfirm(true)
   }
 
@@ -290,17 +337,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
         for (const oldItem of oldItems || []) {
           if (oldItem.is_consignment) continue
-          const { data: freshProduct } = await supabase
-            .from('products')
-            .select('quantity')
-            .eq('id', oldItem.product_id)
-            .single()
-          if (freshProduct) {
-            await supabase
-              .from('products')
-              .update({ quantity: freshProduct.quantity + parseInt(oldItem.quantity_sold) })
-              .eq('id', oldItem.product_id)
-          }
+          await changeStock(oldItem.product_id, parseInt(oldItem.quantity_sold))
         }
 
         await supabase.from('sale_items').delete().eq('sale_id', editSale.id)
@@ -319,20 +356,10 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
         for (const item of validItems) {
           if (item.is_consignment) continue
-          const { data: freshProduct } = await supabase
-            .from('products')
-            .select('quantity')
-            .eq('id', item.product_id)
-            .single()
-          if (freshProduct) {
-            await supabase
-              .from('products')
-              .update({ quantity: freshProduct.quantity - parseInt(item.quantity_sold) })
-              .eq('id', item.product_id)
-          }
+          await changeStock(item.product_id, -parseInt(item.quantity_sold))
         }
 
-        if (showProfit) {
+        if (profitTracking) {
           await supabase.from('sales').update({
             extra_fees: parseInt(extraFees) || 0,
             profit: totalProfit,
@@ -392,7 +419,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       saleError = error
 
       if (!saleError && saleData) {
-        if (saleDate !== new Date().toISOString().split('T')[0]) {
+        if (saleDate !== localDate(new Date())) {
           await supabase.from('sales').update({ created_at: saleDate }).eq('id', saleData.id)
         }
 
@@ -409,7 +436,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         }))
         await supabase.from('sale_items').insert(itemsToInsert)
 
-        if (showProfit) {
+        if (profitTracking) {
           await supabase.from('sales').update({
             extra_fees: parseInt(extraFees) || 0,
             profit: totalProfit,
@@ -418,17 +445,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
         for (const item of validItems) {
           if (item.is_consignment) continue
-          const { data: freshProduct } = await supabase
-            .from('products')
-            .select('quantity')
-            .eq('id', item.product_id)
-            .single()
-          if (freshProduct) {
-            await supabase
-              .from('products')
-              .update({ quantity: freshProduct.quantity - parseInt(item.quantity_sold) })
-              .eq('id', item.product_id)
-          }
+          await changeStock(item.product_id, -parseInt(item.quantity_sold))
         }
 
         if (paymentMethod === 'credit') {
@@ -478,6 +495,11 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       `${editSale ? 'Updated' : 'Added'} sale for: ${customerName} - RWF ${saleTotal.toLocaleString()} - Payment: ${paymentMethod}`
     )
 
+    if (editApprovalId) {
+      await consumeApproval(editApprovalId)
+      setEditApprovalId(null)
+    }
+
     setSaving(false)
     setShowModal(false)
     setShowOTP(false)
@@ -494,52 +516,43 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     setShowUndoToast(true)
   }
 
-  const confirmDelete = async () => {
-    if (!pendingDelete) return
+  // Returns true when the sale was deleted
+  const confirmDelete = async (target = pendingDelete) => {
+    if (!target) return false
 
     try {
       const { data: items } = await supabase
         .from('sale_items')
         .select('*')
-        .eq('sale_id', pendingDelete.id)
+        .eq('sale_id', target.id)
 
       await supabase
         .from('quotations')
         .update({ sale_id: null, status: 'pending' })
-        .eq('sale_id', pendingDelete.id)
+        .eq('sale_id', target.id)
 
       // Keep Credits in sync — a deleted sale shouldn't leave an orphaned
       // credit record behind (e.g. this sale was made on credit).
-      await supabase.from('credits_given').delete().eq('sale_id', pendingDelete.id)
+      await supabase.from('credits_given').delete().eq('sale_id', target.id)
 
       const { error: deleteSaleError } = await supabase
         .from('sales')
         .delete()
-        .eq('id', pendingDelete.id)
+        .eq('id', target.id)
 
       if (deleteSaleError) {
         alert('Could not delete this sale:\n\n' + deleteSaleError.message)
         setPendingDelete(null)
         setShowUndoToast(false)
-        return
+        return false
       }
 
-      await supabase.from('sale_items').delete().eq('sale_id', pendingDelete.id)
+      await supabase.from('sale_items').delete().eq('sale_id', target.id)
 
       if (items && items.length > 0) {
         for (const item of items) {
           if (item.is_consignment) continue
-          const { data: freshProduct } = await supabase
-            .from('products')
-            .select('quantity')
-            .eq('id', item.product_id)
-            .single()
-          if (freshProduct) {
-            await supabase
-              .from('products')
-              .update({ quantity: freshProduct.quantity + item.quantity_sold })
-              .eq('id', item.product_id)
-          }
+          await changeStock(item.product_id, item.quantity_sold)
         }
       }
 
@@ -548,7 +561,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         profile.email,
         profile.full_name,
         'Delete Sale',
-        `Deleted sale for: ${pendingDelete.product_name} - RWF ${pendingDelete.total?.toLocaleString()}`
+        `Deleted sale for: ${target.product_name} - RWF ${target.total?.toLocaleString()}`
       )
 
       setPendingDelete(null)
@@ -556,10 +569,12 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       fetchSales()
       fetchAllSaleItems()
       fetchProducts()
+      return true
     } catch (err) {
       alert('Unexpected error deleting sale:\n\n' + (err?.message || String(err)))
       setPendingDelete(null)
       setShowUndoToast(false)
+      return false
     }
   }
 
@@ -769,12 +784,14 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">💰 Sales</h1>
+            <h1 className="text-2xl font-bold text-white">Sales</h1>
             <p className="text-gray-400 text-sm mt-1">Record and manage your sales</p>
           </div>
-          <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm">
+          {canEdit && (
+          <button onClick={openAdd} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium text-sm">
             + Record Sale
           </button>
+          )}
         </div>
 
         <div className="flex flex-col sm:flex-row gap-3">
@@ -783,27 +800,27 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
             placeholder="Search by customer or product..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-blue-500"
+            className="bg-surface-elevated border border-surface-border text-white px-4 py-2 rounded-lg text-sm flex-1 focus:outline-none focus:border-primary"
           />
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="bg-surface-elevated border border-surface-border text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="bg-surface-elevated border border-surface-border text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
           <button
             onClick={() => { setDateFrom(getMonthStart()); setDateTo(getMonthEnd()) }}
-            className="px-3 py-2 bg-gray-800 text-gray-300 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
+            className="px-3 py-2 bg-surface-elevated border border-surface-border text-gray-300 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
           >
             This Month
           </button>
           <button
             onClick={() => { setDateFrom(''); setDateTo('') }}
-            className="px-3 py-2 bg-gray-800 text-gray-300 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
+            className="px-3 py-2 bg-surface-elevated border border-surface-border text-gray-300 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
           >
             All Time
           </button>
-          <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
-          <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
+          <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">Excel</button>
+          <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">PDF</button>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
+        <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 flex items-center justify-between">
           <div>
             <p className="text-gray-400 text-sm">Total Revenue {(dateFrom || dateTo) && <span className="text-gray-500 text-xs font-normal">(filtered)</span>}</p>
             <p className="text-green-400 text-2xl font-bold">RWF {totalRevenue.toLocaleString()}</p>
@@ -814,38 +831,41 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           </div>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="bg-surface-elevated border border-surface-border rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading sales...</p></div>
           ) : filtered.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500 mb-3">No sales found</p>
-              <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">Record First Sale</button>
+              {canEdit && (
+              <button onClick={openAdd} className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary-hover transition">Record First Sale</button>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-800">
+                <thead className="bg-surface">
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Customer</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Total</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Payment</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
+                    {showRecorder && <th className="text-left text-gray-400 px-6 py-4 font-medium">Recorded by</th>}
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Date</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.map((sale) => (
-                    <tr key={sale.id} className="border-t border-gray-800 hover:bg-gray-800 transition">
+                    <tr key={sale.id} className="border-t border-surface-border hover:bg-surface transition">
                       <td className="px-6 py-4 text-white font-medium">{sale.product_name}</td>
                       <td className="px-6 py-4 text-green-400 font-medium">RWF {sale.total?.toLocaleString()}</td>
                       <td className="px-6 py-4 text-gray-300 text-xs">
-                        {sale.payment_method === 'cash' ? '💵 Cash' :
-                         sale.payment_method === 'mtn' ? '📱 MTN' :
-                         sale.payment_method === 'bank' ? '🏦 Bank' :
-                         sale.payment_method === 'cheque' ? '📄 Cheque' :
-                         sale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
+                        {sale.payment_method === 'cash' ? 'Cash' :
+                         sale.payment_method === 'mtn' ? 'MTN' :
+                         sale.payment_method === 'bank' ? 'Bank' :
+                         sale.payment_method === 'cheque' ? 'Cheque' :
+                         sale.payment_method === 'credit' ? 'Credit' : 'Cash'}
                       </td>
                       <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
@@ -854,16 +874,25 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                           sale.payment_status === 'pending' ? 'bg-yellow-900 text-yellow-300' :
                           'bg-green-900 text-green-300'
                         }`}>
-                          {sale.payment_status === 'pending' ? '⏳ Pending' :
-                           sale.payment_status === 'partial' ? '🟠 Partial' : '✅ Paid'}
+                          {sale.payment_status === 'pending' ? 'Pending' :
+                           sale.payment_status === 'partial' ? 'Partial' : 'Paid'}
                         </span>
                       </td>
+                      {showRecorder && (
+                        <td className="px-6 py-4 text-gray-300 text-xs">
+                          {sale.created_by ? (recorderNames[sale.created_by] || 'Team member') : '—'}
+                        </td>
+                      )}
                       <td className="px-6 py-4 text-gray-400">{new Date(sale.created_at).toLocaleDateString()}</td>
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
                           <button onClick={() => generateReceipt(sale)} className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition">Receipt</button>
-                          <button onClick={() => openEdit(sale)} className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs transition">Edit</button>
-                          <button onClick={() => openDelete(sale)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
+                          {canEdit && (
+                            <>
+                              <button onClick={() => openEdit(sale)} className="px-3 py-1 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs transition">Edit</button>
+                              <button onClick={() => openDelete(sale)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -877,7 +906,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       </div>
 
       {showModal && (
-        <Modal title={pendingEditSale ? 'Edit Sale' : 'Record Sale'} onClose={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }}>
+        <Modal title={pendingEditSale ? 'Edit Sale' : 'Record Sale'} onClose={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null); setEditApprovalId(null) }}>
           <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
             {error && <p className="text-red-400 text-sm">{error}</p>}
             <div>
@@ -886,7 +915,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 type="text"
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                 placeholder="Customer name"
               />
             </div>
@@ -896,7 +925,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 type="date"
                 value={saleDate}
                 onChange={(e) => setSaleDate(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
               />
             </div>
             <div>
@@ -904,25 +933,25 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
               <select
                 value={paymentMethod}
                 onChange={(e) => setPaymentMethod(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
               >
-                <option value="cash">💵 Cash</option>
-                <option value="mtn">📱 MTN Mobile Money</option>
-                <option value="bank">🏦 Bank Transfer</option>
-                <option value="cheque">📄 Cheque</option>
-                <option value="credit">💳 Credit (Add to Credits Given)</option>
+                <option value="cash">Cash</option>
+                <option value="mtn">MTN Mobile Money</option>
+                <option value="bank">Bank Transfer</option>
+                <option value="cheque">Cheque</option>
+                <option value="credit">Credit (Add to Credits Given)</option>
               </select>
             </div>
             {paymentMethod === 'credit' && (
               <div className="bg-yellow-900 border border-yellow-700 rounded-lg p-3 space-y-3">
-                <p className="text-yellow-300 text-xs">⚠️ Whatever isn't paid now will be added to Credits Given as owed.</p>
+                <p className="text-yellow-300 text-xs">Whatever isn't paid now will be added to Credits Given as owed.</p>
                 <div>
                   <label className="text-yellow-200 text-xs mb-1 block">Amount Paid Now (leave blank if nothing was paid)</label>
                   <input
                     type="number"
                     value={amountPaidNow}
                     onChange={(e) => setAmountPaidNow(e.target.value)}
-                    className="w-full bg-gray-800 border border-yellow-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-yellow-500"
+                    className="w-full bg-surface border border-yellow-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-yellow-500"
                     placeholder="0"
                   />
                 </div>
@@ -936,7 +965,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
             <div className="space-y-3">
               <label className="text-gray-400 text-sm block">Products *</label>
               {saleItems.map((item, index) => (
-                <div key={index} className="bg-gray-800 rounded-lg p-3 space-y-2">
+                <div key={index} className="bg-surface rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400 text-xs">Item {index + 1}</span>
                     {saleItems.length > 1 && (
@@ -950,14 +979,14 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                       onChange={() => handleToggleConsignment(index)}
                       className="rounded"
                     />
-                    <span className="text-gray-300 text-xs">🔄 Third-Party Item</span>
+                    <span className="text-gray-300 text-xs">Third-Party Item</span>
                   </label>
                   {item.is_consignment ? (
                     <input
                       type="text"
                       value={item.product_name}
                       onChange={(e) => handleConsignmentNameChange(index, e.target.value)}
-                      className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                       placeholder="Product name (not in your inventory)"
                     />
                   ) : (
@@ -974,11 +1003,11 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                           setShowProductDropdown({ ...showProductDropdown, [index]: true })
                         }}
                         onBlur={() => setTimeout(() => setShowProductDropdown({ ...showProductDropdown, [index]: false }), 150)}
-                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-                        placeholder="🔍 Search your stock..."
+                        className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
+                        placeholder="Search your stock..."
                       />
                       {showProductDropdown[index] && (
-                        <div className="absolute z-20 w-full bg-gray-800 border border-gray-600 rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
+                        <div className="absolute z-20 w-full bg-surface-elevated border border-surface-border rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
                           {products
                             .filter(p => p.name?.toLowerCase().includes((productSearch[index] || '').toLowerCase()))
                             .map(p => (
@@ -989,7 +1018,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                                   setProductSearch({ ...productSearch, [index]: '' })
                                   setShowProductDropdown({ ...showProductDropdown, [index]: false })
                                 }}
-                                className="px-3 py-2 hover:bg-gray-700 cursor-pointer text-sm text-white border-b border-gray-700 last:border-0"
+                                className="px-3 py-2 hover:bg-surface cursor-pointer text-sm text-white border-b border-surface-border last:border-0"
                               >
                                 {p.name} <span className="text-gray-400">(Stock: {p.quantity})</span>
                               </div>
@@ -1006,14 +1035,14 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                       type="number"
                       value={item.quantity_sold}
                       onChange={(e) => handleQuantityChange(index, e.target.value)}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                       placeholder="Quantity"
                     />
                     <input
                       type="number"
                       value={item.selling_price}
                       onChange={(e) => handlePriceChange(index, e.target.value)}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                       placeholder="Selling Price (RWF)"
                     />
                   </div>
@@ -1022,7 +1051,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                       type="number"
                       value={item.buying_price}
                       onChange={(e) => handleBuyingPriceChange(index, e.target.value)}
-                      className="w-full bg-gray-700 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+                      className="w-full bg-surface border border-primary text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary-light"
                       placeholder={item.is_consignment ? "Amount you owe the owner (RWF)" : "Buying Price / Cost (RWF)"}
                     />
                   )}
@@ -1031,7 +1060,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                   )}
                 </div>
               ))}
-              <button onClick={addItem} className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
+              <button onClick={addItem} className="w-full py-2 border border-dashed border-surface-border text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
                 + Add Another Product
               </button>
             </div>
@@ -1042,19 +1071,19 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                   type="number"
                   value={extraFees}
                   onChange={(e) => setExtraFees(e.target.value)}
-                  className="w-full bg-gray-800 border border-purple-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+                  className="w-full bg-surface border border-primary text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary-light"
                   placeholder="Transport, packaging, etc."
                 />
               </div>
             )}
             {grandTotal > 0 && (
-              <div className="bg-gray-800 rounded-lg px-4 py-3">
+              <div className="bg-surface rounded-lg px-4 py-3">
                 <p className="text-gray-400 text-sm">Grand Total</p>
                 <p className="text-green-400 text-xl font-bold">RWF {grandTotal.toLocaleString()}</p>
                 {showProfit && (
                   <>
                     <p className="text-gray-400 text-sm mt-2">Estimated Profit</p>
-                    <p className={`text-lg font-bold ${totalProfit >= 0 ? 'text-purple-400' : 'text-red-400'}`}>
+                    <p className={`text-lg font-bold ${totalProfit >= 0 ? 'text-primary-light' : 'text-red-400'}`}>
                       RWF {totalProfit.toLocaleString()}
                     </p>
                   </>
@@ -1062,10 +1091,10 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
               </div>
             )}
             <div className="flex gap-3 pt-2">
-              <button onClick={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null) }} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+              <button onClick={() => { setShowModal(false); setSelectedSale(null); setPendingEditSale(null); setEditApprovalId(null) }} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
               <button
                 onClick={() => {
-                  if (pendingEditSale) {
+                  if (pendingEditSale && !isOrgStaff) {
                     setOtpAction('edit')
                     setShowModal(false)
                     setShowOTP(true)
@@ -1074,7 +1103,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                   }
                 }}
                 disabled={saving}
-                className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+                className="flex-1 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium"
               >
                 {saving ? 'Saving...' : pendingEditSale ? 'Update Sale' : 'Record Sale'}
               </button>
@@ -1110,23 +1139,23 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h2 className="text-lg font-bold text-white">{exportType === 'excel' ? '📊 Export Excel' : '📄 Export PDF'}</h2>
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border">
+              <h2 className="text-lg font-bold text-white">{exportType === 'excel' ? 'Export Excel' : 'Export PDF'}</h2>
               <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-4">
               <p className="text-gray-400 text-sm">Select date range. Leave blank to export all records.</p>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">From Date</label>
-                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">To Date</label>
-                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
               </div>
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
                 <button onClick={handleExport} className={`flex-1 py-2 text-white rounded-lg transition font-medium ${exportType === 'excel' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'}`}>Download</button>
               </div>
             </div>
@@ -1136,8 +1165,8 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
       {showReceipt && receiptSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border flex-shrink-0">
               <h2 className="text-lg font-bold text-white">Sales Receipt</h2>
               <button onClick={() => setShowReceipt(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
@@ -1146,7 +1175,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 {profile?.logo_url ? (
                   <img src={profile.logo_url} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-2 rounded" />
                 ) : (
-                  <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
+                  <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center mx-auto mb-2">
                     <span className="text-white font-bold">K</span>
                   </div>
                 )}
@@ -1154,7 +1183,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 {profile?.company_location && <p className="text-gray-500 text-xs">{profile.company_location}</p>}
                 <p className="text-gray-400 text-xs">Sales Receipt</p>
               </div>
-              <div className="border-t border-gray-700 pt-4 space-y-2">
+              <div className="border-t border-surface-border pt-4 space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Date</span>
                   <span className="text-white">{new Date(receiptSale.created_at).toLocaleDateString()}</span>
@@ -1166,10 +1195,10 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Payment</span>
                   <span className="text-white">
-                    {receiptSale.payment_method === 'mtn' ? '📱 MTN Mobile Money' :
-                     receiptSale.payment_method === 'bank' ? '🏦 Bank Transfer' :
-                     receiptSale.payment_method === 'cheque' ? '📄 Cheque' :
-                     receiptSale.payment_method === 'credit' ? '💳 Credit' : '💵 Cash'}
+                    {receiptSale.payment_method === 'mtn' ? 'MTN Mobile Money' :
+                     receiptSale.payment_method === 'bank' ? 'Bank Transfer' :
+                     receiptSale.payment_method === 'cheque' ? 'Cheque' :
+                     receiptSale.payment_method === 'credit' ? 'Credit' : 'Cash'}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
@@ -1178,8 +1207,8 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                     receiptSale.payment_status === 'pending' ? 'text-yellow-400' :
                     receiptSale.payment_status === 'partial' ? 'text-orange-400' : 'text-green-400'
                   }>
-                    {receiptSale.payment_status === 'pending' ? '⏳ Pending' :
-                     receiptSale.payment_status === 'partial' ? '🟠 Partial' : '✅ Paid'}
+                    {receiptSale.payment_status === 'pending' ? 'Pending' :
+                     receiptSale.payment_status === 'partial' ? 'Partial' : 'Paid'}
                   </span>
                 </div>
                 {receiptSale.payment_status === 'partial' && (
@@ -1194,7 +1223,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                     </div>
                   </>
                 )}
-                <div className="border-t border-gray-700 pt-2">
+                <div className="border-t border-surface-border pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
                   {receiptItems.length > 0 ? receiptItems.map((item, i) => (
                     <div key={i} className="mb-2">
@@ -1208,7 +1237,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                     <p className="text-gray-500 text-sm">No items found</p>
                   )}
                 </div>
-                <div className="border-t border-gray-700 pt-2 flex justify-between">
+                <div className="border-t border-surface-border pt-2 flex justify-between">
                   <span className="text-white font-bold">GRAND TOTAL</span>
                   <span className="text-green-400 font-bold text-lg">RWF {receiptSale.total?.toLocaleString()}</span>
                 </div>
@@ -1227,12 +1256,12 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 {showProfit && receiptSale.profit !== undefined && receiptSale.profit !== null && (
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Profit Made</span>
-                    <span className="text-purple-400 font-medium">RWF {receiptSale.profit.toLocaleString()}</span>
+                    <span className="text-primary-light font-medium">RWF {receiptSale.profit.toLocaleString()}</span>
                   </div>
                 )}
               </div>
               {(profile?.signature_url || profile?.stamp_url) && (
-                <div className="flex justify-between items-end mt-4 pt-3 border-t border-gray-700">
+                <div className="flex justify-between items-end mt-4 pt-3 border-t border-surface-border">
                   {profile?.signature_url ? (
                     <div className="text-center">
                       <img src={profile.signature_url} alt="Signature" className="h-10 object-contain mx-auto" />
@@ -1252,8 +1281,8 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
                 <p>Powered by KaySales</p>
               </div>
               <div className="flex gap-3 mt-4">
-                <button onClick={() => setShowReceipt(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Close</button>
-                <button onClick={printReceipt} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">Download PDF</button>
+                <button onClick={() => setShowReceipt(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Close</button>
+                <button onClick={printReceipt} className="flex-1 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium">Download PDF</button>
               </div>
             </div>
           </div>
@@ -1264,9 +1293,11 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
         <UndoToast
           message="Sale deleted — stock will be restored"
           onUndo={handleUndo}
-          onExpire={confirmDelete}
+          onExpire={() => confirmDelete()}
         />
       )}
+
+      {approvalDialog}
 
     </Layout>
   )

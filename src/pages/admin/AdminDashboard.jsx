@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../context/AuthContext'
 import Layout from '../../components/Layout'
+import { fetchStaffUserIds } from '../../lib/staffAccounts'
 import { useNavigate } from 'react-router-dom'
 import { PLANS } from '../../lib/planConfig'
 
@@ -40,12 +41,15 @@ export default function AdminDashboard() {
   const fetchData = async () => {
     setLoading(true)
 
-    const { data: profilesData } = await supabase
+    // Company staff work inside a company and are not clients, so they are left out
+    const staffIds = await fetchStaffUserIds()
+    const { data: allProfiles } = await supabase
       .from('profiles')
       .select('*')
       .neq('role', 'admin')
       .eq('is_deleted', false)
       .order('created_at', { ascending: false })
+    const profilesData = allProfiles?.filter(p => !staffIds.has(p.id))
 
     const { data: subsData } = await supabase
       .from('subscriptions')

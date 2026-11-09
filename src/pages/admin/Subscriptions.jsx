@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import Layout from '../../components/Layout'
 import { PLANS } from '../../lib/planConfig'
+import { approvePaymentRequest } from '../../lib/approvePayment'
+import { localDate } from '../../lib/dates'
 
 // Plan name and badge colour for a payment request or subscription. Old
 // payment records for plans that no longer exist show as "Old plan".
@@ -29,7 +31,7 @@ export default function Subscriptions() {
     const isTrial = payment.transaction_id === 'FREE-TRIAL'
     const d = new Date()
     d.setDate(d.getDate() + (isTrial ? 7 : 30))
-    return d.toISOString().split('T')[0]
+    return localDate(d)
   }
 
   useEffect(() => {
@@ -85,51 +87,16 @@ export default function Subscriptions() {
       return
     }
 
-    // Update payment request status
-    await supabase
-      .from('payment_requests')
-      .update({ status: 'approved' })
-      .eq('id', payment.id)
-
-    // Approve client profile
-    await supabase
-      .from('profiles')
-      .update({ approved: true, plan_type: payment.plan_type })
-      .eq('id', payment.user_id)
-
-    // Set expiry date: admin's chosen date (defaults to trial=7 / paid=30 days)
+    // Expiry date: admin's chosen date (defaults to trial=7 / paid=30 days)
     const chosenDate = customExpiry[payment.id] || getDefaultExpiry(payment)
-    const expiryIso = new Date(chosenDate + 'T23:59:59').toISOString()
-    // A free-trial request marks the subscription as a trial; any paid request ends the trial
-    const isTrialRequest = payment.transaction_id === 'FREE-TRIAL'
-    // Check if subscription exists
-    const { data: existingSub } = await supabase
-      .from('subscriptions')
-      .select('*')
-      .eq('user_id', payment.user_id)
-      .single()
 
-    const subResult = existingSub
-      ? await supabase
-          .from('subscriptions')
-          .update({
-            plan_type: payment.plan_type,
-            payment_status: 'paid',
-            expiry_date: expiryIso,
-            is_trial: isTrialRequest,
-          })
-          .eq('user_id', payment.user_id)
-      : await supabase
-          .from('subscriptions')
-          .insert({
-            user_id: payment.user_id,
-            plan_type: payment.plan_type,
-            payment_status: 'paid',
-            expiry_date: expiryIso,
-            is_trial: isTrialRequest,
-          })
-    if (subResult.error) {
-      setActionError('Payment approved, but the subscription could not be saved: ' + subResult.error.message)
+    // The company name is the one the client typed when they asked for the company
+    const client = clients.find(c => c.id === payment.user_id)
+    const companyName = (client?.company_name || '').trim() || getClientName(payment.user_id)
+
+    const message = await approvePaymentRequest(payment, chosenDate, companyName)
+    if (message) {
+      setActionError(message)
     }
 
     fetchData()
@@ -370,6 +337,20 @@ export default function Subscriptions() {
                                     onChange={(e) => setCustomExpiry({ ...customExpiry, [payment.id]: e.target.value })}
                                     className="bg-surface border border-surface-border text-white px-2 py-1 rounded-lg text-xs focus:outline-none focus:border-admin-light"
                                   />
+                                  {payment.plan_type === 'organization' && (
+                                    <div className="mt-2 bg-surface border border-surface-border rounded-lg p-2">
+                                      <p className="text-gray-500 text-xs">Company entered by the client</p>
+                                      <p className="text-white text-xs font-medium">
+                                        {clients.find(c => c.id === payment.user_id)?.company_name || 'No company name entered'}
+                                      </p>
+                                      <p className="text-gray-500 text-xs">
+                                        {clients.find(c => c.id === payment.user_id)?.company_phone}
+                                      </p>
+                                      <p className="text-gray-500 text-xs">
+                                        {clients.find(c => c.id === payment.user_id)?.company_location}
+                                      </p>
+                                    </div>
+                                  )}
                                 </div>
                               ) : (
                                 <p className="text-yellow-400 text-xs">This plan no longer exists</p>

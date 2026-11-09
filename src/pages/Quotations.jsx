@@ -2,10 +2,14 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useRecorderNames } from '../lib/useRecorderNames'
+import { useApprovalGate } from '../lib/useApprovalGate'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { logActivity } from '../lib/activityLogger'
+import { changeStock } from '../lib/stock'
+import { localDate } from '../lib/dates'
 import { getMinimumPlanFor } from '../lib/planConfig'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 import jsPDF from 'jspdf'
@@ -14,7 +18,15 @@ import autoTable from 'jspdf-autotable'
 const isEmpty = (v) => v === '' || v === null || v === undefined
 
 export default function Quotations() {
-  const { profile, can, planLabel } = useAuth()
+  const { profile, can, planLabel, canWrite, isOrgStaff, isCeo } = useAuth()
+  // In a company, each quotation shows the person who recorded it
+  const recorderNames = useRecorderNames()
+  const showRecorder = isCeo || isOrgStaff
+  const { gate, approvalDialog } = useApprovalGate()
+  // Company staff: view-only people can read and print quotations but not change them.
+  // Converting to a sale also records a sale, so it needs Sales write access too.
+  const canEdit = canWrite('quotations')
+  const canConvert = canEdit && canWrite('sales')
   const navigate = useNavigate()
   // Quotations are a Premium feature (can be switched on per client by admin)
   const quotationsAllowed = can('quotations')
@@ -26,7 +38,7 @@ export default function Quotations() {
   const [selectedQuotation, setSelectedQuotation] = useState(null)
   const [editingQuotation, setEditingQuotation] = useState(null)
   const [customerName, setCustomerName] = useState('')
-  const [quoteDate, setQuoteDate] = useState(new Date().toISOString().split('T')[0])
+  const [quoteDate, setQuoteDate] = useState(localDate(new Date()))
   const [quoteItems, setQuoteItems] = useState([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0, is_consignment: false }])
   const [productSearch, setProductSearch] = useState({})
   const [showProductDropdown, setShowProductDropdown] = useState({})
@@ -75,7 +87,7 @@ export default function Quotations() {
     setSelectedQuotation(null)
     setEditingQuotation(null)
     setCustomerName('')
-    setQuoteDate(new Date().toISOString().split('T')[0])
+    setQuoteDate(localDate(new Date()))
     setQuoteItems([{ product_id: '', product_name: '', quantity: '', selling_price: '', total: 0, is_consignment: false }])
     setError('')
     setShowModal(true)
@@ -85,7 +97,7 @@ export default function Quotations() {
     setSelectedQuotation(null)
     setEditingQuotation(quotation)
     setCustomerName(quotation.customer_name)
-    setQuoteDate(quotation.date ? quotation.date.split('T')[0] : new Date().toISOString().split('T')[0])
+    setQuoteDate(quotation.date ? quotation.date.split('T')[0] : localDate(new Date()))
     setQuoteItems(
       quotation.items.map(i => ({
         product_id: i.product_id || '',
@@ -102,6 +114,20 @@ export default function Quotations() {
 
   const openDelete = (quotation) => {
     setSelectedQuotation(quotation)
+    // Company staff need the owner's approval first
+    if (isOrgStaff) {
+      gate({
+        entityType: 'quotation',
+        entityId: quotation.id,
+        action: 'delete',
+        summary: `Delete quotation for: ${quotation.customer_name}`,
+        onProceed: async () => {
+          const ok = await handleDelete(quotation)
+          if (!ok) throw new Error('The quotation could not be deleted. Your approval is still valid, please try again.')
+        },
+      })
+      return
+    }
     setShowConfirm(true)
   }
 
@@ -281,22 +307,24 @@ export default function Quotations() {
     }
   }
 
-  const handleDelete = async () => {
-    const { error: deleteError } = await supabase.from('quotations').delete().eq('id', selectedQuotation.id)
+  // Returns true when the quotation was deleted
+  const handleDelete = async (target = selectedQuotation) => {
+    const { error: deleteError } = await supabase.from('quotations').delete().eq('id', target.id)
     if (deleteError) {
       alert('Could not delete this quotation:\n\n' + deleteError.message)
-      return
+      return false
     }
     await logActivity(
       profile.id,
       profile.email,
       profile.full_name,
       'Delete Quotation',
-      `Deleted quotation for: ${selectedQuotation.customer_name}`
+      `Deleted quotation for: ${target.customer_name}`
     )
     setShowConfirm(false)
     setSelectedQuotation(null)
     fetchQuotations()
+    return true
   }
 
   // Converts a quotation into a Sale using the payment method chosen in the
@@ -379,17 +407,7 @@ export default function Quotations() {
 
       for (const item of itemsWithCost) {
         if (item.is_consignment) continue
-        const { data: freshProduct } = await supabase
-          .from('products')
-          .select('quantity')
-          .eq('id', item.product_id)
-          .single()
-        if (freshProduct) {
-          await supabase
-            .from('products')
-            .update({ quantity: freshProduct.quantity - item.quantity })
-            .eq('id', item.product_id)
-        }
+        await changeStock(item.product_id, -item.quantity)
       }
 
       // Credit sales: whatever wasn't paid now goes into Credits Given,
@@ -518,12 +536,14 @@ export default function Quotations() {
             <h1 className="text-2xl font-bold text-white">Quotations</h1>
             <p className="text-gray-400 text-sm mt-1">Create price quotes for customers — stock is untouched until converted to a sale</p>
           </div>
+          {canEdit && (
           <button
             onClick={openAdd}
             className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition"
           >
             + New Quotation
           </button>
+          )}
         </div>
 
         <div className="bg-surface-elevated border border-surface-border rounded-xl overflow-hidden">
@@ -539,6 +559,7 @@ export default function Quotations() {
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Customer</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Items</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Total</th>
+                    {showRecorder && <th className="text-left text-gray-400 px-6 py-4 font-medium">Recorded by</th>}
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Date</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
@@ -550,6 +571,11 @@ export default function Quotations() {
                       <td className="px-6 py-4 text-white font-medium">{q.customer_name}</td>
                       <td className="px-6 py-4 text-gray-300">{q.items.length} item{q.items.length > 1 ? 's' : ''}</td>
                       <td className="px-6 py-4 text-green-400 font-medium">RWF {q.total.toLocaleString()}</td>
+                      {showRecorder && (
+                        <td className="px-6 py-4 text-gray-300 text-xs">
+                          {q.created_by ? (recorderNames[q.created_by] || 'Team member') : '—'}
+                        </td>
+                      )}
                       <td className="px-6 py-4 text-gray-400">{new Date(q.date).toLocaleDateString()}</td>
                       <td className="px-6 py-4">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
@@ -563,7 +589,7 @@ export default function Quotations() {
                           <button onClick={() => openReceipt(q)} className="px-3 py-1 bg-surface hover:bg-surface-border text-white rounded-lg text-xs transition">
                             View Receipt
                           </button>
-                          {q.status !== 'converted' && (
+                          {canEdit && q.status !== 'converted' && (
                             <button onClick={() => openEdit(q)} className="px-3 py-1 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs transition">
                               Edit
                             </button>
@@ -571,7 +597,7 @@ export default function Quotations() {
                           <button onClick={() => exportPDF(q)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">
                             PDF
                           </button>
-                          {q.status !== 'converted' && (
+                          {canConvert && q.status !== 'converted' && (
                             <button
                               onClick={() => openConvert(q)}
                               disabled={converting}
@@ -580,9 +606,11 @@ export default function Quotations() {
                               Convert to Sale
                             </button>
                           )}
+                          {canEdit && (
                           <button onClick={() => openDelete(q)} className="px-3 py-1 bg-surface hover:bg-surface-border text-white rounded-lg text-xs transition">
                             Delete
                           </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -739,7 +767,7 @@ export default function Quotations() {
                 ? 'This quotation was already converted to a Sale. Deleting it only removes this quotation record — the Sale itself will NOT be affected. Continue?'
                 : 'Are you sure you want to delete this quotation?'
             }
-            onConfirm={handleDelete}
+            onConfirm={() => handleDelete()}
             onCancel={() => setShowConfirm(false)}
           />
         )}
@@ -874,6 +902,7 @@ export default function Quotations() {
         )}
 
       </div>
+      {approvalDialog}
     </Layout>
   )
 }

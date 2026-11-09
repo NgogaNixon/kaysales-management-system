@@ -3,9 +3,14 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { useEffect, useState } from 'react'
 import { PLANS, PLAN_ORDER, formatRwf, getPlan } from '../lib/planConfig'
+import { FIRST_PAGE_ORDER } from '../lib/permissions'
+import InviteChoice from './InviteChoice'
+import AccountClosed from './AccountClosed'
 
-export default function ProtectedRoute({ children }) {
-  const { user, profile, loading, planId } = useAuth()
+// module (optional): the area of the system this page belongs to. Company staff
+// who have no access to that area are sent to the first page they can open.
+export default function ProtectedRoute({ children, module }) {
+  const { user, profile, myProfile, loading, planId, canView, memberBlocked, ownerSuspended, isOrgStaff, inviteChoice } = useAuth()
   const navigate = useNavigate()
   const [subscription, setSubscription] = useState(null)
   const [pendingPayment, setPendingPayment] = useState(null)
@@ -71,11 +76,83 @@ export default function ProtectedRoute({ children }) {
     )
   }
 
+  // The admin closed this account (moved it to Trash)
+  if ((myProfile || profile).is_deleted && profile.role !== 'admin') {
+    return <AccountClosed />
+  }
+
+  // Invited to a company but already uses KaySales in another account: choose first
+  if (inviteChoice && profile.role !== 'admin') {
+    return <InviteChoice />
+  }
+
+  // The admin suspended this owner's company
+  if (ownerSuspended && profile.role !== 'admin') {
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+        <div className="bg-surface-elevated border border-red-800 rounded-2xl p-8 w-full max-w-md text-center">
+          <h2 className="text-2xl font-bold text-white mb-2">Company Suspended</h2>
+          <p className="text-gray-400 mb-6">Your company account has been suspended. Please contact the KaySales admin.</p>
+          <button
+            onClick={async () => {
+              await supabase.auth.signOut()
+              window.location.href = '/login'
+            }}
+            className="w-full py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Staff whose access (or whose company) has been suspended
+  if (memberBlocked) {
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+        <div className="bg-surface-elevated border border-red-800 rounded-2xl p-8 w-full max-w-md text-center">
+          <h2 className="text-2xl font-bold text-white mb-2">Access Suspended</h2>
+          <p className="text-gray-400 mb-6">Your access to this company has been suspended. Please contact the company owner.</p>
+          <button
+            onClick={async () => {
+              await supabase.auth.signOut()
+              window.location.href = '/login'
+            }}
+            className="w-full py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   if (!profile.approved && profile.role !== 'admin') {
     return <Navigate to="/choose-plan" />
   }
 
   if (profile.role !== 'admin' && isExpired()) {
+    // Staff do not pay - the company owner renews
+    if (isOrgStaff) {
+    return (
+    <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+      <div className="bg-surface-elevated border border-red-800 rounded-2xl p-8 w-full max-w-md text-center">
+        <h2 className="text-2xl font-bold text-white mb-2">Company Subscription Expired</h2>
+        <p className="text-gray-400 mb-6">Your company subscription has expired. Please ask the company owner to renew it.</p>
+        <button
+          onClick={async () => {
+            await supabase.auth.signOut()
+            window.location.href = '/login'
+          }}
+          className="w-full py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition"
+        >
+          Logout
+        </button>
+      </div>
+    </div>
+    )
+    }
     if (pendingPayment) {
       return (
         <div className="min-h-screen bg-surface flex items-center justify-center px-4">
@@ -144,6 +221,29 @@ export default function ProtectedRoute({ children }) {
           <button
             onClick={async () => {
               const { supabase } = await import('../lib/supabase')
+              await supabase.auth.signOut()
+              window.location.href = '/login'
+            }}
+            className="w-full py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Company staff only open the areas they have access to
+  if (module && profile.role !== 'admin' && !canView(module)) {
+    const first = FIRST_PAGE_ORDER.find(([area]) => canView(area))
+    if (first) return <Navigate to={first[1]} replace />
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+        <div className="bg-surface-elevated border border-surface-border rounded-2xl p-8 w-full max-w-md text-center">
+          <h2 className="text-2xl font-bold text-white mb-2">No Access</h2>
+          <p className="text-gray-400 mb-6">You do not have access to any area yet. Please ask the company owner to set up your access.</p>
+          <button
+            onClick={async () => {
               await supabase.auth.signOut()
               window.location.href = '/login'
             }}

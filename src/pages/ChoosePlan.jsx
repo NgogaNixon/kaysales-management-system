@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { PLANS, PLAN_ORDER, formatRwf } from '../lib/planConfig'
+import AccountClosed from '../components/AccountClosed'
 
-// Plans a client can buy by themselves. Plans that an admin sets up for the
-// client (requiresAdminSetup) are not listed here.
+// Plans a client can buy by themselves: choose, pay by MTN and wait for the admin's approval.
+// (A plan marked requiresAdminSetup in planConfig.js would be left out of this list.)
 const SELF_SERVE_PLANS = PLAN_ORDER.map((id) => PLANS[id]).filter((plan) => !plan.requiresAdminSetup)
 
 // Features a client gets during the 7-day free trial (the Standard plan)
@@ -33,11 +34,21 @@ function ContactBox() {
 }
 
 export default function ChoosePlan() {
-  const { profile } = useAuth()
+  const { profile, myProfile, isCeo } = useAuth()
   const navigate = useNavigate()
-  const [selectedPlan, setSelectedPlan] = useState(null)
-  const [step, setStep] = useState(1)
-  const [form, setForm] = useState({ sender_name: '', transaction_id: '' })
+  const location = useLocation()
+  // An approved client who wants the company feature comes here from the dashboard
+  const isUpgrade = location.state?.upgrade === true
+  const [selectedPlan, setSelectedPlan] = useState(isUpgrade ? PLANS.organization : null)
+  const [step, setStep] = useState(isUpgrade ? 2 : 1)
+  const [form, setForm] = useState({
+    sender_name: '',
+    transaction_id: '',
+    company_name: profile?.company_name || '',
+    company_phone: profile?.company_phone || '',
+    company_location: profile?.company_location || '',
+    company_tin: profile?.company_tin || '',
+  })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
@@ -68,12 +79,26 @@ export default function ChoosePlan() {
 
   const handleSelectPlan = (plan) => {
     setSelectedPlan(plan)
+    // Fill in the company details the client already saved
+    setForm((prev) => ({
+      ...prev,
+      company_name: prev.company_name || profile?.company_name || '',
+      company_phone: prev.company_phone || profile?.company_phone || '',
+      company_location: prev.company_location || profile?.company_location || '',
+      company_tin: prev.company_tin || profile?.company_tin || '',
+    }))
     setStep(2)
   }
 
   const handleSubmitPayment = async () => {
     if (!form.sender_name || !form.transaction_id) {
       setError('Please fill in all fields')
+      return
+    }
+
+    // A new company needs a name (a CEO who is renewing already has one)
+    if (selectedPlan.id === 'organization' && !isCeo && !form.company_name.trim()) {
+      setError('Please enter your company name')
       return
     }
     setLoading(true)
@@ -94,13 +119,30 @@ export default function ChoosePlan() {
       return
     }
 
-    await supabase
-      .from('profiles')
-      .update({ plan_type: selectedPlan.id })
-      .eq('id', profile.id)
+    // The plan is set by the admin when the payment is approved,
+    // so only the company details are saved here
+    const profileUpdate = {}
+    // Save the company details for a company that does not exist yet
+    if (selectedPlan.id === 'organization' && !isCeo) {
+      profileUpdate.company_name = form.company_name.trim()
+      profileUpdate.company_phone = form.company_phone.trim()
+      profileUpdate.company_location = form.company_location.trim()
+      profileUpdate.company_tin = form.company_tin.trim()
+    }
+    if (Object.keys(profileUpdate).length > 0) {
+      await supabase
+        .from('profiles')
+        .update(profileUpdate)
+        .eq('id', profile.id)
+    }
 
     setLoading(false)
     setSuccess(true)
+  }
+
+  // A closed account cannot ask for a plan
+  if ((myProfile || profile)?.is_deleted) {
+    return <AccountClosed />
   }
 
   if (trialSuccess) {
@@ -142,10 +184,10 @@ export default function ChoosePlan() {
             <p className="text-gray-400 text-sm mt-1">Transaction ID: <span className="text-white font-medium">{form.transaction_id}</span></p>
           </div>
           <button
-            onClick={() => navigate('/login')}
+            onClick={() => navigate(isUpgrade ? '/dashboard' : '/login')}
             className="w-full py-3 bg-primary text-white rounded-xl font-bold hover:bg-primary-hover transition"
           >
-            Back to Login
+            {isUpgrade ? 'Back to Dashboard' : 'Back to Login'}
           </button>
         </div>
       </div>
@@ -174,7 +216,7 @@ export default function ChoosePlan() {
         )}
         {step === 2 && (
           <>
-            <h1 className="text-3xl font-extrabold text-white mb-2">Make Payment</h1>
+            <h1 className="text-3xl font-extrabold text-white mb-2">{isUpgrade ? 'Upgrade to Organization' : 'Make Payment'}</h1>
             <p className="text-gray-400">Send payment via MTN Mobile Money</p>
           </>
         )}
@@ -182,7 +224,7 @@ export default function ChoosePlan() {
 
       {/* Step 1 — Choose Plan */}
       {step === 1 && (
-        <div className="max-w-4xl mx-auto space-y-6">
+        <div className="max-w-5xl mx-auto space-y-6">
 
           {/* Free Trial Card */}
           <div className="bg-green-900 border-2 border-green-500 rounded-2xl p-8 text-center relative">
@@ -215,7 +257,7 @@ export default function ChoosePlan() {
           </div>
 
           {/* Paid Plans */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 max-w-3xl mx-auto">
+          <div className={`grid grid-cols-1 sm:grid-cols-2 gap-6 mx-auto ${SELF_SERVE_PLANS.length >= 3 ? 'lg:grid-cols-3 max-w-5xl' : 'max-w-3xl'}`}>
             {SELF_SERVE_PLANS.map((plan) => (
               <div
                 key={plan.id}
@@ -276,6 +318,56 @@ export default function ChoosePlan() {
             </div>
           </div>
 
+          {/* Company details: only for a new company (not for a CEO who is renewing) */}
+          {selectedPlan.id === 'organization' && !isCeo && (
+            <div className="bg-surface-elevated border border-surface-border rounded-2xl p-6">
+              <h3 className="text-white font-bold text-lg mb-1">Your Company Details</h3>
+              <p className="text-gray-500 text-sm mb-4">The admin will use these details to set up your company.</p>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-gray-400 text-sm mb-1 block">Company Name *</label>
+                  <input
+                    type="text"
+                    value={form.company_name}
+                    onChange={(e) => setForm({ ...form, company_name: e.target.value })}
+                    className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
+                    placeholder="e.g. KAY1 COMPANY LTD"
+                  />
+                </div>
+                <div>
+                  <label className="text-gray-400 text-sm mb-1 block">Company Phone</label>
+                  <input
+                    type="text"
+                    value={form.company_phone}
+                    onChange={(e) => setForm({ ...form, company_phone: e.target.value })}
+                    className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
+                    placeholder="e.g. 0788000000"
+                  />
+                </div>
+                <div>
+                  <label className="text-gray-400 text-sm mb-1 block">Company Location</label>
+                  <input
+                    type="text"
+                    value={form.company_location}
+                    onChange={(e) => setForm({ ...form, company_location: e.target.value })}
+                    className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
+                    placeholder="e.g. Kigali, Remera"
+                  />
+                </div>
+                <div>
+                  <label className="text-gray-400 text-sm mb-1 block">TIN Number</label>
+                  <input
+                    type="text"
+                    value={form.company_tin}
+                    onChange={(e) => setForm({ ...form, company_tin: e.target.value })}
+                    className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
+                    placeholder="e.g. 123456789"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="bg-yellow-900 border border-yellow-700 rounded-2xl p-6">
             <h3 className="text-yellow-300 font-bold text-lg mb-4">MTN Mobile Money Payment</h3>
             <div className="space-y-3">
@@ -319,7 +411,7 @@ export default function ChoosePlan() {
               </div>
               <div className="flex gap-3 pt-2">
                 <button
-                  onClick={() => setStep(1)}
+                  onClick={() => (isUpgrade ? navigate('/dashboard') : setStep(1))}
                   className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition"
                 >
                   Back

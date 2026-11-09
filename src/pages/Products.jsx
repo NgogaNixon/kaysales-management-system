@@ -1,7 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
 import { logActivity } from '../lib/activityLogger'
+import { changeStock } from '../lib/stock'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useRecorderNames } from '../lib/useRecorderNames'
+import { useApprovalGate } from '../lib/useApprovalGate'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -12,10 +15,17 @@ import * as XLSX from 'xlsx'
 const normCat = (c) => String(c ?? '').trim().toLowerCase()
 
 export default function Products() {
-  const { profile, limit, planLabel } = useAuth()
+  const { profile, limit, planLabel, canWrite, canView, isOrgStaff, isCeo } = useAuth()
+  // In a company, each product shows the person who added it
+  const recorderNames = useRecorderNames()
+  const showRecorder = isCeo || isOrgStaff
+  const { gate, approvalDialog } = useApprovalGate()
+  // Company staff with view-only access cannot add, change or remove products
+  const canEdit = canWrite('products')
   // Maximum stock categories for this client's plan (null = unlimited)
   const categoryLimit = limit('maxCategories')
-  const showProfit = profile?.show_profit === true
+  // Cost and profit figures need the owner's profit switch AND, for company staff, the financial permission
+  const showProfit = profile?.show_profit === true && canView('financials')
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
@@ -83,6 +93,17 @@ export default function Products() {
 
   const openDelete = (product) => {
     setSelectedProduct(product)
+    // Company staff need the owner's approval first (their password is not asked)
+    if (isOrgStaff) {
+      gate({
+        entityType: 'product',
+        entityId: product.id,
+        action: 'delete',
+        summary: `Delete product: ${product.name}`,
+        onProceed: () => handleDelete(product),
+      })
+      return
+    }
     setShowConfirm(true)
   }
 
@@ -101,7 +122,7 @@ export default function Products() {
     }
     const newQuantity = (selectedProduct.quantity || 0) + addQty
 
-    await supabase.from('products').update({ quantity: newQuantity }).eq('id', selectedProduct.id)
+    await changeStock(selectedProduct.id, addQty)
 
     await logActivity(
       profile.id,
@@ -304,14 +325,15 @@ export default function Products() {
     fetchProducts()
   }
 
-  const handleDelete = async () => {
-    await supabase.from('products').delete().eq('id', selectedProduct.id)
+  const handleDelete = async (target = selectedProduct) => {
+    const { error: deleteError } = await supabase.from('products').delete().eq('id', target.id)
+    if (deleteError) throw new Error(deleteError.message)
     await logActivity(
       profile.id,
       profile.email,
       profile.full_name,
       'Delete Product',
-      `Deleted product: ${selectedProduct.name}`
+      `Deleted product: ${target.name}`
     )
     setShowOTP(false)
     setShowConfirm(false)
@@ -347,6 +369,7 @@ export default function Products() {
             >
               Download Template
             </button>
+            {canEdit && (
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={importing}
@@ -354,6 +377,7 @@ export default function Products() {
             >
               {importing ? 'Importing...' : 'Import Excel'}
             </button>
+            )}
             <input
               type="file"
               ref={fileInputRef}
@@ -361,12 +385,14 @@ export default function Products() {
               accept=".xlsx,.xls"
               className="hidden"
             />
+            {canEdit && (
             <button
               onClick={openAdd}
               className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium text-sm"
             >
               + Add Product
             </button>
+            )}
           </div>
         </div>
 
@@ -424,9 +450,11 @@ export default function Products() {
           ) : filtered.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500 mb-3">No products found</p>
+              {canEdit && (
               <button onClick={openAdd} className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary-hover transition">
                 Add First Product
               </button>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -442,7 +470,10 @@ export default function Products() {
                     )}
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Selling Price</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Status</th>
-                    <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
+                    {showRecorder && <th className="text-left text-gray-400 px-6 py-4 font-medium">Added by</th>}
+                    {canEdit && (
+                      <th className="text-left text-gray-400 px-6 py-4 font-medium">Actions</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -475,6 +506,12 @@ export default function Products() {
                           {product.quantity === 0 ? 'Out of Stock' : product.quantity < threshold ? 'Low Stock' : 'In Stock'}
                         </span>
                       </td>
+                      {showRecorder && (
+                        <td className="px-6 py-4 text-gray-300 text-xs">
+                          {product.created_by ? (recorderNames[product.created_by] || 'Team member') : '—'}
+                        </td>
+                      )}
+                      {canEdit && (
                       <td className="px-6 py-4">
                         <div className="flex gap-2">
                           <button onClick={() => openRestore(product)} className="px-3 py-1 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs transition">Restore</button>
@@ -482,6 +519,7 @@ export default function Products() {
                           <button onClick={() => openDelete(product)} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition">Delete</button>
                         </div>
                       </td>
+                      )}
                     </tr>
                     )
                   })}
@@ -568,7 +606,7 @@ export default function Products() {
               </button>
               <button
                 onClick={() => {
-                  if (selectedProduct) {
+                  if (selectedProduct && !isOrgStaff) {
                     setOtpAction('edit')
                     setShowModal(false)
                     setShowOTP(true)
@@ -629,6 +667,10 @@ export default function Products() {
                     setRestoreError('Enter a quantity greater than 0')
                     return
                   }
+                  if (isOrgStaff) {
+                    handleRestore()
+                    return
+                  }
                   setOtpAction('restore')
                   setShowRestoreModal(false)
                   setShowOTP(true)
@@ -672,6 +714,8 @@ export default function Products() {
           onCancel={() => setShowOTP(false)}
         />
       )}
+
+      {approvalDialog}
 
     </Layout>
   )

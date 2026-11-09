@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { getDeviceId, getAutoDeviceLabel } from './deviceId'
+import { ROLE_LABELS } from './permissions'
 
 // IP is background context only, never the primary proof (see getIpAddress
 // below for why). Cached per page load so we don't hit the lookup service on
@@ -19,8 +20,38 @@ const getIpAddress = async () => {
   }
 }
 
+// Company staff work as the company owner, so pages pass the OWNER's id, email
+// and name here. The log must name the person who really did the action, so
+// when the logged-in person is not the one passed in, their own details (and
+// role) are used instead. Looked up once and remembered.
+let cachedActor = null
+
+const resolveActor = async (userId, userEmail, userName) => {
+  const { data: { session } } = await supabase.auth.getSession()
+  const actorId = session?.user?.id
+  if (!actorId || actorId === userId) return { id: userId, email: userEmail, name: userName }
+  if (cachedActor && cachedActor.id === actorId) return cachedActor
+
+  const [{ data: me }, { data: member }] = await Promise.all([
+    supabase.from('profiles').select('full_name, email').eq('id', actorId).maybeSingle(),
+    supabase.from('organization_members').select('role, role_label').eq('user_id', actorId).maybeSingle(),
+  ])
+  const role = member?.role ? ` (${member.role_label || ROLE_LABELS[member.role]})` : ''
+  cachedActor = {
+    id: actorId,
+    email: me?.email || session.user.email,
+    name: `${me?.full_name || session.user.email}${role}`,
+  }
+  return cachedActor
+}
+
 export const logActivity = async (userId, userEmail, userName, action, details) => {
   try {
+    const actor = await resolveActor(userId, userEmail, userName)
+    userId = actor.id
+    userEmail = actor.email
+    userName = actor.name
+
     const device = navigator.userAgent
     const browser = getBrowser()
     const deviceId = getDeviceId()

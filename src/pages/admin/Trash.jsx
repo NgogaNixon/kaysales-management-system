@@ -42,37 +42,16 @@ export default function Trash() {
     fetchTrash()
   }
 
-  // True permanent delete — the original cascading delete this page replaces
-  // the risk of, kept here as a deliberate last-resort action with proper
-  // error handling so a blocked table surfaces instead of failing silently.
+  // True permanent delete. One database function (admin_delete_user in Supabase)
+  // removes the account's data, its company if it has one, and the login itself.
   const handlePermanentDelete = async () => {
     if (!clientToPurge) return
     setPurging(true)
     setActionError('')
-    const userId = clientToPurge.id
 
-    const steps = [
-      ['sale_items', 'user_id'],
-      ['sales', 'user_id'],
-      ['products', 'user_id'],
-      ['credits_given', 'user_id'],
-      ['credits_taken', 'user_id'],
-      ['subscriptions', 'user_id'],
-      ['payment_requests', 'user_id'],
-    ]
-
-    for (const [table, column] of steps) {
-      const { error } = await supabase.from(table).delete().eq(column, userId)
-      if (error) {
-        setActionError(`Could not delete related data in "${table}": ${error.message}`)
-        setPurging(false)
-        return
-      }
-    }
-
-    const { error: profileError } = await supabase.from('profiles').delete().eq('id', userId)
-    if (profileError) {
-      setActionError('Could not delete the client profile: ' + profileError.message)
+    const { error } = await supabase.rpc('admin_delete_user', { target_id: clientToPurge.id })
+    if (error) {
+      setActionError('Could not delete this account: ' + error.message)
       setPurging(false)
       return
     }
@@ -177,7 +156,7 @@ export default function Trash() {
                 You are about to permanently delete <span className="text-white font-bold">{clientToPurge.full_name}</span>
               </p>
               <p className="text-red-400 text-sm mb-6">
-                This will delete all their products, sales, credits and subscription data. This cannot be undone.
+                This will delete all their products, sales, credits, subscription data and their login. This cannot be undone.
               </p>
             </div>
             <div className="flex gap-3">

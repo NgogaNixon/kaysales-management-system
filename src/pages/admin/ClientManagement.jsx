@@ -3,9 +3,12 @@ import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../context/AuthContext'
 import { PLANS, formatRwf } from '../../lib/planConfig'
 import Layout from '../../components/Layout'
+import { fetchStaffUserIds } from '../../lib/staffAccounts'
+import { approvePaymentRequest, ensureCompany, getDefaultExpiry } from '../../lib/approvePayment'
 
-// Packages the admin can assign from this page.
-const ASSIGNABLE_PLANS = ['standard', 'premium']
+// Packages the admin can assign from this page. The Organization package also gets
+// its company automatically, so the client can invite a team.
+const ASSIGNABLE_PLANS = ['standard', 'premium', 'organization']
 
 const pad = (n) => String(n).padStart(2, '0')
 const toDateInput = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -37,12 +40,17 @@ export default function ClientManagement() {
 
   const fetchData = async () => {
     setLoading(true)
-    const { data: profilesData } = await supabase
+    // Company staff work inside a company and are not clients, so they are left out
+    const staffIds = await fetchStaffUserIds()
+    const { data: allProfiles } = await supabase
       .from('profiles')
       .select('*')
       .neq('role', 'admin')
       .eq('is_deleted', false)
       .order('created_at', { ascending: false })
+    const profilesData = allProfiles?.filter(p => !staffIds.has(p.id))
+
+    const { data: companiesData } = await supabase.from('organizations').select('*')
 
     const { data: subsData } = await supabase
       .from('subscriptions')
@@ -57,6 +65,7 @@ export default function ClientManagement() {
       ...client,
       subscription: subsData?.find(s => s.user_id === client.id),
       payments: paymentsData?.filter(p => p.user_id === client.id),
+      company: companiesData?.find(o => o.owner_id === client.id) || null,
     }))
 
     setClients(clientsWithData || [])
@@ -66,8 +75,30 @@ export default function ClientManagement() {
 
   const handleApprove = async (userId) => {
     setActionError('')
+    const client = clients.find(c => c.id === userId)
+    const companyName = (client?.company_name || '').trim() || client?.full_name || ''
+
+    // The newest request that is still waiting (the list is newest first)
+    const pendingRequest = client?.payments?.find(p => p.status === 'pending')
+
+    // A waiting request decides the package: approving it sets up everything
+    // (profile, subscription and, for Organization, the company)
+    if (pendingRequest && PLANS[pendingRequest.plan_type]) {
+      const message = await approvePaymentRequest(pendingRequest, getDefaultExpiry(pendingRequest), companyName)
+      if (message) setActionError(message)
+      fetchData()
+      return
+    }
+
+    // No waiting request: approve the profile as before
     const { error } = await supabase.from('profiles').update({ approved: true }).eq('id', userId)
     if (error) { setActionError('Could not approve this client: ' + error.message); return }
+
+    // A client on the Organization package always gets a company
+    if (client?.plan_type === 'organization') {
+      const message = await ensureCompany(userId, companyName)
+      if (message) setActionError('Client approved, but ' + message)
+    }
     fetchData()
   }
 
@@ -97,8 +128,15 @@ export default function ClientManagement() {
 
   // Quick plan change from the table. Does not touch the expiry date or the
   // trial status — use "Change Package" in the client profile for that.
+  const confirmLeavingOrganization = (client, newPlan) =>
+    !(client?.company && client.plan_type === 'organization' && newPlan !== 'organization') ||
+    window.confirm(
+      `${client.full_name} has a company (${client.company.name}). On the ${PLANS[newPlan].name} plan the company leaves the Companies list and its team is blocked. Nothing is deleted, and moving back to Organization brings it back. Change the plan anyway?`
+    )
+
   const handlePlanChange = async (userId, plan) => {
     setActionError('')
+    if (!confirmLeavingOrganization(clients.find(c => c.id === userId), plan)) return
     const { error } = await supabase.from('profiles').update({ plan_type: plan }).eq('id', userId)
     if (error) { setActionError('Could not change plan: ' + error.message); return }
 
@@ -147,6 +185,7 @@ export default function ClientManagement() {
     if (!planForm.expiry) { setActionError('Choose an expiry date.'); return }
     const expiryIso = endOfDayIso(planForm.expiry)
     if (new Date(expiryIso) <= new Date()) { setActionError('The expiry date must be today or later.'); return }
+    if (!confirmLeavingOrganization(selectedClient, planForm.plan)) return
 
     setApplyingPlan(true)
     const userId = selectedClient.id
@@ -176,6 +215,23 @@ export default function ClientManagement() {
       return
     }
 
+    // The Organization package also needs a company (created once, named after the client)
+    let createdCompany = null
+    if (planForm.plan === 'organization' && !selectedClient.company) {
+      const { data: newCompany, error: companyError } = await supabase
+        .from('organizations')
+        .insert({ owner_id: userId, name: (selectedClient.company_name || '').trim() || selectedClient.full_name })
+        .select()
+        .single()
+      if (companyError) {
+        setActionError('Package applied, but the company could not be created: ' + companyError.message)
+      } else {
+        createdCompany = newCompany
+        // The CEO gets the financial breakdown automatically with the new company
+        await supabase.from('profiles').update({ show_profit: true }).eq('id', userId)
+      }
+    }
+
     if (planForm.recordPayment) {
       const { error: payError } = await supabase.from('payment_requests').insert({
         user_id: userId,
@@ -194,6 +250,7 @@ export default function ClientManagement() {
     setSelectedClient({
       ...selectedClient,
       plan_type: planForm.plan,
+      company: createdCompany || selectedClient.company,
       subscription: { ...(selectedClient.subscription || {}), ...subUpdates },
     })
     fetchData()
@@ -299,7 +356,12 @@ export default function ClientManagement() {
                         className="border-t border-surface-border hover:bg-surface transition cursor-pointer"
                         onClick={() => openClient(client)}
                       >
-                        <td className="px-6 py-4 text-white font-medium">{client.full_name}</td>
+                        <td className="px-6 py-4 text-white font-medium">
+                          {client.full_name}
+                          {client.company && (
+                            <span className="ml-2 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-900 text-emerald-300">Company</span>
+                          )}
+                        </td>
                         <td className="px-6 py-4 text-gray-300">{client.email}</td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-2">
@@ -409,9 +471,21 @@ export default function ClientManagement() {
                       {selectedIsTrial && (
                         <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-900 text-yellow-300">Free Trial</span>
                       )}
-                      <span className={`text-sm font-medium ${selectedClient.plan_type === 'premium' ? 'text-purple-400' : 'text-primary-light'}`}>
-                        {selectedClient.plan_type === 'premium' ? 'Premium' : 'Standard'}
+                      <span className={`text-sm font-medium ${
+                        selectedClient.plan_type === 'premium' ? 'text-purple-400'
+                          : selectedClient.plan_type === 'organization' ? 'text-emerald-400'
+                          : 'text-primary-light'
+                      }`}>
+                        {PLANS[selectedClient.plan_type]?.name || 'Standard'}
                       </span>
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400 text-sm">Company</span>
+                    <span className="text-white text-sm">
+                      {selectedClient.company
+                        ? `${selectedClient.company.name} (${selectedClient.company.status === 'active' ? 'active' : 'suspended'})`
+                        : 'None'}
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
@@ -550,6 +624,11 @@ export default function ClientManagement() {
                   <p className="text-gray-500 text-xs">
                     Sets the package, marks the subscription as paid, sets the expiry date{selectedIsTrial ? ' and ends the free trial' : ''}.
                   </p>
+                  {planForm.plan === 'organization' && !selectedClient.company && (
+                    <p className="text-gray-500 text-xs">
+                      A company for this client is created automatically (you can change its team size in the Companies page).
+                    </p>
+                  )}
                 </div>
               </div>
 

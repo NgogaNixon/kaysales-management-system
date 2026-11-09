@@ -4,15 +4,20 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useApprovalGate } from '../lib/useApprovalGate'
 import Layout from '../components/Layout'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
 import { logActivity } from '../lib/activityLogger'
+import { changeStock } from '../lib/stock'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 
 export default function Credits() {
-  const { profile } = useAuth()
+  const { profile, canWrite, isOrgStaff } = useAuth()
+  const { gate, approvalDialog, consumeApproval } = useApprovalGate()
+  // View-only company staff can read credits but not add, change or remove them
+  const canEdit = canWrite('credits')
   const [activeTab, setActiveTab] = useState('given')
   const [statusFilter, setStatusFilter] = useState('unpaid')
   const [creditsGiven, setCreditsGiven] = useState([])
@@ -58,6 +63,8 @@ export default function Credits() {
   // Credits <-> Sales consistency: sales whose credits don't match them
   const [syncIssues, setSyncIssues] = useState([])
   const [syncing, setSyncing] = useState(false)
+  // Staff edit: the approval used to open the editor, used up only once the edit is saved
+  const [editApprovalId, setEditApprovalId] = useState(null)
 
   useEffect(() => {
     if (profile?.id) fetchCredits()
@@ -84,6 +91,7 @@ export default function Credits() {
 
   const openAdd = () => {
     setSelectedCredit(null)
+    setEditApprovalId(null)
     setCustomerName('')
     setDate('')
     setNotes('')
@@ -93,7 +101,7 @@ export default function Credits() {
     setShowModal(true)
   }
 
-  const openEdit = (credit) => {
+  const openEditForm = (credit) => {
     setSelectedCredit(credit)
     setCustomerName(activeTab === 'given' ? credit.customer_name : credit.supplier_name)
     setDate(credit.date ? credit.date.split('T')[0] : '')
@@ -109,9 +117,68 @@ export default function Credits() {
     setShowModal(true)
   }
 
+  // ---- Company staff: changes to existing credits need the owner's approval ----
+  const creditEntityType = () => (activeTab === 'given' ? 'credit_given' : 'credit_taken')
+  const creditLabel = (credit) =>
+    `${activeTab === 'given' ? credit.customer_name : credit.supplier_name} (RWF ${(credit.amount || 0).toLocaleString()})`
+
+  // A credit that came from a sale also changes that sale, so staff need Sales access too
+  const staffNeedsSalesAccess = (credit) => {
+    if (activeTab === 'given' && credit.sale_id && !canWrite('sales')) {
+      alert('This credit belongs to a sale, so changing it also needs Sales access. Please ask the company owner.')
+      return true
+    }
+    return false
+  }
+
+  const openEdit = (credit) => {
+    if (!isOrgStaff) {
+      openEditForm(credit)
+      return
+    }
+    if (staffNeedsSalesAccess(credit)) return
+    gate({
+      entityType: creditEntityType(),
+      entityId: credit.id,
+      action: 'edit',
+      summary: `Edit credit for: ${creditLabel(credit)}`,
+      deferConsume: true,
+      onProceed: (approval) => {
+        setEditApprovalId(approval.id)
+        openEditForm(credit)
+      },
+    })
+  }
+
+  const requestReset = (credit) => {
+    if (!isOrgStaff) {
+      handleResetToUnpaid(credit)
+      return
+    }
+    if (staffNeedsSalesAccess(credit)) return
+    gate({
+      entityType: creditEntityType(),
+      entityId: credit.id,
+      action: 'edit',
+      summary: `Reset credit to unpaid for: ${creditLabel(credit)}`,
+      onProceed: () => handleResetToUnpaid(credit),
+    })
+  }
+
   const openDelete = (credit) => {
     setSelectedCredit(credit)
     setDeleteMode('single')
+    if (isOrgStaff) {
+      if (staffNeedsSalesAccess(credit)) return
+      gate({
+        entityType: creditEntityType(),
+        entityId: credit.id,
+        action: 'delete',
+        summary: `Delete credit for: ${creditLabel(credit)}${credit.sale_id ? ' - the linked sale will also be deleted' : ''}`,
+        onProceed: () => handleDelete(credit),
+      })
+      return
+    }
     setShowConfirm(true)
   }
 
@@ -231,17 +298,7 @@ export default function Credits() {
           if (!saleItem.is_consignment && saleItem.product_id) {
             const quantityDelta = newQuantity - (selectedCredit.quantity || 0)
             if (quantityDelta !== 0) {
-              const { data: freshProduct } = await supabase
-                .from('products')
-                .select('quantity')
-                .eq('id', saleItem.product_id)
-                .single()
-              if (freshProduct) {
-                await supabase
-                  .from('products')
-                  .update({ quantity: freshProduct.quantity - quantityDelta })
-                  .eq('id', saleItem.product_id)
-              }
+              await changeStock(saleItem.product_id, -quantityDelta)
             }
           }
         }
@@ -285,6 +342,11 @@ export default function Credits() {
       `${selectedCredit ? 'Updated' : 'Added'} credit for: ${customerName}`
     )
 
+    if (selectedCredit && editApprovalId) {
+      await consumeApproval(editApprovalId)
+    }
+    setEditApprovalId(null)
+
     setSaving(false)
     setShowModal(false)
     fetchCredits()
@@ -303,40 +365,37 @@ export default function Credits() {
     }
   }
 
-  const handleDelete = async () => {
+  const handleDelete = async (target = target) => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
 
-    if (activeTab === 'given' && selectedCredit.sale_id) {
+    if (activeTab === 'given' && target.sale_id) {
       const { data: saleItems } = await supabase
         .from('sale_items')
         .select('*')
-        .eq('sale_id', selectedCredit.sale_id)
+        .eq('sale_id', target.sale_id)
 
       if (saleItems && saleItems.length > 0) {
         for (const item of saleItems) {
           if (item.is_consignment) continue
-          const { data: freshProduct } = await supabase
-            .from('products')
-            .select('quantity')
-            .eq('id', item.product_id)
-            .single()
-          if (freshProduct) {
-            await supabase
-              .from('products')
-              .update({ quantity: freshProduct.quantity + item.quantity_sold })
-              .eq('id', item.product_id)
-          }
+          await changeStock(item.product_id, item.quantity_sold)
         }
       }
 
-      await supabase.from('sale_items').delete().eq('sale_id', selectedCredit.sale_id)
-      await supabase.from('sales').delete().eq('id', selectedCredit.sale_id)
+      await supabase.from('sale_items').delete().eq('sale_id', target.sale_id)
+      await supabase.from('sales').delete().eq('id', target.sale_id)
 
       // The sale is gone — remove every credit record tied to it, not just this
       // one, so a multi-product sale doesn't leave sibling credits orphaned.
-      await supabase.from('credits_given').delete().eq('sale_id', selectedCredit.sale_id)
+      await supabase.from('credits_given').delete().eq('sale_id', target.sale_id)
     } else {
-      await supabase.from(table).delete().eq('id', selectedCredit.id)
+      await supabase.from(table).delete().eq('id', target.id)
+    }
+
+    // For company staff the database silently refuses deletes that are not approved,
+    // so make sure the credit is really gone before the approval is used up.
+    if (isOrgStaff) {
+      const { data: stillThere } = await supabase.from(table).select('id').eq('id', target.id).maybeSingle()
+      if (stillThere) throw new Error('The credit could not be deleted. Your approval is still valid, please try again.')
     }
 
     await logActivity(
@@ -344,7 +403,7 @@ export default function Credits() {
       profile.email,
       profile.full_name,
       'Delete Credit',
-      `Deleted credit for: ${activeTab === 'given' ? selectedCredit.customer_name : selectedCredit.supplier_name} - RWF ${selectedCredit.amount?.toLocaleString()}`
+      `Deleted credit for: ${activeTab === 'given' ? target.customer_name : target.supplier_name} - RWF ${target.amount?.toLocaleString()}`
     )
 
     setShowConfirm(false)
@@ -371,17 +430,7 @@ export default function Credits() {
         if (saleItems && saleItems.length > 0) {
           for (const item of saleItems) {
             if (item.is_consignment) continue
-            const { data: freshProduct } = await supabase
-              .from('products')
-              .select('quantity')
-              .eq('id', item.product_id)
-              .single()
-            if (freshProduct) {
-              await supabase
-                .from('products')
-                .update({ quantity: freshProduct.quantity + item.quantity_sold })
-                .eq('id', item.product_id)
-            }
+            await changeStock(item.product_id, item.quantity_sold)
           }
         }
 
@@ -456,6 +505,11 @@ export default function Credits() {
     const amountEntered = parseInt(receiptPayAmount) || 0
     if (amountEntered <= 0) {
       setReceiptPayError('Enter an amount greater than 0')
+      return
+    }
+
+    if (isOrgStaff && activeTab === 'given' && !canWrite('sales') && selectedCustomer.items.some(i => i.sale_id)) {
+      setReceiptPayError('Some of these credits came from sales, so recording a payment also needs Sales access. Please ask the company owner.')
       return
     }
 
@@ -904,17 +958,7 @@ export default function Credits() {
               if (!saleItem.is_consignment && saleItem.product_id) {
                 const quantityDelta = newQuantity - (old.quantity || 0)
                 if (quantityDelta !== 0) {
-                  const { data: freshProduct } = await supabase
-                    .from('products')
-                    .select('quantity')
-                    .eq('id', saleItem.product_id)
-                    .single()
-                  if (freshProduct) {
-                    await supabase
-                      .from('products')
-                      .update({ quantity: freshProduct.quantity - quantityDelta })
-                      .eq('id', saleItem.product_id)
-                  }
+                  await changeStock(saleItem.product_id, -quantityDelta)
                 }
               }
             }
@@ -981,10 +1025,10 @@ export default function Credits() {
   }
 
   const getPaymentLabel = (method) => {
-    if (method === 'mtn') return '📱 MTN Mobile Money'
-    if (method === 'bank') return '🏦 Bank Transfer'
-    if (method === 'cheque') return '📄 Cheque'
-    return '💵 Cash'
+    if (method === 'mtn') return 'MTN Mobile Money'
+    if (method === 'bank') return 'Bank Transfer'
+    if (method === 'cheque') return 'Cheque'
+    return 'Cash'
   }
 
   // A4 statement in the same structure as the Sales receipt PDF: branded
@@ -1220,21 +1264,23 @@ export default function Credits() {
 
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">💳 Credits</h1>
+            <h1 className="text-2xl font-bold text-white">Credits</h1>
             <p className="text-gray-400 text-sm mt-1">Track credits given and taken</p>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">📊 Excel</button>
-            <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">📄 PDF</button>
-            <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium text-sm">+ Add Credit</button>
+            <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">Excel</button>
+            <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">PDF</button>
+            {canEdit && (
+            <button onClick={openAdd} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium text-sm">+ Add Credit</button>
+            )}
           </div>
         </div>
 
-        {syncIssues.length > 0 && (
+        {syncIssues.length > 0 && !isOrgStaff && (
           <div className="bg-yellow-900 border border-yellow-700 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <p className="text-yellow-200 text-sm font-medium">
-                ⚠️ {syncIssues.length} credit sale{syncIssues.length > 1 ? 's don\'t' : ' doesn\'t'} match {syncIssues.length > 1 ? 'their sale records' : 'its sale record'}
+                {syncIssues.length} credit sale{syncIssues.length > 1 ? 's don\'t' : ' doesn\'t'} match {syncIssues.length > 1 ? 'their sale records' : 'its sale record'}
               </p>
               <p className="text-yellow-300 text-xs mt-1">
                 {syncIssues.slice(0, 3).map(p => `${p.saleName}${p.addGap > 0 ? ` (RWF ${p.addGap.toLocaleString()} of items missing)` : ''}`).join(' · ')}
@@ -1246,19 +1292,19 @@ export default function Credits() {
               disabled={syncing}
               className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 text-gray-900 rounded-lg text-sm font-medium transition whitespace-nowrap"
             >
-              {syncing ? 'Fixing...' : '🔧 Fix now'}
+              {syncing ? 'Fixing...' : 'Fix now'}
             </button>
           </div>
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <span className="text-2xl">⏳</span>
+          <div className="bg-surface-elevated border border-surface-border rounded-xl p-4">
+            <span className="text-2xl"></span>
             <p className="text-2xl font-bold mt-2 text-orange-400">RWF {unpaidGiven.toLocaleString()}</p>
             <p className="text-gray-400 text-sm mt-1">Credits Given — Pending</p>
           </div>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <span className="text-2xl">💸</span>
+          <div className="bg-surface-elevated border border-surface-border rounded-xl p-4">
+            <span className="text-2xl"></span>
             <p className="text-2xl font-bold mt-2 text-red-400">RWF {unpaidTaken.toLocaleString()}</p>
             <p className="text-gray-400 text-sm mt-1">Credits Taken — Not Yet Paid</p>
           </div>
@@ -1266,16 +1312,16 @@ export default function Credits() {
 
         <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
           <div className="flex gap-2">
-            <button onClick={() => setActiveTab('given')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'given' ? 'bg-yellow-500 text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-              📤 Credits Given ({creditsGiven.length})
+            <button onClick={() => setActiveTab('given')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'given' ? 'bg-primary text-white' : 'bg-surface-elevated border border-surface-border text-gray-400 hover:text-white'}`}>
+              Credits Given ({creditsGiven.length})
             </button>
-            <button onClick={() => setActiveTab('taken')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'taken' ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-              📥 Credits Taken ({creditsTaken.length})
+            <button onClick={() => setActiveTab('taken')} className={`px-6 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'taken' ? 'bg-red-600 text-white' : 'bg-surface-elevated border border-surface-border text-gray-400 hover:text-white'}`}>
+              Credits Taken ({creditsTaken.length})
             </button>
           </div>
           <div className="flex gap-2">
             {['all', 'unpaid', 'paid'].map(f => (
-              <button key={f} onClick={() => setStatusFilter(f)} className={`px-3 py-1 rounded-lg text-xs font-medium transition ${statusFilter === f ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+              <button key={f} onClick={() => setStatusFilter(f)} className={`px-3 py-1 rounded-lg text-xs font-medium transition ${statusFilter === f ? 'bg-primary text-white' : 'bg-surface-elevated border border-surface-border text-gray-400 hover:text-white'}`}>
                 {f.charAt(0).toUpperCase() + f.slice(1)}
               </button>
             ))}
@@ -1287,21 +1333,23 @@ export default function Credits() {
           placeholder={`Search by ${activeTab === 'given' ? 'customer' : 'supplier'} name...`}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full bg-gray-900 border border-gray-700 text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+          className="w-full bg-surface border border-surface-border text-white px-4 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
         />
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="bg-surface-elevated border border-surface-border rounded-xl overflow-hidden">
           {loading ? (
             <div className="text-center py-12"><p className="text-gray-400">Loading credits...</p></div>
           ) : groupedList.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500 mb-3">No credits found</p>
-              <button onClick={openAdd} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">Add First Credit</button>
+              {canEdit && (
+              <button onClick={openAdd} className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary-hover transition">Add First Credit</button>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-800">
+                <thead className="bg-surface">
                   <tr>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">{activeTab === 'given' ? 'Customer' : 'Supplier'}</th>
                     <th className="text-left text-gray-400 px-6 py-4 font-medium">Items</th>
@@ -1313,7 +1361,7 @@ export default function Credits() {
                 </thead>
                 <tbody>
                   {groupedList.map((group) => (
-                    <tr key={group.name} className="border-t border-gray-800 hover:bg-gray-800 transition">
+                    <tr key={group.name} className="border-t border-surface-border hover:bg-surface transition">
                       <td className="px-6 py-4 text-white font-medium cursor-pointer" onClick={() => openCustomerReceipt(group)}>{group.name}</td>
                       <td className="px-6 py-4 text-gray-300 cursor-pointer" onClick={() => openCustomerReceipt(group)}>{group.items.length} item{group.items.length > 1 ? 's' : ''}</td>
                       <td className={`px-6 py-4 font-medium cursor-pointer ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`} onClick={() => openCustomerReceipt(group)}>
@@ -1327,19 +1375,21 @@ export default function Credits() {
                       </td>
                       <td className="px-6 py-4 cursor-pointer" onClick={() => openCustomerReceipt(group)}>
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${group.unpaidAmount > 0 ? 'bg-red-900 text-red-300' : 'bg-green-900 text-green-300'}`}>
-                          {group.unpaidAmount > 0 ? '❌ Has Unpaid' : '✅ All Paid'}
+                          {group.unpaidAmount > 0 ? 'Has Unpaid' : 'All Paid'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
-                          <span className="text-blue-400 text-xs cursor-pointer" onClick={() => openCustomerReceipt(group)}>View →</span>
+                          <span className="text-primary-light text-xs cursor-pointer" onClick={() => openCustomerReceipt(group)}>View →</span>
+                          {!isOrgStaff && (
                           <button
                             onClick={() => openDeleteAll(group)}
                             className="px-2 py-1 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-xs transition"
                             title={`Delete all records for ${group.name}`}
                           >
-                            🗑️ Delete All
+                            Delete All
                           </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1355,8 +1405,8 @@ export default function Credits() {
       {/* Customer Credit Statement — branded like every other receipt in the system */}
       {selectedCustomer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-sm shadow-2xl max-h-full flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border flex-shrink-0">
               <h2 className="text-lg font-bold text-white">Credit Statement</h2>
               <button onClick={closeCustomerReceipt} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
@@ -1366,7 +1416,7 @@ export default function Credits() {
                 {profile?.logo_url ? (
                   <img src={profile.logo_url} alt="Logo" className="w-12 h-12 object-contain mx-auto mb-2 rounded" />
                 ) : (
-                  <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center mx-auto mb-2">
+                  <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center mx-auto mb-2">
                     <span className="text-white font-bold">K</span>
                   </div>
                 )}
@@ -1375,7 +1425,7 @@ export default function Credits() {
                 <p className="text-gray-400 text-xs">{activeTab === 'given' ? 'Customer' : 'Supplier'} Credit Statement</p>
               </div>
 
-              <div className="border-t border-gray-700 pt-4 space-y-2">
+              <div className="border-t border-surface-border pt-4 space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">{activeTab === 'given' ? 'Customer' : 'Supplier'}</span>
                   <span className="text-white font-medium">{selectedCustomer.name}</span>
@@ -1385,7 +1435,7 @@ export default function Credits() {
                   <span className="text-white">{new Date().toLocaleDateString()}</span>
                 </div>
 
-                <div className="border-t border-gray-700 pt-2">
+                <div className="border-t border-surface-border pt-2">
                   <p className="text-gray-400 text-xs mb-2">Items:</p>
                   {statementItems.map((credit) => (
                     <div key={credit.id} className="mb-2">
@@ -1400,7 +1450,7 @@ export default function Credits() {
                   ))}
                 </div>
 
-                <div className="border-t border-gray-700 pt-2 flex justify-between">
+                <div className="border-t border-surface-border pt-2 flex justify-between">
                   <span className="text-white font-bold">TOTAL</span>
                   <span className="text-white font-bold text-lg">RWF {selectedCustomer.totalAmount.toLocaleString()}</span>
                 </div>
@@ -1417,9 +1467,9 @@ export default function Credits() {
               </div>
 
               {/* Add Payment — live preview, confirm to save */}
-              {selectedCustomer.unpaidAmount > 0 ? (
-                <div className="mt-4 bg-gray-800 rounded-lg p-4 space-y-3">
-                  <p className="text-white text-sm font-medium">➕ Add Payment</p>
+              {selectedCustomer.unpaidAmount > 0 && canEdit ? (
+                <div className="mt-4 bg-surface rounded-lg p-4 space-y-3">
+                  <p className="text-white text-sm font-medium">Add Payment</p>
                   {receiptPayError && <p className="text-red-400 text-xs">{receiptPayError}</p>}
                   <div>
                     <label className="text-gray-400 text-xs mb-1 block">Amount Received Now</label>
@@ -1428,7 +1478,7 @@ export default function Credits() {
                       value={receiptPayAmount}
                       onChange={(e) => setReceiptPayAmount(e.target.value)}
                       max={selectedCustomer.unpaidAmount}
-                      className="w-full bg-gray-900 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                       placeholder="0"
                     />
                     <p className="text-gray-500 text-xs mt-1">
@@ -1440,15 +1490,15 @@ export default function Credits() {
                     <select
                       value={receiptPayMethod}
                       onChange={(e) => setReceiptPayMethod(e.target.value)}
-                      className="w-full bg-gray-900 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                     >
-                      <option value="cash">💵 Cash</option>
-                      <option value="mtn">📱 MTN Mobile Money</option>
-                      <option value="bank">🏦 Bank Transfer</option>
-                      <option value="cheque">📄 Cheque</option>
+                      <option value="cash">Cash</option>
+                      <option value="mtn">MTN Mobile Money</option>
+                      <option value="bank">Bank Transfer</option>
+                      <option value="cheque">Cheque</option>
                     </select>
                   </div>
-                  <div className="bg-gray-900 rounded-lg p-3 flex justify-between items-center">
+                  <div className="bg-surface-elevated rounded-lg p-3 flex justify-between items-center">
                     <span className="text-gray-400 text-xs">New Remaining Balance</span>
                     <span className={`font-bold ${previewRemaining > 0 ? 'text-orange-400' : 'text-green-400'}`}>
                       RWF {previewRemaining.toLocaleString()}
@@ -1462,9 +1512,9 @@ export default function Credits() {
                     {confirmingPayment ? 'Saving...' : 'Confirm Payment'}
                   </button>
                 </div>
-              ) : (
+              ) : selectedCustomer.unpaidAmount > 0 ? null : (
                 <div className="mt-4 bg-green-900 border border-green-700 rounded-lg p-3 text-center">
-                  <p className="text-green-300 text-sm font-medium">✅ Fully paid — no balance due</p>
+                  <p className="text-green-300 text-sm font-medium">Fully paid — no balance due</p>
                 </div>
               )}
 
@@ -1472,21 +1522,25 @@ export default function Credits() {
               <div className="mt-5 space-y-2">
                 <div className="flex items-center justify-between">
                   <p className="text-gray-500 text-xs uppercase tracking-wide">Manage Items</p>
-                  <button onClick={openGeneralEdit} className="px-2 py-1 bg-purple-700 hover:bg-purple-600 text-white rounded text-xs transition">✏️ General Edit</button>
+                  {!isOrgStaff && canEdit && (
+                  <button onClick={openGeneralEdit} className="px-2 py-1 bg-primary hover:bg-primary-hover text-white rounded text-xs transition">General Edit</button>
+                  )}
                 </div>
                 {statementItems.map((credit) => (
-                  <div key={credit.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
+                  <div key={credit.id} className="flex items-center justify-between bg-surface rounded-lg px-3 py-2">
                     <div>
                       <p className="text-white text-sm">{credit.product_name || '—'}</p>
                       <p className="text-gray-500 text-xs">RWF {credit.amount?.toLocaleString()} · {credit.status === 'paid' ? 'Paid' : credit.status === 'partial' ? 'Partial' : 'Unpaid'}</p>
                     </div>
+                    {canEdit && (
                     <div className="flex gap-2">
                       {credit.status !== 'unpaid' && (
-                        <button onClick={() => handleResetToUnpaid(credit)} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs transition">Reset</button>
+                        <button onClick={() => requestReset(credit)} className="px-2 py-1 bg-surface hover:bg-surface-border text-gray-300 rounded text-xs transition">Reset</button>
                       )}
-                      <button onClick={() => { closeCustomerReceipt(); openEdit(credit) }} className="px-2 py-1 bg-blue-700 hover:bg-blue-600 text-white rounded text-xs transition">Edit</button>
+                      <button onClick={() => { closeCustomerReceipt(); openEdit(credit) }} className="px-2 py-1 bg-primary hover:bg-primary-hover text-white rounded text-xs transition">Edit</button>
                       <button onClick={() => openDelete(credit)} className="px-2 py-1 bg-red-700 hover:bg-red-600 text-white rounded text-xs transition">Delete</button>
                     </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1497,15 +1551,17 @@ export default function Credits() {
               </div>
 
               <div className="flex gap-3 mt-4">
-                <button onClick={closeCustomerReceipt} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Close</button>
-                <button onClick={handleExportClientPDF} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">Download PDF</button>
+                <button onClick={closeCustomerReceipt} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Close</button>
+                <button onClick={handleExportClientPDF} className="flex-1 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium">Download PDF</button>
+                {!isOrgStaff && (
                 <button
                   onClick={() => openDeleteAll(selectedCustomer)}
                   className="px-3 py-2 bg-red-900 hover:bg-red-800 text-red-300 rounded-lg text-xs transition"
                   title="Delete all records for this customer"
                 >
-                  🗑️
+                  
                 </button>
+                )}
               </div>
             </div>
           </div>
@@ -1515,9 +1571,9 @@ export default function Credits() {
       {/* General Edit — edit all products and the amount paid on each */}
       {showGeneralEdit && selectedCustomer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl max-h-full flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
-              <h2 className="text-lg font-bold text-white">✏️ General Edit — {selectedCustomer.name}</h2>
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-md shadow-2xl max-h-full flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border flex-shrink-0">
+              <h2 className="text-lg font-bold text-white">General Edit — {selectedCustomer.name}</h2>
               <button onClick={closeGeneralEdit} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 overflow-y-auto flex-1 space-y-4">
@@ -1530,7 +1586,7 @@ export default function Credits() {
                 const balance = Math.max(amt - paid, 0)
                 const itemStatus = amt > 0 && paid >= amt ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid'
                 return (
-                  <div key={item.id || `new-${index}`} className="bg-gray-800 rounded-lg p-3 space-y-2">
+                  <div key={item.id || `new-${index}`} className="bg-surface rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-gray-400 text-xs">Item {index + 1}{!item.id ? ' (new)' : ''}</span>
                       <div className="flex items-center gap-3">
@@ -1548,7 +1604,7 @@ export default function Credits() {
                         type="text"
                         value={item.product_name}
                         onChange={(e) => updateGeneralItem(index, { product_name: e.target.value })}
-                        className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                        className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                         placeholder="Product name"
                       />
                     </div>
@@ -1565,7 +1621,7 @@ export default function Credits() {
                             if (price > 0) fields.amount = (parseInt(qty) || 0) * price
                             updateGeneralItem(index, fields)
                           }}
-                          className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                          className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                           placeholder="Qty"
                         />
                       </div>
@@ -1581,7 +1637,7 @@ export default function Credits() {
                             if (qty > 0) fields.amount = qty * (parseInt(price) || 0)
                             updateGeneralItem(index, fields)
                           }}
-                          className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                          className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                           placeholder="Unit Price"
                         />
                       </div>
@@ -1591,7 +1647,7 @@ export default function Credits() {
                           type="number"
                           value={item.amount}
                           onChange={(e) => updateGeneralItem(index, { amount: e.target.value })}
-                          className="w-full bg-gray-700 border border-gray-600 text-green-400 px-3 py-2 rounded-lg text-sm font-medium focus:outline-none focus:border-blue-500"
+                          className="w-full bg-surface border border-surface-border text-green-400 px-3 py-2 rounded-lg text-sm font-medium focus:outline-none focus:border-primary"
                           placeholder="Total"
                         />
                       </div>
@@ -1601,7 +1657,7 @@ export default function Credits() {
                           type="number"
                           value={item.paid_amount}
                           onChange={(e) => updateGeneralItem(index, { paid_amount: e.target.value })}
-                          className="w-full bg-gray-700 border border-orange-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-orange-500"
+                          className="w-full bg-surface border border-orange-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-orange-500"
                           placeholder="0"
                         />
                       </div>
@@ -1613,11 +1669,11 @@ export default function Credits() {
                 )
               })}
 
-              <button onClick={addGeneralItem} className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
+              <button onClick={addGeneralItem} className="w-full py-2 border border-dashed border-surface-border text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
                 + Add Another Product
               </button>
 
-              <div className="bg-gray-800 rounded-lg px-4 py-3 space-y-1">
+              <div className="bg-surface rounded-lg px-4 py-3 space-y-1">
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Total Amount</span>
                   <span className="text-white font-medium">RWF {generalTotal.toLocaleString()}</span>
@@ -1635,8 +1691,8 @@ export default function Credits() {
               </div>
 
               <div className="flex gap-3 pt-1">
-                <button onClick={closeGeneralEdit} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
-                <button onClick={handleSaveGeneralEdit} disabled={generalSaving} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition font-medium">
+                <button onClick={closeGeneralEdit} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
+                <button onClick={handleSaveGeneralEdit} disabled={generalSaving} className="flex-1 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover disabled:opacity-50 transition font-medium">
                   {generalSaving ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
@@ -1658,7 +1714,7 @@ export default function Credits() {
                 type="text"
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                 placeholder={activeTab === 'given' ? 'Customer name' : 'Supplier name'}
               />
             </div>
@@ -1666,7 +1722,7 @@ export default function Credits() {
             <div className="space-y-3">
               <label className="text-gray-400 text-sm block">Products</label>
               {creditItems.map((item, index) => (
-                <div key={index} className="bg-gray-800 rounded-lg p-3 space-y-2">
+                <div key={index} className="bg-surface rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400 text-xs">Item {index + 1}</span>
                     {creditItems.length > 1 && (
@@ -1677,7 +1733,7 @@ export default function Credits() {
                     type="text"
                     value={item.product_name}
                     onChange={(e) => updateItem(index, { product_name: e.target.value })}
-                    className="w-full bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                    className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                     placeholder="Product name"
                   />
                   <div className="grid grid-cols-3 gap-2">
@@ -1689,7 +1745,7 @@ export default function Credits() {
                         const price = parseInt(item.unit_price) || 0
                         updateItem(index, { quantity: qty, amount: (parseInt(qty) || 0) * price })
                       }}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                       placeholder="Qty"
                     />
                     <input
@@ -1700,26 +1756,26 @@ export default function Credits() {
                         const qty = parseInt(item.quantity) || 0
                         updateItem(index, { unit_price: price, amount: qty * (parseInt(price) || 0) })
                       }}
-                      className="bg-gray-700 border border-gray-600 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                      className="bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary"
                       placeholder="Unit Price"
                     />
                     <input
                       type="number"
                       value={item.amount}
                       readOnly
-                      className="bg-gray-600 border border-gray-600 text-green-400 px-3 py-2 rounded-lg text-sm font-medium"
+                      className="bg-surface-border border border-surface-border text-green-400 px-3 py-2 rounded-lg text-sm font-medium"
                       placeholder="Total"
                     />
                   </div>
                 </div>
               ))}
-              <button onClick={addItem} className="w-full py-2 border border-dashed border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
+              <button onClick={addItem} className="w-full py-2 border border-dashed border-surface-border text-gray-400 hover:text-white hover:border-gray-400 rounded-lg text-sm transition">
                 + Add Another Product
               </button>
             </div>
 
             {grandTotal > 0 && (
-              <div className="bg-gray-800 rounded-lg px-4 py-3">
+              <div className="bg-surface rounded-lg px-4 py-3">
                 <p className="text-gray-400 text-sm">Total Amount</p>
                 <p className={`text-xl font-bold ${activeTab === 'given' ? 'text-yellow-400' : 'text-red-400'}`}>
                   RWF {grandTotal.toLocaleString()}
@@ -1729,12 +1785,12 @@ export default function Credits() {
 
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Date</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
             </div>
 
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Status</label>
-              <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500">
+              <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary">
                 <option value="unpaid">Unpaid</option>
                 <option value="paid">Paid</option>
               </select>
@@ -1742,12 +1798,12 @@ export default function Credits() {
 
             <div>
               <label className="text-gray-400 text-sm mb-1 block">Notes</label>
-              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" placeholder="Any additional notes..." rows={2} />
+              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" placeholder="Any additional notes..." rows={2} />
             </div>
 
             <div className="flex gap-3 pt-2">
-              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
-              <button onClick={handleSave} disabled={saving} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+              <button onClick={() => setShowModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
+              <button onClick={handleSave} disabled={saving} className="flex-1 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition font-medium">
                 {saving ? 'Saving...' : selectedCredit ? 'Update' : 'Add Credit'}
               </button>
             </div>
@@ -1781,29 +1837,31 @@ export default function Credits() {
 
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 p-4">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-              <h2 className="text-lg font-bold text-white">{exportType === 'excel' ? '📊 Export Excel' : '📄 Export PDF'}</h2>
+          <div className="bg-surface-elevated border border-surface-border rounded-2xl w-full max-w-sm shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border">
+              <h2 className="text-lg font-bold text-white">{exportType === 'excel' ? 'Export Excel' : 'Export PDF'}</h2>
               <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-4">
               <p className="text-gray-400 text-sm">Select date range. Leave blank to export all records.</p>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">From Date</label>
-                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">To Date</label>
-                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-blue-500" />
+                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
               </div>
               <div className="flex gap-3 pt-2">
-                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition">Cancel</button>
+                <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
                 <button onClick={handleExport} className={`flex-1 py-2 text-white rounded-lg transition font-medium ${exportType === 'excel' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'}`}>Download</button>
               </div>
             </div>
           </div>
         </div>
       )}
+
+      {approvalDialog}
 
     </Layout>
   )

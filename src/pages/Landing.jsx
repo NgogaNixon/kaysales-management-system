@@ -118,6 +118,17 @@ const plans = [
       'Priority support',
     ],
   },
+  {
+    id: 'organization',
+    features: [
+      'Everything in Premium',
+      'Company account with a CEO, managers and staff',
+      'Choose what each person can see and do',
+      'The owner approves deletes and sensitive changes',
+      'Full financial breakdown for the owner',
+      'A record of who did what, for every team member',
+    ],
+  },
 ]
 
 export default function Landing() {

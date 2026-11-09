@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { localDate } from '../lib/dates'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -23,9 +24,9 @@ export default function Analysis() {
   const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date()
     d.setDate(d.getDate() - 30)
-    return d.toISOString().split('T')[0]
+    return localDate(d)
   })
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0])
+  const [dateTo, setDateTo] = useState(localDate(new Date()))
   const [showExportModal, setShowExportModal] = useState(false)
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
@@ -271,8 +272,8 @@ export default function Analysis() {
             onClick={() => {
               const d = new Date()
               d.setDate(d.getDate() - 30)
-              setDateFrom(d.toISOString().split('T')[0])
-              setDateTo(new Date().toISOString().split('T')[0])
+              setDateFrom(localDate(d))
+              setDateTo(localDate(new Date()))
             }}
             className="px-3 py-2 bg-surface-elevated border border-surface-border text-gray-400 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
           >

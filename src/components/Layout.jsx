@@ -1,24 +1,34 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useLanguage } from '../context/LanguageContext'
+import { ROLE_LABELS, getRoleName } from '../lib/permissions'
 
 // feature: the plan feature a link needs. Links whose feature is not included
 // in the client's plan are hidden (see can() in AuthContext / planConfig.js).
+// module: the area of the system a link belongs to. Company staff only see the
+// links for areas they have access to (see permissions.js). Normal clients see
+// everything except the company-only Team link.
 const clientNavItems = [
-  { path: '/dashboard', icon: '', labelKey: 'dashboard' },
-  { path: '/products', icon: '', labelKey: 'products' },
-  { path: '/sales', icon: '', labelKey: 'sales' },
-  { path: '/credits', icon: '', labelKey: 'credits' },
-  { path: '/quotations', icon: '', labelKey: 'quotations', feature: 'quotations' },
-  { path: '/analysis', icon: '', labelKey: 'analysis' },
-  { path: '/account-settings', icon: '', labelKey: 'accountSettings' },
+  { path: '/dashboard', icon: '', labelKey: 'dashboard', module: 'dashboard' },
+  { path: '/products', icon: '', labelKey: 'products', module: 'products' },
+  { path: '/sales', icon: '', labelKey: 'sales', module: 'sales' },
+  { path: '/credits', icon: '', labelKey: 'credits', module: 'credits' },
+  { path: '/quotations', icon: '', labelKey: 'quotations', module: 'quotations', feature: 'quotations' },
+  { path: '/analysis', icon: '', labelKey: 'analysis', module: 'analysis' },
+  { path: '/team', icon: '', labelKey: 'team', label: 'Team', labelFr: 'Équipe', module: 'team' },
+  { path: '/team-activity', icon: '', labelKey: 'teamActivity', label: 'Team activity', labelFr: 'Activité de l’équipe', module: 'team', ceoOnly: true },
+  // Shown to everyone in a company: approvers see the inbox, others see their own requests
+  { path: '/approvals', icon: '', labelKey: 'approvals', label: 'Approvals', labelFr: 'Approbations', companyOnly: true },
+  { path: '/account-settings', icon: '', labelKey: 'accountSettings', module: 'settings' },
 ]
 
 const adminNavItems = [
   { path: '/admin', icon: '', labelKey: 'dashboard' },
   { path: '/admin/clients', icon: '', labelKey: 'clients' },
   { path: '/admin/subscriptions', icon: '', labelKey: 'subscriptions' },
+  { path: '/admin/organizations', icon: '', labelKey: 'companies', label: 'Companies', labelFr: 'Entreprises' },
   { path: '/admin/reports', icon: '', labelKey: 'reports' },
 { path: '/admin/admin-reports', icon: '', labelKey: 'adminReports' },
   { path: '/admin/activity', icon: '', labelKey: 'activity' },
@@ -27,7 +37,7 @@ const adminNavItems = [
 ]
 
 export default function Layout({ children }) {
-  const { profile, logout, can, planId, planLabel, isTrial } = useAuth()
+  const { profile, myProfile, logout, can, canView, canWrite, planId, planLabel, isTrial, orgRole, organization, membership } = useAuth()
   const { language, toggleLanguage, t } = useLanguage()
   const navigate = useNavigate()
   const location = useLocation()
@@ -37,12 +47,79 @@ export default function Layout({ children }) {
   const isAdmin = profile?.role === 'admin'
   const navItems = isAdmin
     ? adminNavItems
-    : clientNavItems.filter((item) => !item.feature || can(item.feature))
+    : clientNavItems
+        .filter(
+          (item) =>
+            (!item.feature || can(item.feature)) &&
+            (!item.module || canView(item.module)) &&
+            (!item.companyOnly || !!orgRole) &&
+            (!item.ceoOnly || orgRole === 'ceo')
+        )
+        .map((item) =>
+          item.path === '/approvals' && !canWrite('approvals') ? { ...item, label: 'My requests', labelFr: 'Mes demandes' } : item
+        )
+
+  // Number of requests waiting for this person to decide (approvers only)
+  const [pendingApprovals, setPendingApprovals] = useState(0)
+  const isApprover = !isAdmin && !!orgRole && canWrite('approvals')
+  useEffect(() => {
+    if (!isApprover) return
+    let active = true
+    supabase
+      .from('approval_requests')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending')
+      .then(({ count }) => {
+        if (active) setPendingApprovals(count || 0)
+      })
+    return () => {
+      active = false
+    }
+  }, [isApprover, location.pathname])
+
+  // Number of products running low (for the people who manage stock)
+  const [lowStockCount, setLowStockCount] = useState(0)
+  const watchesStock = !isAdmin && canWrite('products')
+  useEffect(() => {
+    if (!watchesStock || !profile?.id) return
+    let active = true
+    const loadLowStock = async () => {
+      // One light count from the database
+      const { data: count, error } = await supabase.rpc('low_stock_count', { p_owner: profile.id })
+      if (!error) {
+        if (active) setLowStockCount(count || 0)
+        return
+      }
+      // The database function is not installed yet: count in the browser instead
+      const { data } = await supabase
+        .from('products')
+        .select('quantity, low_stock_threshold')
+        .eq('user_id', profile.id)
+      const low = (data || []).filter((p) => p.quantity < (p.low_stock_threshold || 3))
+      if (active) setLowStockCount(low.length)
+    }
+    loadLowStock()
+    return () => {
+      active = false
+    }
+  }, [watchesStock, profile?.id, location.pathname])
+
+  // Company staff work as the company owner, so show the person's OWN name
+  const displayProfile = myProfile || profile
+  const inCompany = !!orgRole
 
   // Badge shown under the user's name (desktop) and in the mobile header
-  const planBadgeText = isAdmin ? 'Admin' : isTrial ? `${planLabel} Trial` : planLabel
+  const planBadgeText = isAdmin
+    ? 'Admin'
+    : inCompany
+    ? (orgRole === 'ceo' ? ROLE_LABELS.ceo : getRoleName(membership))
+    : isTrial
+    ? `${planLabel} Trial`
+    : planLabel
   const planBadgeColor = isAdmin
     ? 'bg-admin text-white'
+    : inCompany
+    ? 'bg-emerald-600 text-white'
     : planId === 'premium'
     ? 'bg-purple-600 text-white'
     : planId === 'organization'
@@ -98,7 +175,13 @@ export default function Layout({ children }) {
                 }`}
             >
               <span className="text-lg">{item.icon}</span>
-              {sidebarOpen && <span>{t(item.labelKey)}</span>}
+              {sidebarOpen && <span>{(language === 'fr' && item.labelFr) || item.label || t(item.labelKey)}</span>}
+              {item.path === '/approvals' && isApprover && pendingApprovals > 0 && (
+                <span className="ml-auto bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full">{pendingApprovals}</span>
+              )}
+              {item.path === '/products' && watchesStock && lowStockCount > 0 && (
+                <span className="ml-auto bg-orange-600 text-white text-xs font-bold px-2 py-0.5 rounded-full">{lowStockCount}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -107,8 +190,11 @@ export default function Layout({ children }) {
         <div className="p-3 border-t border-surface-border">
           {sidebarOpen && (
             <div className="px-3 py-2 mb-2">
-              <p className="text-white text-sm font-medium truncate">{profile?.full_name}</p>
-              <p className="text-gray-500 text-xs truncate">{profile?.email}</p>
+              <p className="text-white text-sm font-medium truncate">{displayProfile?.full_name}</p>
+              <p className="text-gray-500 text-xs truncate">{displayProfile?.email}</p>
+              {inCompany && organization?.name && (
+                <p className="text-gray-500 text-xs truncate">{organization.name}</p>
+              )}
               <span className={`text-xs px-2 py-0.5 rounded-full mt-1 inline-block ${planBadgeColor}`}>
                 {planBadgeText}
               </span>
@@ -193,7 +279,13 @@ export default function Layout({ children }) {
                         : 'text-white hover:text-gray-300'
                     }`}
                   >
-                    {t(item.labelKey)}
+                    {(language === 'fr' && item.labelFr) || item.label || t(item.labelKey)}
+                    {item.path === '/approvals' && isApprover && pendingApprovals > 0 && (
+                      <span className="ml-2 bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full align-middle">{pendingApprovals}</span>
+                    )}
+                    {item.path === '/products' && watchesStock && lowStockCount > 0 && (
+                      <span className="ml-2 bg-orange-600 text-white text-xs font-bold px-2 py-0.5 rounded-full align-middle">{lowStockCount}</span>
+                    )}
                   </button>
                 ))}
               </nav>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
+import DeleteMyAccount from '../components/DeleteMyAccount'
 
 const UPLOAD_FIELDS = [
   { key: 'logo_url', label: 'Company Logo', hint: 'Shown at the top of every receipt, quotation, and credit statement.' },
@@ -22,7 +23,8 @@ const getStoragePath = (url) => {
 }
 
 export default function AccountSettings() {
-  const { profile, refetchProfile } = useAuth()
+  const { profile, refetchProfile, isOrgStaff, isCeo } = useAuth()
+  const [showDelete, setShowDelete] = useState(false)
   const [companyName, setCompanyName] = useState('')
   const [companyPhone, setCompanyPhone] = useState('')
   const [companyLocation, setCompanyLocation] = useState('')
@@ -198,6 +200,17 @@ export default function AccountSettings() {
       return
     }
 
+    // The company shown in Team, the menu and the invitations follows this name
+    if (isCeo && companyName.trim()) {
+      const { error: renameError } = await supabase.rpc('rename_my_company', { p_name: companyName })
+      if (renameError && !/could not find the function/i.test(renameError.message)) {
+        setError('Your details were saved, but the company name could not be updated: ' + renameError.message)
+        setSaving(false)
+        await refreshApp()
+        return
+      }
+    }
+
     setSaving(false)
     setSuccess('Saved successfully.')
     setTimeout(() => setSuccess(''), 3000)
@@ -325,6 +338,32 @@ export default function AccountSettings() {
         >
           {saving ? 'Saving...' : 'Save Account Settings'}
         </button>
+
+        {/* Delete account (not for the admin or for company staff) */}
+        {profile?.role !== 'admin' && !isOrgStaff && (
+          <div className="border border-red-800 rounded-xl p-6 space-y-3">
+            <h2 className="text-lg font-bold text-red-300">Delete account</h2>
+            <p className="text-gray-400 text-sm">
+              This permanently deletes your account and all your data: products, sales, credits and settings.
+              It cannot be undone. If you own a company, remove all your team members in Team first.
+            </p>
+            {!showDelete ? (
+              <button
+                onClick={() => setShowDelete(true)}
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm font-medium transition"
+              >
+                Delete my account
+              </button>
+            ) : (
+              <DeleteMyAccount
+                warning="Everything in this account is deleted for good, including your company if you own one. Download any reports you need first."
+                doneMessage="Your account was deleted."
+                goTo="/"
+                onCancel={() => setShowDelete(false)}
+              />
+            )}
+          </div>
+        )}
 
       </div>
     </Layout>

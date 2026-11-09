@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useApprovalGate } from '../lib/useApprovalGate'
 import Layout from '../components/Layout'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
@@ -9,9 +10,13 @@ import autoTable from 'jspdf-autotable'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 
 export default function Dashboard() {
-  const { profile } = useAuth()
+  const { profile, myProfile, isCeo, canView, canWrite, isOrgStaff } = useAuth()
+  const { gate, approvalDialog } = useApprovalGate()
   const navigate = useNavigate()
-  const showProfit = profile?.show_profit === true
+  // The financial breakdown needs the owner's profit switch AND, for company staff, the financial permission
+  const showProfit = profile?.show_profit === true && canView('financials')
+  // Adding or removing expenses needs expenses write access
+  const canEditExpenses = canWrite('expenses')
   const [stats, setStats] = useState({
     totalSales: 0,
     totalRevenue: 0,
@@ -45,6 +50,19 @@ export default function Dashboard() {
   // A product's own low_stock_threshold if set, otherwise the app default of 3.
   const thresholdFor = (product) => product?.low_stock_threshold || 3
 
+  // People who answer approval requests see how many are waiting
+  const isApprover = (isCeo || isOrgStaff) && canWrite('approvals')
+  const [waitingApprovals, setWaitingApprovals] = useState(0)
+
+  useEffect(() => {
+    if (!isApprover) return
+    supabase
+      .from('approval_requests')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending')
+      .then(({ count }) => setWaitingApprovals(count || 0))
+  }, [isApprover])
+
   useEffect(() => {
     if (profile?.id) {
       fetchDashboardData()
@@ -62,8 +80,23 @@ export default function Dashboard() {
     setExpenseList(data || [])
   }
 
-  const handleDeleteExpense = async (id) => {
-    await supabase.from('expenses').delete().eq('id', id)
+  const handleDeleteExpense = async (expense) => {
+    // Company staff need the owner's approval first
+    if (isOrgStaff) {
+      gate({
+        entityType: 'expense',
+        entityId: expense.id,
+        action: 'delete',
+        summary: `Delete expense: ${expense.description} (RWF ${(expense.amount || 0).toLocaleString()})`,
+        onProceed: async () => {
+          const { error: deleteError } = await supabase.from('expenses').delete().eq('id', expense.id)
+          if (deleteError) throw new Error(deleteError.message)
+          fetchExpenses()
+        },
+      })
+      return
+    }
+    await supabase.from('expenses').delete().eq('id', expense.id)
     fetchExpenses()
   }
 
@@ -367,7 +400,7 @@ export default function Dashboard() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">
-              Welcome back, {profile?.full_name?.split(' ')[0]}
+              Welcome back, {(myProfile || profile)?.full_name?.split(' ')[0]}
             </h1>
             <p className="text-gray-400 text-sm mt-1">Here's what's happening with your business today</p>
           </div>
@@ -375,8 +408,8 @@ export default function Dashboard() {
             <p className="text-gray-400 text-sm hidden sm:block">
               {new Date().toLocaleDateString('en-RW', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
             </p>
-            <button onClick={exportExcel} className="px-3 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">Excel</button>
-            <button onClick={exportPDF} className="px-3 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">PDF</button>
+            {canView('sales') && <button onClick={exportExcel} className="px-3 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">Excel</button>}
+            {canView('sales') && <button onClick={exportPDF} className="px-3 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">PDF</button>}
           </div>
         </div>
 
@@ -387,15 +420,19 @@ export default function Dashboard() {
                 <p className={`font-bold ${daysRemaining <= 3 ? 'text-red-300' : 'text-yellow-300'}`}>
                   Subscription {daysRemaining <= 0 ? 'Expired!' : `Expiring in ${daysRemaining} day${daysRemaining === 1 ? '' : 's'}!`}
                 </p>
-                <p className="text-gray-400 text-sm">Please top up your subscription to keep access</p>
+                <p className="text-gray-400 text-sm">
+                  {isOrgStaff ? 'Please ask the company owner to renew the subscription' : 'Please top up your subscription to keep access'}
+                </p>
               </div>
             </div>
+            {!isOrgStaff && (
             <button
               onClick={() => navigate('/choose-plan')}
               className={`px-4 py-2 rounded-lg font-bold text-sm ${daysRemaining <= 3 ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-gray-900'} transition`}
             >
               Top Up Now
             </button>
+            )}
           </div>
         )}
 
@@ -410,12 +447,14 @@ export default function Dashboard() {
                 >
                   Expense History
                 </button>
+                {canEditExpenses && (
                 <button
                   onClick={() => setShowExpenseModal(true)}
                   className="px-3 py-1.5 bg-orange-700 hover:bg-orange-600 text-white rounded-lg text-xs transition"
                 >
                   + Add Expense
                 </button>
+                )}
               </div>
             </div>
 
@@ -507,7 +546,21 @@ export default function Dashboard() {
           </div>
         )}
 
-        {stats.lowStockProducts.length > 0 && (
+        {isApprover && waitingApprovals > 0 && (
+          <div className="bg-red-900 border border-red-700 rounded-xl p-4 flex items-center justify-between gap-4">
+            <p className="font-bold text-red-200">
+              {waitingApprovals} approval request{waitingApprovals > 1 ? 's are' : ' is'} waiting for you
+            </p>
+            <button
+              onClick={() => navigate('/approvals')}
+              className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm font-medium transition whitespace-nowrap"
+            >
+              Review now
+            </button>
+          </div>
+        )}
+
+        {canView('products') && stats.lowStockProducts.length > 0 && (
           <div className="bg-orange-900 border border-orange-700 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-3">
               <p className="font-bold text-orange-300">Low Stock Alert — {stats.lowStockProducts.length} product{stats.lowStockProducts.length > 1 ? 's' : ''} running low</p>
@@ -522,6 +575,7 @@ export default function Dashboard() {
           </div>
         )}
 
+        {canView('sales') && (
         <div className="bg-surface-elevated border border-surface-border rounded-xl p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-white">Recent Sales</h2>
@@ -569,6 +623,7 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+        )}
 
       </div>
 
@@ -803,12 +858,14 @@ export default function Dashboard() {
                         </div>
                         <div className="flex items-center gap-3">
                           <span className="text-orange-300 text-sm font-medium">RWF {e.amount.toLocaleString()}</span>
+                          {canEditExpenses && (
                           <button
-                            onClick={() => handleDeleteExpense(e.id)}
+                            onClick={() => handleDeleteExpense(e)}
                             className="text-red-400 hover:text-red-300 text-xs"
                           >
                             Delete
                           </button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -816,6 +873,7 @@ export default function Dashboard() {
                 )}
               </div>
             </div>
+            {canEditExpenses && (
             <div className="px-6 py-4 border-t border-surface-border flex-shrink-0">
               <button
                 onClick={() => { setShowExpenseHistory(false); setShowExpenseModal(true) }}
@@ -824,6 +882,7 @@ export default function Dashboard() {
                 + Add New Expense
               </button>
             </div>
+            )}
           </div>
         </div>
       )}
@@ -969,6 +1028,8 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {approvalDialog}
 
     </Layout>
   )
