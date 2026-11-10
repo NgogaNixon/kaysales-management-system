@@ -103,14 +103,26 @@ export default function AccountSettings() {
     if (!file) return
     setError('')
     setSuccess('')
+
+    // Only real images, and not too large
+    const ALLOWED_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
+    if (!ALLOWED_TYPES[file.type]) {
+      setError('Please choose a PNG, JPG or WebP image.')
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('The image is too large. Please choose one smaller than 2 MB.')
+      return
+    }
+
     setUploading((prev) => ({ ...prev, [fieldKey]: true }))
 
-    const ext = file.name.split('.').pop()
+    const ext = ALLOWED_TYPES[file.type]
     const path = `${profile.id}/${fieldKey}.${ext}`
 
     const { error: uploadError } = await supabase.storage
       .from('company-assets')
-      .upload(path, file, { upsert: true })
+      .upload(path, file, { upsert: true, contentType: file.type })
 
     if (uploadError) {
       setError(`Failed to upload ${fieldKey.replace('_url', '')}: ${uploadError.message}`)
@@ -305,7 +317,7 @@ export default function AccountSettings() {
                     {uploading[field.key] ? 'Please wait...' : images[field.key] ? 'Replace Image' : 'Upload Image'}
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/png,image/jpeg,image/webp"
                       className="hidden"
                       onChange={(e) => {
                         handleUpload(field.key, e.target.files[0])

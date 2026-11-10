@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
+import { fetchAllRows } from '../lib/fetchAll'
 
 export default function Dashboard() {
   const { profile, myProfile, isCeo, canView, canWrite, isOrgStaff } = useAuth()
@@ -127,15 +128,11 @@ export default function Dashboard() {
   const fetchDashboardData = async () => {
     setLoading(true)
 
-    const { data: salesData } = await supabase
-      .from('sales')
-      .select('*')
-      .eq('user_id', profile.id)
-
-    const { data: productsData } = await supabase
-      .from('products')
-      .select('*')
-      .eq('user_id', profile.id)
+    // Load everything (not just the first 1000 rows), both at the same time
+    const [{ data: salesData }, { data: productsData }] = await Promise.all([
+      fetchAllRows(() => supabase.from('sales').select('*').eq('user_id', profile.id)),
+      fetchAllRows(() => supabase.from('products').select('*').eq('user_id', profile.id)),
+    ])
 
     const totalRevenue = salesData?.reduce((sum, s) => sum + (s.total || 0), 0) || 0
     const totalProfit = salesData?.reduce((sum, s) => sum + (s.profit || 0), 0) || 0

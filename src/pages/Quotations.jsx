@@ -9,6 +9,7 @@ import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { logActivity } from '../lib/activityLogger'
 import { changeStock } from '../lib/stock'
+import { fetchAllRows } from '../lib/fetchAll'
 import { localDate } from '../lib/dates'
 import { getMinimumPlanFor } from '../lib/planConfig'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
@@ -66,20 +67,17 @@ export default function Quotations() {
 
   const fetchQuotations = async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from('quotations')
-      .select('*')
-      .eq('user_id', profile.id)
-      .order('date', { ascending: false })
+    const { data } = await fetchAllRows(() =>
+      supabase.from('quotations').select('*').eq('user_id', profile.id).order('date', { ascending: false })
+    )
     setQuotations(data || [])
     setLoading(false)
   }
 
   const fetchProducts = async () => {
-    const { data } = await supabase
-      .from('products')
-      .select('*')
-      .eq('user_id', profile.id)
+    const { data } = await fetchAllRows(() =>
+      supabase.from('products').select('*').eq('user_id', profile.id)
+    )
     setProducts(data || [])
   }
 

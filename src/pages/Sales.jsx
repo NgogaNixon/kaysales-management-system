@@ -10,6 +10,7 @@ import OTPVerify from '../components/OTPVerify'
 import UndoToast from '../components/UndoToast'
 import { logActivity } from '../lib/activityLogger'
 import { changeStock } from '../lib/stock'
+import { fetchAllRows } from '../lib/fetchAll'
 import { localDate } from '../lib/dates'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 import * as XLSX from 'xlsx'
@@ -80,10 +81,9 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
   }, [profile])
 
   const fetchAllSaleItems = async () => {
-    const { data } = await supabase
-      .from('sale_items')
-      .select('*')
-      .eq('user_id', profile.id)
+    const { data } = await fetchAllRows(() =>
+      supabase.from('sale_items').select('*').eq('user_id', profile.id)
+    )
     const grouped = {}
     ;(data || []).forEach(item => {
       if (!grouped[item.sale_id]) grouped[item.sale_id] = []
@@ -94,20 +94,17 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
   const fetchSales = async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from('sales')
-      .select('*')
-      .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
+    const { data } = await fetchAllRows(() =>
+      supabase.from('sales').select('*').eq('user_id', profile.id).order('created_at', { ascending: false })
+    )
     setSales(data || [])
     setLoading(false)
   }
 
   const fetchProducts = async () => {
-    const { data } = await supabase
-      .from('products')
-      .select('*')
-      .eq('user_id', profile.id)
+    const { data } = await fetchAllRows(() =>
+      supabase.from('products').select('*').eq('user_id', profile.id)
+    )
     setProducts(data || [])
   }
 

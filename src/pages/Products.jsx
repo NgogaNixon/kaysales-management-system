@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { logActivity } from '../lib/activityLogger'
 import { changeStock } from '../lib/stock'
+import { fetchAllRows } from '../lib/fetchAll'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useRecorderNames } from '../lib/useRecorderNames'
@@ -13,6 +14,10 @@ import * as XLSX from 'xlsx'
 
 // Compare categories ignoring case and extra spaces ("Drinks" = " drinks ")
 const normCat = (c) => String(c ?? '').trim().toLowerCase()
+
+// Limits for the Excel/CSV import
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024
+const MAX_IMPORT_ROWS = 5000
 
 export default function Products() {
   const { profile, limit, planLabel, canWrite, canView, isOrgStaff, isCeo } = useAuth()
@@ -57,11 +62,9 @@ export default function Products() {
 
   const fetchProducts = async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from('products')
-      .select('*')
-      .eq('user_id', profile.id)
-      .order('name', { ascending: true })
+    const { data } = await fetchAllRows(() =>
+      supabase.from('products').select('*').eq('user_id', profile.id).order('name', { ascending: true })
+    )
     const sorted = (data || []).sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
     setProducts(sorted)
     setLoading(false)
@@ -223,10 +226,35 @@ export default function Products() {
     setImporting(true)
     setImportResult(null)
 
-    const buffer = await file.arrayBuffer()
-    const wb = XLSX.read(buffer, { type: 'array' })
-    const sheet = wb.Sheets[wb.SheetNames[0]]
-    const rows = XLSX.utils.sheet_to_json(sheet)
+    // Safety checks: only spreadsheet files, not too large, and readable
+    const importProblem = (message) => {
+      setImportResult({ added: 0, skipped: [`Error: ${message}`] })
+      setImporting(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+    if (!/\.(xlsx|xls|csv)$/i.test(file.name)) {
+      importProblem('Please choose an Excel (.xlsx, .xls) or .csv file.')
+      return
+    }
+    if (file.size > MAX_IMPORT_BYTES) {
+      importProblem('The file is too large. The limit is 5 MB.')
+      return
+    }
+
+    let rows
+    try {
+      const buffer = await file.arrayBuffer()
+      const wb = XLSX.read(buffer, { type: 'array' })
+      const sheet = wb.Sheets[wb.SheetNames[0]]
+      rows = XLSX.utils.sheet_to_json(sheet)
+    } catch {
+      importProblem('The file could not be read. Please use the import template.')
+      return
+    }
+    if (rows.length > MAX_IMPORT_ROWS) {
+      importProblem(`The file has too many rows. The limit is ${MAX_IMPORT_ROWS} products per import.`)
+      return
+    }
 
     const existingNamesLower = new Set(products.map(p => p.name?.trim().toLowerCase()))
     const seenInFile = new Set()

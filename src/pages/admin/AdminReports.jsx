@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase'
 import Layout from '../../components/Layout'
 import { fetchStaffUserIds } from '../../lib/staffAccounts'
 import * as XLSX from 'xlsx'
+import { fetchAllRows } from '../../lib/fetchAll'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { PLANS, PLAN_ORDER } from '../../lib/planConfig'
@@ -54,21 +55,13 @@ export default function AdminReports() {
       .from('subscriptions')
       .select('*')
 
-    const { data: productsData } = await supabase
-      .from('products')
-      .select('*')
+    const { data: productsData } = await fetchAllRows(() => supabase.from('products').select('*'))
 
-    const { data: salesData } = await supabase
-      .from('sales')
-      .select('*')
+    const { data: salesData } = await fetchAllRows(() => supabase.from('sales').select('*'))
 
-    const { data: givenData } = await supabase
-      .from('credits_given')
-      .select('*')
+    const { data: givenData } = await fetchAllRows(() => supabase.from('credits_given').select('*'))
 
-    const { data: takenData } = await supabase
-      .from('credits_taken')
-      .select('*')
+    const { data: takenData } = await fetchAllRows(() => supabase.from('credits_taken').select('*'))
 
     const { data: paymentsData } = await supabase
       .from('payment_requests')

@@ -11,6 +11,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import OTPVerify from '../components/OTPVerify'
 import { logActivity } from '../lib/activityLogger'
 import { changeStock } from '../lib/stock'
+import { fetchAllRows } from '../lib/fetchAll'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
 
 export default function Credits() {
@@ -72,17 +73,14 @@ export default function Credits() {
 
   const fetchCredits = async () => {
     setLoading(true)
-    const { data: given } = await supabase
-      .from('credits_given')
-      .select('*')
-      .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
-
-    const { data: taken } = await supabase
-      .from('credits_taken')
-      .select('*')
-      .eq('user_id', profile.id)
-      .order('created_at', { ascending: false })
+    const [{ data: given }, { data: taken }] = await Promise.all([
+      fetchAllRows(() =>
+        supabase.from('credits_given').select('*').eq('user_id', profile.id).order('created_at', { ascending: false })
+      ),
+      fetchAllRows(() =>
+        supabase.from('credits_taken').select('*').eq('user_id', profile.id).order('created_at', { ascending: false })
+      ),
+    ])
 
     setCreditsGiven(given || [])
     setCreditsTaken(taken || [])

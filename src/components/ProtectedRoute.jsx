@@ -1,4 +1,4 @@
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { useEffect, useState } from 'react'
@@ -12,6 +12,7 @@ import AccountClosed from './AccountClosed'
 export default function ProtectedRoute({ children, module }) {
   const { user, profile, myProfile, loading, planId, canView, memberBlocked, ownerSuspended, isOrgStaff, inviteChoice } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [subscription, setSubscription] = useState(null)
   const [pendingPayment, setPendingPayment] = useState(null)
   const [subLoading, setSubLoading] = useState(true)
@@ -74,6 +75,13 @@ export default function ProtectedRoute({ children, module }) {
         </div>
       </div>
     )
+  }
+
+  // Only the platform admin may open the /admin pages.
+  // (The database rules still protect the data; this keeps the screens closed too.)
+  const isAdminPath = location.pathname === '/admin' || location.pathname.startsWith('/admin/')
+  if (isAdminPath && (myProfile || profile).role !== 'admin') {
+    return <Navigate to="/dashboard" replace />
   }
 
   // The admin closed this account (moved it to Trash)

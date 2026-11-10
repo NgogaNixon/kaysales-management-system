@@ -6,17 +6,23 @@ import { ROLE_LABELS } from './permissions'
 // below for why). Cached per page load so we don't hit the lookup service on
 // every single action.
 let cachedIp = null
+let ipLookupDone = false
 
 const getIpAddress = async () => {
-  if (cachedIp) return cachedIp
+  if (ipLookupDone) return cachedIp
+  ipLookupDone = true // a slow or failed lookup is not repeated on every action
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 2500)
   try {
-    const response = await fetch('https://api.ipify.org?format=json')
+    const response = await fetch('https://api.ipify.org?format=json', { signal: controller.signal })
     const data = await response.json()
-    cachedIp = data.ip
+    cachedIp = data.ip || null
     return cachedIp
-  } catch (error) {
-    // Never let an IP lookup failure block the actual action from being logged.
+  } catch {
+    // Never let an IP lookup failure (or a slow one) block the actual action from being logged.
     return null
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -45,6 +51,36 @@ const resolveActor = async (userId, userEmail, userName) => {
   return cachedActor
 }
 
+// Keep the devices table in sync: register on first use, update last_seen after
+// that (at most once a minute per device). Never overwrites a label someone has set.
+const DEVICE_SYNC_INTERVAL_MS = 60 * 1000
+const lastDeviceSync = {}
+
+const syncDevice = async (deviceId, userId) => {
+  const now = Date.now()
+  if (lastDeviceSync[deviceId] && now - lastDeviceSync[deviceId] < DEVICE_SYNC_INTERVAL_MS) return
+  lastDeviceSync[deviceId] = now
+
+  const { data: existing } = await supabase
+    .from('devices')
+    .select('id')
+    .eq('device_id', deviceId)
+    .maybeSingle()
+
+  if (existing) {
+    await supabase
+      .from('devices')
+      .update({ last_seen: new Date().toISOString() })
+      .eq('device_id', deviceId)
+  } else {
+    await supabase.from('devices').insert({
+      device_id: deviceId,
+      label: getAutoDeviceLabel(deviceId),
+      account_user_id: userId,
+    })
+  }
+}
+
 export const logActivity = async (userId, userEmail, userName, action, details) => {
   try {
     const actor = await resolveActor(userId, userEmail, userName)
@@ -57,38 +93,21 @@ export const logActivity = async (userId, userEmail, userName, action, details) 
     const deviceId = getDeviceId()
     const ipAddress = await getIpAddress()
 
-    await supabase.from('activity_logs').insert({
-      user_id: userId,
-      user_email: userEmail,
-      user_name: userName,
-      action,
-      details,
-      device,
-      browser,
-      device_id: deviceId,
-      ip_address: ipAddress,
-    })
-
-    // Keep the devices table in sync: register on first use, update last_seen on
-    // every action after that. Never overwrites a label someone has already set.
-    const { data: existing } = await supabase
-      .from('devices')
-      .select('id')
-      .eq('device_id', deviceId)
-      .maybeSingle()
-
-    if (existing) {
-      await supabase
-        .from('devices')
-        .update({ last_seen: new Date().toISOString() })
-        .eq('device_id', deviceId)
-    } else {
-      await supabase.from('devices').insert({
+    // The log entry and the device update do not depend on each other, so run them together
+    await Promise.all([
+      supabase.from('activity_logs').insert({
+        user_id: userId,
+        user_email: userEmail,
+        user_name: userName,
+        action,
+        details,
+        device,
+        browser,
         device_id: deviceId,
-        label: getAutoDeviceLabel(deviceId),
-        account_user_id: userId,
-      })
-    }
+        ip_address: ipAddress,
+      }),
+      syncDevice(deviceId, userId),
+    ])
   } catch (error) {
     console.error('Failed to log activity:', error)
   }

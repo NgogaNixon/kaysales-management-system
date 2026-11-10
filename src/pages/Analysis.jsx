@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { localDate } from '../lib/dates'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { fetchAllRows } from '../lib/fetchAll'
 import { useAuth } from '../context/AuthContext'
 import Layout from '../components/Layout'
 import {
@@ -51,9 +52,9 @@ export default function Analysis() {
       { data: itemsData },
       { data: productsData }
     ] = await Promise.all([
-      supabase.from('sales').select('*').eq('user_id', profile.id).order('created_at', { ascending: true }),
-      supabase.from('sale_items').select('*').eq('user_id', profile.id),
-      supabase.from('products').select('id, name, category').eq('user_id', profile.id),
+      fetchAllRows(() => supabase.from('sales').select('*').eq('user_id', profile.id).order('created_at', { ascending: true })),
+      fetchAllRows(() => supabase.from('sale_items').select('*').eq('user_id', profile.id)),
+      fetchAllRows(() => supabase.from('products').select('id, name, category').eq('user_id', profile.id)),
     ])
 
     setSales(salesData || [])
