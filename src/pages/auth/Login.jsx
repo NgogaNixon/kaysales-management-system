@@ -2,6 +2,19 @@ import { useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useNavigate } from 'react-router-dom'
 
+// Clear, safe messages for the person signing in
+const friendlyLoginError = (error) => {
+  const text = (error?.message || '').toLowerCase()
+  if (error?.status === 429 || text.includes('rate limit') || text.includes('too many')) {
+    return 'Too many attempts. Please wait a few minutes and try again.'
+  }
+  if (text.includes('invalid login credentials')) return 'Incorrect email or password.'
+  if (text.includes('email not confirmed')) {
+    return 'Please confirm your email first. Check your inbox for the confirmation link.'
+  }
+  return 'Could not sign in. Please try again.'
+}
+
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -15,13 +28,12 @@ export default function Login() {
     setError('')
 
     const { data, error } = await supabase.auth.signInWithPassword({
-      email,
+      email: email.trim(),
       password
     })
 
     if (error) {
-      setError(error.message)
-      console.log('Login error:', error)
+      setError(friendlyLoginError(error))
     } else if (data.user) {
       const { data: profile } = await supabase
         .from('profiles')

@@ -17,6 +17,13 @@ import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
+// Database errors that mean the save_sale function is missing or does not fit the tables.
+// Only then the previous step-by-step way of saving is used, so selling never stops.
+const SALE_FUNCTION_PROBLEM_CODES = ['PGRST202', '42883', '42703', '42804', '42P01', '42601', '42725', '42P10']
+const isSaleFunctionProblem = (error) =>
+  SALE_FUNCTION_PROBLEM_CODES.includes(error?.code) ||
+  /could not find the function/i.test(error?.message || '')
+
 export default function Sales() {
   const { profile, canWrite, canView, isOrgStaff, isCeo } = useAuth()
   // In a company, each sale shows the person who recorded it
@@ -303,9 +310,45 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       : paidNow >= saleTotal ? 'paid' : paidNow > 0 ? 'partial' : 'pending'
     const amountPaidValue = paymentMethod === 'credit' ? Math.min(paidNow, saleTotal) : saleTotal
 
-    let saleData, saleError
+    // Save the whole sale (sale, items, stock and credits) in ONE database step,
+    // so a failure halfway can never leave stock or credits out of step.
+    const dateChanged = editSale
+      ? saleDate !== editSale.created_at?.split('T')[0]
+      : saleDate !== localDate(new Date())
 
-    if (editSale) {
+    const rpcResult = await supabase.rpc('save_sale', {
+      p_sale_id: editSale ? String(editSale.id) : null,
+      p_owner: profile.id,
+      p_customer: customerName,
+      p_payment_method: paymentMethod,
+      p_paid_now: paidNow,
+      p_sale_date: saleDate,
+      p_set_date: dateChanged,
+      p_items: validItems.map(item => ({
+        product_id: item.is_consignment ? null : item.product_id,
+        product_name: item.product_name,
+        quantity_sold: parseInt(item.quantity_sold),
+        selling_price: parseInt(item.selling_price),
+        buying_price: parseInt(item.buying_price) || 0,
+        total: item.total,
+        is_consignment: !!item.is_consignment,
+      })),
+      p_profit_tracking: !!profitTracking,
+      p_extra_fees: parseInt(extraFees) || 0,
+      p_profit: totalProfit || 0,
+    })
+
+    let saleData = rpcResult.data
+    let saleError = rpcResult.error
+
+    // Only if the database function is missing or does not fit, use the previous way
+    const useLegacy = Boolean(saleError) && isSaleFunctionProblem(saleError)
+    if (useLegacy) {
+      saleData = undefined
+      saleError = null
+    }
+
+    if (useLegacy && editSale) {
       const { data: oldItems } = await supabase
         .from('sale_items')
         .select('product_id, quantity_sold, is_consignment')
@@ -397,7 +440,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           }
         }
       }
-    } else {
+    } else if (useLegacy) {
       const { data, error } = await supabase
         .from('sales')
         .insert({
@@ -806,12 +849,6 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
             className="px-3 py-2 bg-surface-elevated border border-surface-border text-gray-300 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
           >
             This Month
-          </button>
-          <button
-            onClick={() => { setDateFrom(''); setDateTo('') }}
-            className="px-3 py-2 bg-surface-elevated border border-surface-border text-gray-300 hover:text-white rounded-lg text-sm transition whitespace-nowrap"
-          >
-            All Time
           </button>
           <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">Excel</button>
           <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">PDF</button>

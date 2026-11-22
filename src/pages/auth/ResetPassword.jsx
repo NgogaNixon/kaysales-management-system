@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useNavigate } from 'react-router-dom'
 
+const MIN_PASSWORD_LENGTH = 8
+
 export default function ResetPassword() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -16,8 +18,12 @@ export default function ResetPassword() {
       setError('Passwords do not match')
       return
     }
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters')
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+      return
+    }
+    if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+      setError('Password must contain at least one letter and one number')
       return
     }
     setLoading(true)
@@ -73,8 +79,12 @@ export default function ResetPassword() {
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-4 py-3 rounded-lg focus:outline-none focus:border-blue-500 transition"
                 placeholder="Enter new password"
+                autoComplete="new-password"
                 required
               />
+              <p className="text-gray-500 text-xs mt-1">
+                At least {MIN_PASSWORD_LENGTH} characters, with letters and numbers.
+              </p>
             </div>
             <div>
               <label className="block text-gray-400 text-sm font-medium mb-2">Confirm Password</label>
@@ -84,6 +94,7 @@ export default function ResetPassword() {
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-4 py-3 rounded-lg focus:outline-none focus:border-blue-500 transition"
                 placeholder="Confirm new password"
+                autoComplete="new-password"
                 required
               />
             </div>

@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useNavigate } from 'react-router-dom'
 
+const MIN_PASSWORD_LENGTH = 8
+
 export default function Signup() {
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
@@ -38,8 +40,20 @@ const [success, setSuccess] = useState(false)
       return
     }
 
+    // Password rules (keep the minimum length equal to the Supabase Authentication setting)
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Your password must be at least ${MIN_PASSWORD_LENGTH} characters long.`)
+      setLoading(false)
+      return
+    }
+    if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+      setError('Your password must contain at least one letter and one number.')
+      setLoading(false)
+      return
+    }
+
     const { error } = await supabase.auth.signUp({
-      email,
+      email: email.trim(),
       password,
       options: { data: { full_name: fullName } }
     })
@@ -117,8 +131,12 @@ const [success, setSuccess] = useState(false)
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-gray-800 border border-gray-700 text-white px-4 py-3 rounded-lg focus:outline-none focus:border-blue-500 transition"
                 placeholder="Create a strong password"
+                autoComplete="new-password"
                 required
               />
+              <p className="text-gray-500 text-xs mt-1">
+                At least {MIN_PASSWORD_LENGTH} characters, with letters and numbers.
+              </p>
             </div>
             <button
               type="submit"
