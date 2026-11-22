@@ -100,6 +100,14 @@ function weekdayIndex(d) {
   return (d.getDay() + 6) % 7
 }
 
+// Compares how much of the units a product has with how much of the money it brings.
+// Many units but little money = low price. Few units but a lot of money = high price.
+function valueNote(p) {
+  if (p.share >= p.unitShare * 1.3) return 'High price: earns more than it sells'
+  if (p.unitShare >= p.share * 1.3) return 'Low price: sells many, earns less'
+  return 'Balanced price and quantity'
+}
+
 function trendWord(percent) {
   if (percent === null) return 'Not enough data'
   if (percent >= 10) return 'Rising'
@@ -288,6 +296,9 @@ function buildReportData(allSales, allItems, products, from, to) {
     }
   })
   const byQty = productList.slice().sort((a, b) => b.qty - a.qty)
+  byQty.forEach((p, i) => { p.qtyRank = i + 1 })
+  byRevenue.forEach((p, i) => { p.revRank = i + 1 })
+  productList.forEach(p => { p.unitShare = itemsSold > 0 ? (p.qty / itemsSold) * 100 : 0 })
 
   // Categories, payment methods and customers
   const categoryMap = {}
@@ -334,11 +345,6 @@ function buildReportData(allSales, allItems, products, from, to) {
     }
     if (trendPercent !== null) {
       insights.push(`Trend: ${trendWord(trendPercent).toLowerCase()}. The daily average in the second half of the period is ${Math.abs(trendPercent).toFixed(0)}% ${trendPercent >= 0 ? 'above' : 'below'} the first half.`)
-    }
-    if (byQty.length > 0) {
-      const top = byQty[0]
-      const unitShare = itemsSold > 0 ? (top.qty / itemsSold) * 100 : 0
-      insights.push(`Top seller by quantity is ${top.name} with ${formatNumber(top.qty)} units (${unitShare.toFixed(0)}% of all units sold).`)
     }
     if (byRevenue.length > 0) {
       const topRev = byRevenue[0]
@@ -534,6 +540,54 @@ function drawHorizontalBars(doc, x, y, w, rows, color) {
   return y + 2
 }
 
+// Two bars for each product: share of the units sold and share of the money earned
+function drawCompareBars(doc, x, y, w, rows) {
+  const labelWidth = 46
+  const textWidth = 62
+  const maxBar = w - labelWidth - textWidth
+  let maxShare = 1
+  rows.forEach(r => {
+    if (r.unitShare > maxShare) maxShare = r.unitShare
+    if (r.moneyShare > maxShare) maxShare = r.moneyShare
+  })
+
+  // legend
+  doc.setFontSize(7.5)
+  doc.setFillColor(...COLOR_GRAY)
+  doc.rect(x, y - 2.5, 3, 3, 'F')
+  doc.setTextColor(...COLOR_GRAY)
+  doc.text('Share of units sold', x + 4.5, y)
+  doc.setFillColor(...COLOR_GREEN)
+  doc.rect(x + 40, y - 2.5, 3, 3, 'F')
+  doc.text('Share of money earned', x + 44.5, y)
+  y += 4
+
+  rows.forEach(r => {
+    doc.setFontSize(8)
+    doc.setTextColor(...COLOR_DARK)
+    doc.text(cutText(doc, r.label, labelWidth - 3), x, y + 4.5)
+
+    const unitW = Math.max((r.unitShare / maxShare) * maxBar, 0.5)
+    const moneyW = Math.max((r.moneyShare / maxShare) * maxBar, 0.5)
+    doc.setFillColor(...COLOR_GRAY)
+    doc.rect(x + labelWidth, y, unitW, 3.6, 'F')
+    doc.setFillColor(...COLOR_GREEN)
+    doc.rect(x + labelWidth, y + 4.2, moneyW, 3.6, 'F')
+    doc.setFontSize(6.5)
+    doc.setTextColor(...COLOR_GRAY)
+    doc.text(r.unitShare.toFixed(0) + '%', x + labelWidth + unitW + 1.5, y + 3)
+    doc.text(r.moneyShare.toFixed(0) + '%', x + labelWidth + moneyW + 1.5, y + 7.2)
+
+    doc.setFontSize(7.5)
+    doc.setTextColor(...COLOR_DARK)
+    doc.text(r.line1, x + w, y + 3, { align: 'right' })
+    doc.setTextColor(...r.noteColor)
+    doc.text(r.line2, x + w, y + 7.2, { align: 'right' })
+    y += 11
+  })
+  return y
+}
+
 function drawSparkline(doc, x, y, w, h, values) {
   let maxValue = 0
   values.forEach(v => { if (v > maxValue) maxValue = v })
@@ -622,47 +676,54 @@ async function makeAnalysisPdf(profile, allSales, allItems, products, from, to, 
     chartNote += `Overall trend: ${trendWord(data.trendPercent)}${data.trendPercent !== null ? ' (' + percentText(data.trendPercent) + ')' : ''}.`
     y = writeText(doc, y + 2, chartNote, 8, COLOR_GRAY, 14, 182) + 5
 
-    // Top products by quantity
-    const topTen = data.byQty.slice(0, 10)
-    y = sectionTitle(doc, y, 'Products sold - by quantity', topTen.length * 6.8 + 16)
-    y = drawHorizontalBars(doc, 14, y, 182, topTen.map(p => ({
-      label: p.name,
-      value: p.qty,
-      text: `${formatNumber(p.qty)} units`,
-    })), COLOR_MAIN)
+    // Quantity against money: the product with most units is not always the best one
+    const compareRows = data.byRevenue.slice(0, 8)
+    y = sectionTitle(doc, y + 2, 'Quantity vs money - who really earns?', compareRows.length * 11 + 30)
+    y = writeText(doc, y, 'A product can sell many units at a small price, while another one with fewer units earns more because each unit costs more. Here the top earners are compared by their share of units and their share of money.', 8, COLOR_GRAY, 14, 182) + 3
+    y = drawCompareBars(doc, 14, y, 182, compareRows.map(p => {
+      const note = valueNote(p)
+      return {
+        label: p.name,
+        unitShare: p.unitShare,
+        moneyShare: p.share,
+        line1: `${formatNumber(p.qty)} units at about ${formatMoney(p.avgPrice)} each`,
+        line2: note,
+        noteColor: note.startsWith('High') ? COLOR_GREEN : note.startsWith('Low') ? COLOR_ORANGE : COLOR_GRAY,
+      }
+    })) + 4
 
-    // A short explanation of the top 5 products
-    y = sectionTitle(doc, y + 2, 'Top products explained', 40)
-    data.byQty.slice(0, 5).forEach((p, i) => {
+    // A short explanation of the top 5 earning products
+    y = sectionTitle(doc, y, 'Top earning products explained', 40)
+    data.byRevenue.slice(0, 5).forEach((p, i) => {
       let pattern = ''
-      if (p.trend === 'Up') pattern = `Demand is rising: ${formatNumber(p.firstHalfQty)} units in the first half, ${formatNumber(p.secondHalfQty)} in the second half.`
-      else if (p.trend === 'Down') pattern = `Demand is falling: ${formatNumber(p.firstHalfQty)} units in the first half, ${formatNumber(p.secondHalfQty)} in the second half.`
-      else if (p.trend === 'New') pattern = 'It only started selling in the second half of the period.'
-      else if (p.trend === 'Steady') pattern = 'Demand is steady through the period.'
-      const text = `${i + 1}. ${p.name} (${p.category}): ${formatNumber(p.qty)} units in ${p.orderCount} sale${p.orderCount > 1 ? 's' : ''}, earning ${formatMoney(p.revenue)} (${p.share.toFixed(0)}% of item revenue) at about ${formatMoney(p.avgPrice)} per unit. ${pattern}`
+      if (p.trend === 'Up') pattern = ` Demand is rising: ${formatNumber(p.firstHalfQty)} units in the first half, ${formatNumber(p.secondHalfQty)} in the second half.`
+      else if (p.trend === 'Down') pattern = ` Demand is falling: ${formatNumber(p.firstHalfQty)} units in the first half, ${formatNumber(p.secondHalfQty)} in the second half.`
+      else if (p.trend === 'New') pattern = ' It only started selling in the second half of the period.'
+      else if (p.trend === 'Steady') pattern = ' Demand is steady through the period.'
+      const text = `${i + 1}. ${p.name} (${p.category}): number ${p.revRank} for money and number ${p.qtyRank} for units. It sold ${formatNumber(p.qty)} units in ${p.orderCount} sale${p.orderCount > 1 ? 's' : ''} at about ${formatMoney(p.avgPrice)} per unit and earned ${formatMoney(p.revenue)} (${p.share.toFixed(0)}% of item revenue). ${valueNote(p)}.${pattern}`
       y = writeText(doc, y, text, 9, COLOR_DARK, 14, 182) + 1.5
     })
     y += 4
 
     // Full product table with a small trend line for each product
-    y = sectionTitle(doc, y, 'All products sold', 45)
+    y = sectionTitle(doc, y, 'All products sold (most units first)', 45)
     const shown = data.byQty.slice(0, 60)
     autoTable(doc, {
       startY: y,
       margin: { top: 18, bottom: 20, left: 14, right: 14 },
-      head: [['#', 'Product', 'Category', 'Qty', 'Sales', 'Revenue (RWF)', 'Share', 'Class', 'Trend', 'Pattern']],
+      head: [['#', 'Product', 'Category', 'Qty', 'Avg price (RWF)', 'Revenue (RWF)', 'Share', 'Class', 'Trend', 'Pattern']],
       body: shown.map((p, i) => [
-        i + 1, p.name, p.category, formatNumber(p.qty), p.orderCount,
+        i + 1, p.name, p.category, formatNumber(p.qty), formatNumber(p.avgPrice),
         formatNumber(p.revenue), p.share.toFixed(1) + '%', p.abc, p.trend, '',
       ]),
       styles: { fontSize: 8, cellPadding: 1.8 },
       headStyles: { fillColor: COLOR_MAIN },
       alternateRowStyles: { fillColor: [248, 250, 252] },
       columnStyles: {
-        0: { cellWidth: 7 }, 1: { cellWidth: 41 }, 2: { cellWidth: 24 },
-        3: { cellWidth: 13, halign: 'right' }, 4: { cellWidth: 12, halign: 'right' },
-        5: { cellWidth: 27, halign: 'right' }, 6: { cellWidth: 13, halign: 'right' },
-        7: { cellWidth: 12, halign: 'center' }, 8: { cellWidth: 13 }, 9: { cellWidth: 20 },
+        0: { cellWidth: 6 }, 1: { cellWidth: 38 }, 2: { cellWidth: 22 },
+        3: { cellWidth: 12, halign: 'right' }, 4: { cellWidth: 22, halign: 'right' },
+        5: { cellWidth: 26, halign: 'right' }, 6: { cellWidth: 12, halign: 'right' },
+        7: { cellWidth: 11, halign: 'center' }, 8: { cellWidth: 13 }, 9: { cellWidth: 20 },
       },
       didParseCell: (cell) => {
         // numbers and their titles line up on the right
@@ -683,7 +744,8 @@ async function makeAnalysisPdf(profile, allSales, allItems, products, from, to, 
       },
     })
     y = doc.lastAutoTable.finalY + 4
-    let tableNote = 'Class A = the products that together make 80% of revenue (your key products), B = the next 15%, C = the rest. '
+    let tableNote = 'Avg price = money earned divided by units sold. Compare it with Qty: a product with fewer units but a higher price can earn more. '
+    tableNote += 'Class A = the products that together make 80% of revenue (your key products), B = the next 15%, C = the rest. '
     tableNote += 'Trend compares the daily average of the first and second half of the period. Pattern = quantity sold across the period.'
     if (data.byQty.length > shown.length) tableNote += ` Showing the first ${shown.length} of ${data.byQty.length} products.`
     y = writeText(doc, y, tableNote, 7.5, COLOR_GRAY, 14, 182) + 5
@@ -835,15 +897,11 @@ export default function Analysis() {
   }, {})
   const revenueChartData = Object.entries(revenueByDay).map(([date, total]) => ({ date, total }))
 
-  // 2. Best Selling Products (by quantity)
+  // 2. Units sold per product (used by the Quantity vs Money chart below)
   const productQty = filteredItems.reduce((acc, item) => {
     acc[item.product_name] = (acc[item.product_name] || 0) + (item.quantity_sold || 0)
     return acc
   }, {})
-  const bestSellingData = Object.entries(productQty)
-    .map(([name, qty]) => ({ name, qty }))
-    .sort((a, b) => b.qty - a.qty)
-    .slice(0, 5)
 
   // 3. Revenue by Product
   const productRevenue = filteredItems.reduce((acc, item) => {
@@ -854,6 +912,26 @@ export default function Analysis() {
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 5)
+
+  // Quantity vs Money: share of the units sold against share of the money earned,
+  // for the products that earned the most. A product with fewer units can earn
+  // more because each unit costs more.
+  const totalUnitsShown = filteredItems.reduce((sum, i) => sum + (i.quantity_sold || 0), 0)
+  const totalMoneyShown = filteredItems.reduce((sum, i) => sum + (i.total || 0), 0)
+  const compareData = Object.entries(productRevenue)
+    .map(([name, money]) => {
+      const qty = productQty[name] || 0
+      return {
+        name,
+        qty,
+        money,
+        avgPrice: qty > 0 ? Math.round(money / qty) : 0,
+        unitsShare: totalUnitsShown > 0 ? Math.round((qty / totalUnitsShown) * 1000) / 10 : 0,
+        moneyShare: totalMoneyShown > 0 ? Math.round((money / totalMoneyShown) * 1000) / 10 : 0,
+      }
+    })
+    .sort((a, b) => b.money - a.money)
+    .slice(0, 8)
 
   // 4. Daily Sales Count
   const salesPerDay = filteredSales.reduce((acc, sale) => {
@@ -1090,22 +1168,35 @@ export default function Analysis() {
           )}
         </div>
 
-        {/* Chart 2 — Best Selling Products */}
+        {/* Chart 2 — Quantity vs Money */}
         <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 sm:p-6">
-          <h2 className="text-lg font-bold text-white mb-4">Best Selling Products</h2>
-          {bestSellingData.length === 0 ? (
+          <h2 className="text-lg font-bold text-white mb-1">Quantity vs Money</h2>
+          <p className="text-gray-400 text-xs mb-4">Share of units sold against share of money earned. A product with fewer units can earn more because each unit costs more.</p>
+          {compareData.length === 0 ? (
             <p className="text-gray-500 text-center py-8">No data available</p>
           ) : (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={bestSellingData} layout="vertical">
+            <ResponsiveContainer width="100%" height={compareData.length * 44 + 40}>
+              <BarChart data={compareData} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" stroke="#232733" />
-                <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 9 }} />
+                <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 9 }} tickFormatter={(v) => `${v}%`} />
                 <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 9 }} width={90} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px' }}
-                  formatter={(value) => [value, 'Units Sold']}
+                  content={({ active, payload }) => {
+                    if (!active || !payload || payload.length === 0) return null
+                    const p = payload[0].payload
+                    return (
+                      <div style={{ backgroundColor: '#161922', border: '1px solid #232733', borderRadius: '8px', padding: '8px 12px', fontSize: '12px' }}>
+                        <p style={{ color: '#fff', fontWeight: 'bold', marginBottom: '4px' }}>{p.name}</p>
+                        <p style={{ color: '#9ca3af' }}>{p.qty.toLocaleString()} units at about RWF {p.avgPrice.toLocaleString()} each</p>
+                        <p style={{ color: '#9ca3af' }}>{p.unitsShare}% of units sold</p>
+                        <p style={{ color: '#10b981' }}>RWF {p.money.toLocaleString()} ({p.moneyShare}% of money)</p>
+                      </div>
+                    )
+                  }}
                 />
-                <Bar dataKey="qty" fill="#10b981" radius={[0, 4, 4, 0]} />
+                <Legend iconSize={10} wrapperStyle={{ fontSize: '11px' }} />
+                <Bar dataKey="unitsShare" name="Share of units sold" fill="#94a3b8" radius={[0, 4, 4, 0]} />
+                <Bar dataKey="moneyShare" name="Share of money earned" fill="#10b981" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}
