@@ -4,7 +4,6 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useApprovalGate } from '../lib/useApprovalGate'
 import Layout from '../components/Layout'
-import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { drawBrandedHeader, drawSignatureAndStamp } from '../lib/pdfBranding'
@@ -300,43 +299,6 @@ export default function Dashboard() {
     doc.save(`Receipt_${selectedSale.product_name}_${new Date(selectedSale.created_at).toLocaleDateString()}.pdf`)
   }
 
-  const exportExcel = () => {
-    const data = stats.recentSales.map(s => ({
-      Customer: s.product_name,
-      'Total (RWF)': s.total,
-      Date: new Date(s.created_at).toLocaleDateString(),
-    }))
-    const ws = XLSX.utils.json_to_sheet(data)
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Sales')
-    XLSX.writeFile(wb, 'KaySales_Dashboard_Report.xlsx')
-  }
-
-  const exportPDF = () => {
-    const doc = new jsPDF()
-    doc.setFontSize(16)
-    doc.text(profile?.company_name || 'KaySales Management System', 14, 15)
-    doc.setFontSize(12)
-    doc.text('Dashboard Report', 14, 25)
-    doc.setFontSize(10)
-    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-    doc.text(`Total Revenue: RWF ${stats.totalRevenue.toLocaleString()}`, 14, 39)
-    doc.text(`Total Sales: ${stats.totalSales}`, 14, 46)
-
-    autoTable(doc, {
-      startY: 55,
-      head: [['Customer', 'Total (RWF)', 'Date']],
-      body: stats.recentSales.map(s => [
-        s.product_name,
-        s.total?.toLocaleString(),
-        new Date(s.created_at).toLocaleDateString(),
-      ]),
-      styles: { fontSize: 9 },
-      headStyles: { fillColor: [29, 78, 216] },
-    })
-    doc.save('KaySales_Dashboard_Report.pdf')
-  }
-
   if (loading) {
     return (
       <Layout>
@@ -405,8 +367,6 @@ export default function Dashboard() {
             <p className="text-gray-400 text-sm hidden sm:block">
               {new Date().toLocaleDateString('en-RW', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
             </p>
-            {canView('sales') && <button onClick={exportExcel} className="px-3 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">Excel</button>}
-            {canView('sales') && <button onClick={exportPDF} className="px-3 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">PDF</button>}
           </div>
         </div>
 

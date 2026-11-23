@@ -17,6 +17,821 @@ import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
+// ===== SALES REPORT HELPERS START =====
+// Everything between these lines is used only by the "PDF" sales report.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+const COLOR_MAIN = [79, 70, 229]
+const COLOR_DARK = [30, 41, 59]
+const COLOR_GRAY = [100, 116, 139]
+const COLOR_LIGHT = [241, 245, 249]
+const COLOR_GREEN = [22, 163, 74]
+const COLOR_RED = [220, 38, 38]
+const COLOR_ORANGE = [234, 88, 12]
+
+// '2026-11-05' becomes midnight of that day in the user's own time zone.
+// new Date('2026-11-05') alone would use UTC and shift the day in Rwanda.
+function parseLocalDate(text) {
+  const parts = text.split('-')
+  return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+}
+
+// True when the sale date is inside from..to (both days included).
+// A blank from/to means no limit on that side.
+function isInRange(createdAt, from, to) {
+  const d = new Date(createdAt)
+  if (from && d < parseLocalDate(from)) return false
+  if (to) {
+    const end = parseLocalDate(to)
+    end.setDate(end.getDate() + 1)
+    if (d >= end) return false
+  }
+  return true
+}
+
+function formatDate(d) {
+  return String(d.getDate()).padStart(2, '0') + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear()
+}
+
+function formatShortDate(d) {
+  return String(d.getDate()).padStart(2, '0') + ' ' + MONTHS[d.getMonth()]
+}
+
+// en-US is used on purpose: some phone languages add special space
+// characters to numbers and the PDF font cannot print them.
+function formatNumber(n) {
+  return Math.round(n || 0).toLocaleString('en-US')
+}
+
+function formatMoney(n) {
+  return 'RWF ' + formatNumber(n)
+}
+
+function shortMoney(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1).replace('.0', '') + 'M'
+  if (n >= 10000) return Math.round(n / 1000) + 'k'
+  if (n >= 1000) return (n / 1000).toFixed(1).replace('.0', '') + 'k'
+  return String(Math.round(n))
+}
+
+// Percent change from "before" to "now". Returns null when there is nothing to compare with.
+function percentChange(now, before) {
+  if (!before) return null
+  return ((now - before) / before) * 100
+}
+
+function percentText(value) {
+  if (value === null) return 'n/a'
+  return (value > 0 ? '+' : '') + value.toFixed(0) + '%'
+}
+
+// Rounds a number up to a clean chart top (1, 2, 5 or 10 times a power of ten)
+function niceMax(value) {
+  if (value <= 0) return 1
+  const power = Math.pow(10, Math.floor(Math.log10(value)))
+  const f = value / power
+  let nice = 10
+  if (f <= 1) nice = 1
+  else if (f <= 2) nice = 2
+  else if (f <= 5) nice = 5
+  return nice * power
+}
+
+function weekdayIndex(d) {
+  // JavaScript starts the week on Sunday, we start on Monday
+  return (d.getDay() + 6) % 7
+}
+
+function trendWord(percent) {
+  if (percent === null) return 'Not enough data'
+  if (percent >= 10) return 'Rising'
+  if (percent <= -10) return 'Declining'
+  return 'Stable'
+}
+
+function needSpace(doc, y, height) {
+  if (y + height > 278) {
+    doc.addPage()
+    return 18
+  }
+  return y
+}
+
+// "needed" = space the title AND the content under it must have on this page,
+// so a title is never left alone at the bottom of a page
+function sectionTitle(doc, y, text, needed) {
+  y = needSpace(doc, y, needed || 24)
+  doc.setFillColor(...COLOR_MAIN)
+  doc.rect(14, y - 4.5, 1.8, 6, 'F')
+  doc.setFont(undefined, 'bold')
+  doc.setFontSize(12)
+  doc.setTextColor(...COLOR_DARK)
+  doc.text(text, 18, y)
+  doc.setFont(undefined, 'normal')
+  return y + 7
+}
+
+function writeText(doc, y, text, size, color, x, width) {
+  doc.setFontSize(size)
+  doc.setTextColor(...color)
+  const lines = doc.splitTextToSize(text, width)
+  y = needSpace(doc, y, lines.length * size * 0.43 + 2)
+  doc.text(lines, x, y)
+  return y + lines.length * size * 0.43 + 1
+}
+
+function writeBullet(doc, y, text) {
+  doc.setFontSize(9.5)
+  const lines = doc.splitTextToSize(text, 172)
+  y = needSpace(doc, y, lines.length * 4.2 + 2)
+  doc.setFillColor(...COLOR_MAIN)
+  doc.circle(16.2, y - 1.1, 0.8, 'F')
+  doc.setTextColor(...COLOR_DARK)
+  doc.text(lines, 20, y)
+  return y + lines.length * 4.2 + 1.5
+}
+
+function cutText(doc, text, maxWidth) {
+  let result = String(text)
+  while (result.length > 1 && doc.getTextWidth(result) > maxWidth) {
+    result = result.slice(0, -1)
+  }
+  return result === String(text) ? result : result.trim() + '...'
+}
+
+function drawCard(doc, x, y, w, label, value, subText, subColor) {
+  doc.setFillColor(...COLOR_LIGHT)
+  doc.roundedRect(x, y, w, 22, 2, 2, 'F')
+  doc.setFontSize(8)
+  doc.setTextColor(...COLOR_GRAY)
+  doc.text(label, x + 4, y + 6)
+  doc.setFont(undefined, 'bold')
+  doc.setFontSize(12)
+  doc.setTextColor(...COLOR_DARK)
+  doc.text(value, x + 4, y + 13)
+  doc.setFont(undefined, 'normal')
+  doc.setFontSize(7.5)
+  doc.setTextColor(...subColor)
+  doc.text(subText, x + 4, y + 18.5)
+}
+
+function changeInfo(now, before) {
+  const change = percentChange(now, before)
+  if (change === null) {
+    return { text: now > 0 ? 'No sales before' : 'No change', color: COLOR_GRAY }
+  }
+  return {
+    text: percentText(change) + ' vs previous period',
+    color: change >= 0 ? COLOR_GREEN : COLOR_RED,
+  }
+}
+
+// Bars (one per label) with an optional line on top of them
+function drawBarChart(doc, x, y, w, h, bars, options) {
+  const labelWidth = 15
+  const plotX = x + labelWidth
+  const plotW = w - labelWidth
+  const plotY = y + 3
+  const plotH = h - 12
+
+  let maxValue = 0
+  bars.forEach(b => { if (b.value > maxValue) maxValue = b.value })
+  if (options.line) options.line.forEach(v => { if (v > maxValue) maxValue = v })
+  const top = niceMax(maxValue)
+
+  doc.setDrawColor(226, 232, 240)
+  doc.setLineWidth(0.2)
+  doc.setFontSize(7)
+  doc.setTextColor(...COLOR_GRAY)
+  for (let i = 0; i <= 5; i++) {
+    const gy = plotY + plotH - (plotH * i) / 5
+    doc.line(plotX, gy, plotX + plotW, gy)
+    doc.text(shortMoney((top * i) / 5), plotX - 2, gy + 1, { align: 'right' })
+  }
+
+  const slot = plotW / bars.length
+  const barW = Math.min(slot * 0.7, 14)
+  let maxIndex = 0
+  bars.forEach((b, i) => { if (b.value > bars[maxIndex].value) maxIndex = i })
+  const labelStep = Math.ceil(bars.length / 10)
+
+  bars.forEach((b, i) => {
+    const barH = (b.value / top) * plotH
+    const bx = plotX + slot * i + (slot - barW) / 2
+    if (options.highlightMax && i === maxIndex && b.value > 0) doc.setFillColor(...COLOR_GREEN)
+    else doc.setFillColor(...COLOR_MAIN)
+    if (barH > 0) doc.rect(bx, plotY + plotH - barH, barW, barH, 'F')
+
+    doc.setFontSize(6.5)
+    doc.setTextColor(...COLOR_GRAY)
+    if (i % labelStep === 0) {
+      doc.text(b.label, bx + barW / 2, plotY + plotH + 4, { align: 'center' })
+    }
+    if (options.showValues && b.value > 0) {
+      doc.text(shortMoney(b.value), bx + barW / 2, plotY + plotH - barH - 1, { align: 'center' })
+    }
+  })
+
+  if (options.line) {
+    doc.setDrawColor(...COLOR_ORANGE)
+    doc.setLineWidth(0.6)
+    for (let i = 1; i < options.line.length; i++) {
+      const x1 = plotX + slot * (i - 1) + slot / 2
+      const x2 = plotX + slot * i + slot / 2
+      const y1 = plotY + plotH - (options.line[i - 1] / top) * plotH
+      const y2 = plotY + plotH - (options.line[i] / top) * plotH
+      doc.line(x1, y1, x2, y2)
+    }
+  }
+  doc.setLineWidth(0.2)
+  return y + h
+}
+
+// Horizontal bars: label on the left, bar, then the value text
+function drawHorizontalBars(doc, x, y, w, rows, color) {
+  const labelWidth = 52
+  const maxBar = w - labelWidth - 38
+  let maxValue = 0
+  rows.forEach(r => { if (r.value > maxValue) maxValue = r.value })
+  rows.forEach(r => {
+    doc.setFontSize(8)
+    doc.setTextColor(...COLOR_DARK)
+    doc.text(cutText(doc, r.label, labelWidth - 3), x, y + 4)
+    const barW = maxValue > 0 ? Math.max((r.value / maxValue) * maxBar, 0.5) : 0.5
+    doc.setFillColor(...color)
+    doc.rect(x + labelWidth, y, barW, 5, 'F')
+    doc.setTextColor(...COLOR_GRAY)
+    doc.text(r.text, x + labelWidth + barW + 2, y + 4)
+    y += 6.8
+  })
+  return y + 2
+}
+
+
+const METHOD_NAMES = { cash: 'Cash', mtn: 'MTN', bank: 'Bank', cheque: 'Cheque', credit: 'Credit' }
+const STATUS_NAMES = { paid: 'Paid', partial: 'Partial', pending: 'Pending' }
+
+// Money really received for one sale. Credit sales only count what was paid so far.
+function amountPaidOf(sale) {
+  const total = sale.total || 0
+  if (sale.payment_status === 'partial' || sale.payment_status === 'pending') {
+    return Math.min(sale.amount_paid || 0, total)
+  }
+  return total
+}
+
+function customerLabel(name) {
+  return (name || '').trim() || 'Walk-in customer'
+}
+
+function twoDigits(n) {
+  return String(n).padStart(2, '0')
+}
+
+// ---------- 1. Work out all the numbers for the sales report ----------
+
+function buildSalesReport(allSales, itemsBySale, from, to) {
+  const fromDate = parseLocalDate(from)
+  const toDate = parseLocalDate(to)
+  const dayCount = Math.round((toDate - fromDate) / 86400000) + 1
+
+  const sales = allSales
+    .filter(s => isInRange(s.created_at, from, to))
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+
+  // The period just before this one, same length, for comparison
+  const prevTo = new Date(fromDate)
+  prevTo.setDate(prevTo.getDate() - 1)
+  const prevFrom = new Date(prevTo)
+  prevFrom.setDate(prevFrom.getDate() - (dayCount - 1))
+  const prevSales = allSales.filter(s => isInRange(s.created_at, localDate(prevFrom), localDate(prevTo)))
+
+  const unitsOf = (sale) => (itemsBySale[sale.id] || []).reduce((sum, i) => sum + (i.quantity_sold || 0), 0)
+
+  const revenue = sales.reduce((sum, s) => sum + (s.total || 0), 0)
+  const profit = sales.reduce((sum, s) => sum + (s.profit || 0), 0)
+  const collected = sales.reduce((sum, s) => sum + amountPaidOf(s), 0)
+  const outstanding = revenue - collected
+  const units = sales.reduce((sum, s) => sum + unitsOf(s), 0)
+  const average = sales.length > 0 ? revenue / sales.length : 0
+  const collectionRate = revenue > 0 ? (collected / revenue) * 100 : 100
+
+  const prevRevenue = prevSales.reduce((sum, s) => sum + (s.total || 0), 0)
+  const prevUnits = prevSales.reduce((sum, s) => sum + unitsOf(s), 0)
+  const prevAverage = prevSales.length > 0 ? prevRevenue / prevSales.length : 0
+
+  // Every day of the period, with its sales (days without sales stay empty)
+  const days = []
+  for (let i = 0; i < dayCount; i++) {
+    const date = new Date(fromDate)
+    date.setDate(date.getDate() + i)
+    days.push({ date, sales: [], revenue: 0, collected: 0 })
+  }
+  sales.forEach(s => {
+    const d = new Date(s.created_at)
+    const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+    const idx = Math.round((midnight - fromDate) / 86400000)
+    if (idx >= 0 && idx < dayCount) {
+      days[idx].sales.push(s)
+      days[idx].revenue += s.total || 0
+      days[idx].collected += amountPaidOf(s)
+    }
+  })
+  const dayRevenue = days.map(d => d.revenue)
+  const quietDays = days.filter(d => d.sales.length === 0).length
+  let peakIndex = 0
+  dayRevenue.forEach((v, i) => { if (v > dayRevenue[peakIndex]) peakIndex = i })
+
+  // Trend: daily average of the first half against the second half
+  const half = Math.floor(dayCount / 2)
+  let trendPercent = null
+  if (half >= 2) {
+    const firstSum = dayRevenue.slice(0, half).reduce((a, b) => a + b, 0)
+    const secondSum = dayRevenue.slice(half).reduce((a, b) => a + b, 0)
+    trendPercent = percentChange(secondSum / (dayCount - half), firstSum / half)
+  }
+
+  // Chart buckets: daily for short periods, weekly or monthly for longer ones
+  let mode = 'day'
+  if (dayCount > 120) mode = 'month'
+  else if (dayCount > 45) mode = 'week'
+  const bucketMap = new Map()
+  days.forEach((day, i) => {
+    let key = String(i)
+    let label = formatShortDate(day.date)
+    if (mode === 'week') {
+      key = String(Math.floor(i / 7))
+    } else if (mode === 'month') {
+      key = day.date.getFullYear() + '-' + day.date.getMonth()
+      label = MONTHS[day.date.getMonth()] + ' ' + String(day.date.getFullYear()).slice(2)
+    }
+    if (!bucketMap.has(key)) bucketMap.set(key, { label, value: 0 })
+    bucketMap.get(key).value += day.revenue
+  })
+  const buckets = Array.from(bucketMap.values())
+  let movingAverage = null
+  if (mode === 'day' && dayCount >= 7) {
+    movingAverage = dayRevenue.map((v, i) => {
+      const part = dayRevenue.slice(Math.max(0, i - 6), i + 1)
+      return part.reduce((a, b) => a + b, 0) / part.length
+    })
+  }
+
+  // Average revenue for each weekday
+  const weekdaySum = new Array(7).fill(0)
+  const weekdayTimes = new Array(7).fill(0)
+  days.forEach(day => {
+    const w = weekdayIndex(day.date)
+    weekdaySum[w] += day.revenue
+    weekdayTimes[w] += 1
+  })
+  const weekdayData = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label, w) => ({
+    label,
+    value: weekdayTimes[w] > 0 ? weekdaySum[w] / weekdayTimes[w] : 0,
+  }))
+  let bestWeekday = 0
+  weekdayData.forEach((w, i) => { if (w.value > weekdayData[bestWeekday].value) bestWeekday = i })
+  const weekdayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+  // Number of sales in each hour of the day
+  const hourCounts = new Array(24).fill(0)
+  sales.forEach(s => { hourCounts[new Date(s.created_at).getHours()] += 1 })
+  let firstHour = 24
+  let lastHour = -1
+  hourCounts.forEach((c, h) => {
+    if (c > 0 && h < firstHour) firstHour = h
+    if (c > 0 && h > lastHour) lastHour = h
+  })
+  const hourData = []
+  for (let h = firstHour; h <= lastHour; h++) {
+    hourData.push({ label: twoDigits(h) + ':00', value: hourCounts[h] })
+  }
+  let busiestHour = firstHour
+  for (let h = firstHour; h <= lastHour; h++) {
+    if (hourCounts[h] > hourCounts[busiestHour]) busiestHour = h
+  }
+
+  // Payment methods and payment status
+  const methodMap = {}
+  const statusMap = { paid: { count: 0, value: 0 }, partial: { count: 0, value: 0 }, pending: { count: 0, value: 0 } }
+  sales.forEach(s => {
+    const key = s.payment_method || 'cash'
+    if (!methodMap[key]) methodMap[key] = { name: METHOD_NAMES[key] || key, value: 0, count: 0 }
+    methodMap[key].value += s.total || 0
+    methodMap[key].count += 1
+    const status = s.payment_status === 'partial' || s.payment_status === 'pending' ? s.payment_status : 'paid'
+    statusMap[status].count += 1
+    statusMap[status].value += s.total || 0
+  })
+  const methods = Object.values(methodMap).sort((a, b) => b.value - a.value)
+
+  // Customers. A customer is "new" when the first sale ever recorded is inside this period.
+  const firstSeen = {}
+  allSales.forEach(s => {
+    const key = customerLabel(s.product_name).toLowerCase()
+    const d = new Date(s.created_at)
+    if (!firstSeen[key] || d < firstSeen[key]) firstSeen[key] = d
+  })
+  const customerMap = {}
+  sales.forEach(s => {
+    const key = customerLabel(s.product_name).toLowerCase()
+    if (!customerMap[key]) {
+      customerMap[key] = { key, name: customerLabel(s.product_name), count: 0, units: 0, total: 0, paid: 0, last: null, methods: {} }
+    }
+    const c = customerMap[key]
+    c.count += 1
+    c.units += unitsOf(s)
+    c.total += s.total || 0
+    c.paid += amountPaidOf(s)
+    const d = new Date(s.created_at)
+    if (!c.last || d > c.last) c.last = d
+    const m = s.payment_method || 'cash'
+    c.methods[m] = (c.methods[m] || 0) + 1
+  })
+  const customers = Object.values(customerMap).sort((a, b) => b.total - a.total)
+  customers.forEach(c => {
+    let best = 'cash'
+    Object.keys(c.methods).forEach(m => { if (c.methods[m] > c.methods[best] || !c.methods[best]) best = m })
+    c.mainMethod = METHOD_NAMES[best] || best
+    c.isNew = firstSeen[c.key] >= fromDate
+  })
+  const newCustomers = customers.filter(c => c.isNew).length
+  const repeatCustomers = customers.filter(c => c.count >= 2).length
+
+  // Products
+  const productMap = {}
+  sales.forEach(s => {
+    ;(itemsBySale[s.id] || []).forEach(item => {
+      const name = item.product_name || 'Unnamed item'
+      if (!productMap[name]) productMap[name] = { name, qty: 0, revenue: 0, buyers: {} }
+      productMap[name].qty += item.quantity_sold || 0
+      productMap[name].revenue += item.total || 0
+      productMap[name].buyers[customerLabel(s.product_name).toLowerCase()] = true
+    })
+  })
+  const productList = Object.values(productMap).sort((a, b) => b.revenue - a.revenue)
+  const itemsRevenue = productList.reduce((sum, p) => sum + p.revenue, 0)
+
+  // Money still to collect, grouped by how old the sale is
+  const today = new Date()
+  const ageGroups = [
+    { name: '0 - 7 days', value: 0, count: 0 },
+    { name: '8 - 30 days', value: 0, count: 0 },
+    { name: '31 - 60 days', value: 0, count: 0 },
+    { name: 'Over 60 days', value: 0, count: 0 },
+  ]
+  const unpaid = []
+  sales.forEach(s => {
+    const balance = (s.total || 0) - amountPaidOf(s)
+    if (balance <= 0) return
+    const age = Math.max(0, Math.floor((today - new Date(s.created_at)) / 86400000))
+    const group = age <= 7 ? 0 : age <= 30 ? 1 : age <= 60 ? 2 : 3
+    ageGroups[group].value += balance
+    ageGroups[group].count += 1
+    unpaid.push({ sale: s, balance, age })
+  })
+  unpaid.sort((a, b) => b.balance - a.balance)
+
+  // Plain sentences for the highlights
+  const change = percentChange(revenue, prevRevenue)
+  const insights = []
+  if (sales.length > 0) {
+    if (change === null) {
+      insights.push(`There were no sales in the previous ${dayCount} days, so there is nothing to compare with.`)
+    } else {
+      insights.push(`Revenue is ${Math.abs(change).toFixed(0)}% ${change >= 0 ? 'higher' : 'lower'} than the previous ${dayCount} days (${formatMoney(prevRevenue)}).`)
+    }
+    if (trendPercent !== null) {
+      insights.push(`Trend: ${trendWord(trendPercent).toLowerCase()}. The daily average in the second half of the period is ${Math.abs(trendPercent).toFixed(0)}% ${trendPercent >= 0 ? 'above' : 'below'} the first half.`)
+    }
+    insights.push(`Best day was ${formatDate(days[peakIndex].date)} with ${formatMoney(dayRevenue[peakIndex])}. On average ${weekdayNames[bestWeekday]} is the strongest weekday and the busiest hour is ${twoDigits(busiestHour)}:00.`)
+    if (quietDays > 0) insights.push(`${quietDays} of ${dayCount} days had no sales.`)
+    insights.push(`${formatNumber(customers.length)} customers were served: ${newCustomers} new and ${customers.length - newCustomers} returning. ${repeatCustomers} bought more than once in this period.`)
+    if (customers.length >= 4) {
+      const top3 = customers.slice(0, 3).reduce((sum, c) => sum + c.total, 0)
+      const share = revenue > 0 ? (top3 / revenue) * 100 : 0
+      insights.push(`The 3 biggest customers bring ${share.toFixed(0)}% of revenue.${share >= 60 ? ' The business depends on a few customers, so keep them satisfied.' : ''}`)
+    }
+    if (methods.length > 0) {
+      insights.push(`Most money came through ${methods[0].name} (${formatMoney(methods[0].value)}, ${((methods[0].value / revenue) * 100).toFixed(0)}% of revenue).`)
+    }
+    if (outstanding > 0) {
+      insights.push(`${formatMoney(outstanding)} (${(100 - collectionRate).toFixed(0)}% of revenue) is still to be collected from credit sales. The collection rate is ${collectionRate.toFixed(0)}%.`)
+    } else {
+      insights.push('All sales of this period are fully paid. The collection rate is 100%.')
+    }
+  }
+
+  return {
+    from, to, fromDate, toDate, dayCount, prevFrom, prevTo,
+    sales, days, revenue, profit, collected, outstanding, units, average, collectionRate,
+    prevRevenue, prevCount: prevSales.length, prevUnits, prevAverage, change,
+    trendPercent, buckets, movingAverage, peakIndex, quietDays,
+    weekdayData, hourData, methods, statusMap, customers, newCustomers, repeatCustomers,
+    productList, itemsRevenue, ageGroups, unpaid, insights,
+  }
+}
+
+// ---------- 2. Build the whole sales report PDF ----------
+
+async function makeSalesReportPdf(profile, preparedBy, allSales, itemsBySale, recorderNames, showRecorder, from, to, showProfit) {
+  const data = buildSalesReport(allSales, itemsBySale, from, to)
+  const companyName = profile?.company_name || 'KaySales Management System'
+  const doc = new jsPDF()
+
+  let y = await drawBrandedHeader(doc, profile)
+
+  // Title banner
+  doc.setFillColor(...COLOR_DARK)
+  doc.roundedRect(14, y, 182, 20, 2, 2, 'F')
+  doc.setTextColor(255, 255, 255)
+  doc.setFont(undefined, 'bold')
+  doc.setFontSize(14)
+  doc.text('SALES REPORT', 19, y + 8)
+  doc.setFont(undefined, 'normal')
+  doc.setFontSize(9)
+  doc.text(`${formatDate(data.fromDate)} to ${formatDate(data.toDate)}  (${data.dayCount} day${data.dayCount > 1 ? 's' : ''})`, 19, y + 14)
+  doc.setFontSize(8)
+  doc.text('Complete record of sales, customers and payments', 19, y + 18)
+  const now = new Date()
+  const generated = formatDate(now) + ', ' + twoDigits(now.getHours()) + ':' + twoDigits(now.getMinutes())
+  doc.text('Generated: ' + generated, 191, y + 14, { align: 'right' })
+  doc.text('Ref: SR-' + from.replace(/-/g, '') + '-' + to.replace(/-/g, ''), 191, y + 18, { align: 'right' })
+  y += 28
+
+  // Executive summary in words
+  y = sectionTitle(doc, y, 'Executive summary', 40)
+  if (data.sales.length === 0) {
+    y = writeText(doc, y, 'No sales were recorded in this period.', 10, COLOR_GRAY, 14, 182) + 3
+  } else {
+    let summary = `Between ${formatDate(data.fromDate)} and ${formatDate(data.toDate)}, ${companyName} recorded ${formatNumber(data.sales.length)} sale${data.sales.length > 1 ? 's' : ''} to ${formatNumber(data.customers.length)} customer${data.customers.length > 1 ? 's' : ''}, worth ${formatMoney(data.revenue)}`
+    if (data.change !== null) summary += `, which is ${Math.abs(data.change).toFixed(0)}% ${data.change >= 0 ? 'more' : 'less'} than the previous ${data.dayCount} days`
+    summary += `. ${formatMoney(data.collected)} (${data.collectionRate.toFixed(0)}%) has been collected`
+    summary += data.outstanding > 0 ? ` and ${formatMoney(data.outstanding)} is still owed by customers.` : ', nothing is owed.'
+    if (showProfit) summary += ` The profit recorded on these sales is ${formatMoney(data.profit)} (${data.revenue > 0 ? ((data.profit / data.revenue) * 100).toFixed(0) : 0}% of revenue).`
+    y = writeText(doc, y, summary, 10, COLOR_DARK, 14, 182) + 3
+  }
+
+  // Summary cards
+  const cardW = 58
+  const gap = 4
+  const revChange = changeInfo(data.revenue, data.prevRevenue)
+  const countChange = changeInfo(data.sales.length, data.prevCount)
+  const unitsChange = changeInfo(data.units, data.prevUnits)
+  const avgChange = changeInfo(data.average, data.prevAverage)
+  y = needSpace(doc, y, 80)
+  drawCard(doc, 14, y, cardW, 'TOTAL REVENUE', formatMoney(data.revenue), revChange.text, revChange.color)
+  drawCard(doc, 14 + cardW + gap, y, cardW, 'SALES MADE', formatNumber(data.sales.length), countChange.text, countChange.color)
+  drawCard(doc, 14 + (cardW + gap) * 2, y, cardW, 'UNITS SOLD', formatNumber(data.units), unitsChange.text, unitsChange.color)
+  y += 26
+  drawCard(doc, 14, y, cardW, 'AVERAGE SALE', formatMoney(data.average), avgChange.text, avgChange.color)
+  drawCard(doc, 14 + cardW + gap, y, cardW, 'MONEY COLLECTED', formatMoney(data.collected),
+    `${data.collectionRate.toFixed(0)}% collection rate`, data.collectionRate >= 90 ? COLOR_GREEN : COLOR_ORANGE)
+  drawCard(doc, 14 + (cardW + gap) * 2, y, cardW, 'STILL TO COLLECT', formatMoney(data.outstanding),
+    data.outstanding > 0 ? `${data.unpaid.length} unpaid sale${data.unpaid.length > 1 ? 's' : ''}` : 'Everything is paid',
+    data.outstanding > 0 ? COLOR_ORANGE : COLOR_GREEN)
+  y += 26
+  drawCard(doc, 14, y, cardW, 'CUSTOMERS SERVED', formatNumber(data.customers.length),
+    `${data.newCustomers} new, ${data.customers.length - data.newCustomers} returning`, COLOR_GRAY)
+  drawCard(doc, 14 + cardW + gap, y, cardW, 'BEST DAY', formatMoney(data.days[data.peakIndex].revenue),
+    formatDate(data.days[data.peakIndex].date), COLOR_GRAY)
+  if (showProfit) {
+    const margin = data.revenue > 0 ? (data.profit / data.revenue) * 100 : 0
+    drawCard(doc, 14 + (cardW + gap) * 2, y, cardW, 'TOTAL PROFIT', formatMoney(data.profit),
+      `${margin.toFixed(0)}% margin`, data.profit >= 0 ? COLOR_GREEN : COLOR_RED)
+  } else {
+    drawCard(doc, 14 + (cardW + gap) * 2, y, cardW, 'DAYS WITH SALES', `${data.dayCount - data.quietDays} of ${data.dayCount}`,
+      data.quietDays > 0 ? `${data.quietDays} quiet day${data.quietDays > 1 ? 's' : ''}` : 'Sales every day', COLOR_GRAY)
+  }
+  y += 32
+
+  if (data.sales.length > 0) {
+    // Highlights
+    y = sectionTitle(doc, y, 'Business highlights', 40)
+    data.insights.forEach(text => { y = writeBullet(doc, y, text) })
+    y += 4
+
+    // Revenue trend
+    const modeText = data.buckets.length === data.dayCount ? 'per day' : data.dayCount > 120 ? 'per month' : 'per week'
+    y = sectionTitle(doc, y, 'Revenue trend', 82)
+    y = drawBarChart(doc, 14, y, 182, 62, data.buckets, {
+      line: data.movingAverage,
+      highlightMax: true,
+      showValues: data.buckets.length <= 12,
+    })
+    let chartNote = `Bars show revenue ${modeText} (green = highest). `
+    if (data.movingAverage) chartNote += 'Orange line = 7 day average, the real direction without the daily ups and downs. '
+    chartNote += `Overall trend: ${trendWord(data.trendPercent)}${data.trendPercent !== null ? ' (' + percentText(data.trendPercent) + ')' : ''}.`
+    y = writeText(doc, y + 2, chartNote, 8, COLOR_GRAY, 14, 182) + 5
+
+    // How customers paid
+    y = sectionTitle(doc, y, 'How customers paid', data.methods.length * 6.8 + 16)
+    y = drawHorizontalBars(doc, 14, y, 182, data.methods.map(m => ({
+      label: `${m.name} (${m.count} sale${m.count > 1 ? 's' : ''})`,
+      value: m.value,
+      text: `${formatMoney(m.value)} (${((m.value / data.revenue) * 100).toFixed(0)}%)`,
+    })), COLOR_ORANGE)
+
+    y = sectionTitle(doc, y + 2, 'Payment status of the sales', 40)
+    y = drawHorizontalBars(doc, 14, y, 182, ['paid', 'partial', 'pending'].map(key => ({
+      label: `${STATUS_NAMES[key]} (${data.statusMap[key].count} sale${data.statusMap[key].count === 1 ? '' : 's'})`,
+      value: data.statusMap[key].value,
+      text: `${formatMoney(data.statusMap[key].value)} (${((data.statusMap[key].value / data.revenue) * 100).toFixed(0)}%)`,
+    })), COLOR_GREEN)
+
+    // When the business sells
+    y = sectionTitle(doc, y + 2, 'Which weekday sells best', 75)
+    y = drawBarChart(doc, 14, y, 182, 52, data.weekdayData, { highlightMax: true, showValues: true })
+    y = writeText(doc, y + 2, 'Average revenue on each weekday of this period (green = strongest).', 8, COLOR_GRAY, 14, 182) + 5
+
+    if (data.hourData.length > 1) {
+      y = sectionTitle(doc, y, 'Which hour of the day is busiest', 75)
+      y = drawBarChart(doc, 14, y, 182, 52, data.hourData, { highlightMax: true, showValues: true })
+      y = writeText(doc, y + 2, 'Number of sales made in each hour of the day (green = busiest hour).', 8, COLOR_GRAY, 14, 182) + 5
+    }
+
+    // Customers
+    y = sectionTitle(doc, y, 'Customers', 45)
+    const shownCustomers = data.customers.slice(0, 30)
+    autoTable(doc, {
+      startY: y,
+      margin: { top: 18, bottom: 20, left: 14, right: 14 },
+      head: [['#', 'Customer', 'Sales', 'Units', 'Total (RWF)', 'Owes (RWF)', 'Share', 'Usual payment', 'Last buy']],
+      body: shownCustomers.map((c, i) => [
+        i + 1, c.name + (c.isNew ? ' (new)' : ''), c.count, formatNumber(c.units), formatNumber(c.total),
+        formatNumber(c.total - c.paid), ((c.total / data.revenue) * 100).toFixed(1) + '%', c.mainMethod, formatShortDate(c.last),
+      ]),
+      styles: { fontSize: 8, cellPadding: 1.6 },
+      headStyles: { fillColor: COLOR_MAIN },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 7 }, 1: { cellWidth: 48 }, 2: { cellWidth: 11 }, 3: { cellWidth: 12 },
+        4: { cellWidth: 25 }, 5: { cellWidth: 22 }, 6: { cellWidth: 13 }, 7: { cellWidth: 22 }, 8: { cellWidth: 22 },
+      },
+      didParseCell: (cell) => {
+        if ([2, 3, 4, 5, 6].includes(cell.column.index)) cell.cell.styles.halign = 'right'
+        if (cell.section === 'body' && cell.column.index === 5 && cell.cell.raw !== '0') cell.cell.styles.textColor = COLOR_ORANGE
+      },
+    })
+    y = doc.lastAutoTable.finalY + 3
+    if (data.customers.length > shownCustomers.length) {
+      y = writeText(doc, y, `Showing the first ${shownCustomers.length} of ${data.customers.length} customers, biggest first.`, 7.5, COLOR_GRAY, 14, 182)
+    }
+    y += 5
+
+    // Products moved
+    const shownProducts = data.productList.slice(0, 15)
+    if (shownProducts.length > 0) {
+      y = sectionTitle(doc, y, 'Products that moved the business', 45)
+      autoTable(doc, {
+        startY: y,
+        margin: { top: 18, bottom: 20, left: 14, right: 14 },
+        head: [['#', 'Product', 'Units', 'Avg price (RWF)', 'Revenue (RWF)', 'Share', 'Buyers']],
+        body: shownProducts.map((p, i) => [
+          i + 1, p.name, formatNumber(p.qty), formatNumber(p.qty > 0 ? p.revenue / p.qty : 0), formatNumber(p.revenue),
+          (data.itemsRevenue > 0 ? (p.revenue / data.itemsRevenue) * 100 : 0).toFixed(1) + '%', Object.keys(p.buyers).length,
+        ]),
+        styles: { fontSize: 8, cellPadding: 1.6 },
+        headStyles: { fillColor: COLOR_MAIN },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: { 0: { cellWidth: 7 }, 1: { cellWidth: 64 }, 2: { cellWidth: 15 }, 3: { cellWidth: 28 }, 4: { cellWidth: 30 }, 5: { cellWidth: 18 }, 6: { cellWidth: 20 } },
+        didParseCell: (cell) => {
+          if (cell.column.index >= 2) cell.cell.styles.halign = 'right'
+        },
+      })
+      y = doc.lastAutoTable.finalY + 3
+      y = writeText(doc, y, 'Products are ranked by the money they earned. Buyers = number of different customers who bought the product.', 7.5, COLOR_GRAY, 14, 182) + 5
+    }
+
+    // Money still owed, by age
+    if (data.unpaid.length > 0) {
+      y = sectionTitle(doc, y, 'Money still to collect - by age of the sale', 60)
+      y = drawHorizontalBars(doc, 14, y, 182, data.ageGroups.map(g => ({
+        label: `${g.name} (${g.count} sale${g.count === 1 ? '' : 's'})`,
+        value: g.value,
+        text: formatMoney(g.value),
+      })), COLOR_RED)
+      const shownUnpaid = data.unpaid.slice(0, 10)
+      autoTable(doc, {
+        startY: y,
+        margin: { top: 18, bottom: 20, left: 14, right: 14 },
+        head: [['Customer', 'Sale date', 'Total (RWF)', 'Paid (RWF)', 'Balance (RWF)', 'Age (days)']],
+        body: shownUnpaid.map(u => [
+          customerLabel(u.sale.product_name), formatDate(new Date(u.sale.created_at)), formatNumber(u.sale.total),
+          formatNumber(amountPaidOf(u.sale)), formatNumber(u.balance), u.age,
+        ]),
+        styles: { fontSize: 8, cellPadding: 1.6 },
+        headStyles: { fillColor: COLOR_DARK },
+        columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 28 } },
+        didParseCell: (cell) => {
+          if (cell.column.index >= 2) cell.cell.styles.halign = 'right'
+        },
+      })
+      y = doc.lastAutoTable.finalY + 3
+      y = writeText(doc, y, `The ${shownUnpaid.length} biggest balances are listed${data.unpaid.length > shownUnpaid.length ? ` (of ${data.unpaid.length})` : ''}. Age counts the days from the sale date until this report.`, 7.5, COLOR_GRAY, 14, 182) + 5
+    }
+  }
+
+  // Daily ledger: every day, every sale, every customer
+  doc.addPage()
+  y = 18
+  y = sectionTitle(doc, y, 'Daily sales ledger - every day, every customer', 40)
+  y = writeText(doc, y, 'Each day shows its sales in time order: the customer, the products with quantity and price, how the customer paid and whether the sale is fully paid.', 8, COLOR_GRAY, 14, 182) + 2
+
+  const ledger = []
+  data.days.forEach(day => {
+    const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][day.date.getDay()]
+    const dateText = dayName + ' ' + formatDate(day.date)
+    if (day.sales.length === 0) {
+      ledger.push([{ content: dateText + '  -  no sales', colSpan: 6, styles: { fillColor: [248, 250, 252], textColor: COLOR_GRAY, fontSize: 7 } }])
+      return
+    }
+    const head = `${dateText}   |   ${day.sales.length} sale${day.sales.length > 1 ? 's' : ''}   |   Total RWF ${formatNumber(day.revenue)}   |   Collected RWF ${formatNumber(day.collected)}`
+    ledger.push([{ content: head, colSpan: 6, styles: { fillColor: COLOR_DARK, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 } }])
+    day.sales.forEach(s => {
+      const d = new Date(s.created_at)
+      const items = itemsBySale[s.id] || []
+      const productLines = items.length > 0
+        ? items.map(i => `${i.product_name || 'Item'}  x${formatNumber(i.quantity_sold)} @ ${formatNumber(i.selling_price)} = ${formatNumber(i.total)}`).join('\n')
+        : 'Item details not recorded'
+      let customerText = customerLabel(s.product_name)
+      if (showRecorder && s.created_by) customerText += '\nby ' + (recorderNames[s.created_by] || 'Team member')
+      const paid = amountPaidOf(s)
+      let totalText = formatNumber(s.total)
+      if (paid < (s.total || 0)) totalText += `\nPaid ${formatNumber(paid)}\nOwes ${formatNumber((s.total || 0) - paid)}`
+      ledger.push([
+        twoDigits(d.getHours()) + ':' + twoDigits(d.getMinutes()),
+        customerText,
+        productLines,
+        METHOD_NAMES[s.payment_method || 'cash'] || s.payment_method,
+        STATUS_NAMES[s.payment_status] || 'Paid',
+        totalText,
+      ])
+    })
+  })
+  autoTable(doc, {
+    startY: y,
+    margin: { top: 18, bottom: 20, left: 14, right: 14 },
+    head: [['Time', 'Customer', 'Products sold', 'Method', 'Status', 'Total (RWF)']],
+    body: ledger,
+    rowPageBreak: 'avoid',
+    styles: { fontSize: 7.5, cellPadding: 1.5, valign: 'top' },
+    headStyles: { fillColor: COLOR_MAIN },
+    columnStyles: {
+      0: { cellWidth: 11 }, 1: { cellWidth: 32 }, 2: { cellWidth: 74 },
+      3: { cellWidth: 17 }, 4: { cellWidth: 16 }, 5: { cellWidth: 32, halign: 'right' },
+    },
+    didParseCell: (cell) => {
+      if (cell.section === 'head' && cell.column.index === 5) cell.cell.styles.halign = 'right'
+      if (cell.section === 'body' && cell.column.index === 4 && typeof cell.cell.raw === 'string') {
+        if (cell.cell.raw === 'Paid') cell.cell.styles.textColor = COLOR_GREEN
+        else if (cell.cell.raw === 'Partial') cell.cell.styles.textColor = COLOR_ORANGE
+        else cell.cell.styles.textColor = COLOR_RED
+      }
+    },
+  })
+  y = doc.lastAutoTable.finalY + 6
+
+  // How to read the numbers
+  y = needSpace(doc, y, 40)
+  y = sectionTitle(doc, y, 'About these numbers', 30)
+  const notes = [
+    'Revenue is the full value of every sale in the period, including credit sales that are not paid yet.',
+    'Money collected is what customers have really paid. Still to collect = revenue minus money collected.',
+    'The previous period used for comparison has the same number of days and ends the day before this period starts.',
+    'A customer is counted as new when the first sale ever recorded for that name falls inside this period.',
+  ]
+  if (showProfit) notes.push('Profit is the profit recorded on each sale after extra fees.')
+  notes.forEach(text => { y = writeBullet(doc, y, text) })
+  y += 4
+  y = writeText(doc, y, `Prepared by: ${preparedBy || companyName}`, 9, COLOR_DARK, 14, 182)
+
+  // Signature and stamp at the bottom of the last page
+  if (profile?.signature_url || profile?.stamp_url) {
+    if (y > 250) doc.addPage()
+    await drawSignatureAndStamp(doc, profile, 210, 270)
+  }
+
+  // Header and footer on every page
+  const pageCount = doc.getNumberOfPages()
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i)
+    doc.setFontSize(7.5)
+    doc.setTextColor(...COLOR_GRAY)
+    if (i > 1) {
+      doc.text(`${companyName} - Sales Report ${formatDate(data.fromDate)} to ${formatDate(data.toDate)}`, 14, 10)
+    }
+    doc.setDrawColor(226, 232, 240)
+    doc.line(14, 284, 196, 284)
+    doc.text(companyName, 14, 289)
+    doc.text(`Page ${i} of ${pageCount}`, 105, 289, { align: 'center' })
+    doc.text('Powered by KaySales', 196, 289, { align: 'right' })
+  }
+
+  return doc
+}
+// ===== SALES REPORT HELPERS END =====
+
 // Database errors that mean the save_sale function is missing or does not fit the tables.
 // Only then the previous step-by-step way of saving is used, so selling never stops.
 const SALE_FUNCTION_PROBLEM_CODES = ['PGRST202', '42883', '42703', '42804', '42P01', '42601', '42725', '42P10']
@@ -25,7 +840,7 @@ const isSaleFunctionProblem = (error) =>
   /could not find the function/i.test(error?.message || '')
 
 export default function Sales() {
-  const { profile, canWrite, canView, isOrgStaff, isCeo } = useAuth()
+  const { profile, myProfile, canWrite, canView, isOrgStaff, isCeo } = useAuth()
   // In a company, each sale shows the person who recorded it
   const recorderNames = useRecorderNames()
   const showRecorder = isCeo || isOrgStaff
@@ -48,6 +863,8 @@ export default function Sales() {
   const [exportType, setExportType] = useState('')
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
+  const [exportError, setExportError] = useState('')
+  const [exporting, setExporting] = useState(false)
   const [selectedSale, setSelectedSale] = useState(null)
   const [pendingEditSale, setPendingEditSale] = useState(null)
   const [receiptSale, setReceiptSale] = useState(null)
@@ -757,16 +1574,37 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     doc.save(`Receipt_${receiptSale.product_name}_${new Date(receiptSale.created_at).toLocaleDateString()}.pdf`)
   }
 
-  const handleExport = () => {
-    const exportFiltered = sales.filter(s => {
-      const d = new Date(s.created_at)
-      const from = exportFrom ? d >= new Date(exportFrom) : true
-      const to = exportTo ? d <= new Date(exportTo + 'T23:59:59') : true
-      return from && to
-    })
-    const exportRevenue = exportFiltered.reduce((sum, s) => sum + (s.total || 0), 0)
+  // Opens the PDF report window with the dates already chosen on the page
+  const openPdfExport = () => {
+    setExportType('pdf')
+    setExportFrom(dateFrom || getMonthStart())
+    setExportTo(dateTo || localDate(new Date()))
+    setExportError('')
+    setShowExportModal(true)
+  }
 
+  // Quick choices inside the PDF report window
+  const pickExportRange = (type) => {
+    const now = new Date()
+    let from = new Date(now.getFullYear(), now.getMonth(), 1)
+    let to = now
+    if (type === 'lastMonth') {
+      from = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      to = new Date(now.getFullYear(), now.getMonth(), 0)
+    } else if (type === 'last30') {
+      from = new Date(now)
+      from.setDate(from.getDate() - 29)
+    } else if (type === 'thisYear') {
+      from = new Date(now.getFullYear(), 0, 1)
+    }
+    setExportFrom(localDate(from))
+    setExportTo(localDate(to))
+    setExportError('')
+  }
+
+  const handleExport = async () => {
     if (exportType === 'excel') {
+      const exportFiltered = sales.filter(s => isInRange(s.created_at, exportFrom, exportTo))
       const data = exportFiltered.map(s => ({
         Customer: s.product_name,
         'Total (RWF)': s.total,
@@ -777,32 +1615,44 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, ws, 'Sales')
       XLSX.writeFile(wb, `KaySales_Sales_${exportFrom || 'all'}_to_${exportTo || 'all'}.xlsx`)
-    } else {
-      const doc = new jsPDF()
-      doc.setFontSize(16)
-      doc.text(profile?.company_name || 'KaySales Management System', 14, 15)
-      doc.setFontSize(12)
-      doc.text('Sales Report', 14, 25)
-      doc.setFontSize(10)
-      doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 32)
-      doc.text(`Total Revenue: RWF ${exportRevenue.toLocaleString()}`, 14, 39)
-      autoTable(doc, {
-        startY: 48,
-        head: [['Customer', 'Total (RWF)', 'Payment', 'Date']],
-        body: exportFiltered.map(s => [
-          s.product_name,
-          s.total?.toLocaleString(),
-          s.payment_method || 'cash',
-          new Date(s.created_at).toLocaleDateString(),
-        ]),
-        styles: { fontSize: 9 },
-        headStyles: { fillColor: [29, 78, 216] },
-      })
-      doc.save(`KaySales_Sales_${exportFrom || 'all'}_to_${exportTo || 'all'}.pdf`)
+      setShowExportModal(false)
+      setExportFrom('')
+      setExportTo('')
+      return
     }
-    setShowExportModal(false)
-    setExportFrom('')
-    setExportTo('')
+
+    // PDF report: both dates are needed
+    const today = localDate(new Date())
+    if (!exportFrom || !exportTo) {
+      setExportError('Please choose both the From and To dates.')
+      return
+    }
+    if (exportFrom > today) {
+      setExportError('The From date cannot be in the future.')
+      return
+    }
+    if (exportFrom > exportTo) {
+      setExportError('The From date must be before the To date.')
+      return
+    }
+    // A period that ends in the future is cut at today
+    const lastDay = exportTo > today ? today : exportTo
+
+    setExporting(true)
+    setExportError('')
+    try {
+      const preparedBy = (myProfile || profile)?.full_name
+      const itemsBySale = saleItemsBySale
+      const doc = await makeSalesReportPdf(profile, preparedBy, sales, itemsBySale, recorderNames, showRecorder, exportFrom, lastDay, showProfit)
+      doc.save(`KaySales_Sales_Report_${exportFrom}_to_${lastDay}.pdf`)
+      setShowExportModal(false)
+      setExportFrom('')
+      setExportTo('')
+    } catch (err) {
+      console.error('Could not create the sales report PDF:', err)
+      setExportError('Could not create the PDF. Please try again.')
+    }
+    setExporting(false)
   }
 
   const filtered = sales.filter(s => {
@@ -810,10 +1660,7 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     const matchesCustomer = s.product_name?.toLowerCase().includes(search.toLowerCase())
     const matchesProduct = items.some(i => i.product_name?.toLowerCase().includes(search.toLowerCase()))
     const matchesSearch = matchesCustomer || matchesProduct
-    const d = new Date(s.created_at)
-    const from = dateFrom ? d >= new Date(dateFrom) : true
-    const to = dateTo ? d <= new Date(dateTo + 'T23:59:59') : true
-    return matchesSearch && from && to
+    return matchesSearch && isInRange(s.created_at, dateFrom, dateTo)
   })
 
   const totalRevenue = filtered.reduce((sum, s) => sum + (s.total || 0), 0)
@@ -850,8 +1697,8 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           >
             This Month
           </button>
-          <button onClick={() => { setExportType('excel'); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">Excel</button>
-          <button onClick={() => { setExportType('pdf'); setShowExportModal(true) }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">PDF</button>
+          <button onClick={() => { setExportType('excel'); setExportError(''); setShowExportModal(true) }} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition font-medium">Excel</button>
+          <button onClick={openPdfExport} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-lg text-sm transition font-medium">PDF</button>
         </div>
 
         <div className="bg-surface-elevated border border-surface-border rounded-xl p-4 flex items-center justify-between">
@@ -1179,18 +2026,31 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
               <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-white text-xl">✕</button>
             </div>
             <div className="px-6 py-4 space-y-4">
-              <p className="text-gray-400 text-sm">Select date range. Leave blank to export all records.</p>
+              {exportType === 'pdf' ? (
+                <>
+                  <p className="text-gray-400 text-sm">Choose the month or period for the sales report. It lists every day, every customer, the products sold and how each customer paid.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => pickExportRange('thisMonth')} className="px-3 py-1 bg-surface border border-surface-border text-gray-300 hover:text-white rounded-lg text-xs transition">This month</button>
+                    <button onClick={() => pickExportRange('lastMonth')} className="px-3 py-1 bg-surface border border-surface-border text-gray-300 hover:text-white rounded-lg text-xs transition">Last month</button>
+                    <button onClick={() => pickExportRange('last30')} className="px-3 py-1 bg-surface border border-surface-border text-gray-300 hover:text-white rounded-lg text-xs transition">Last 30 days</button>
+                    <button onClick={() => pickExportRange('thisYear')} className="px-3 py-1 bg-surface border border-surface-border text-gray-300 hover:text-white rounded-lg text-xs transition">This year</button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-gray-400 text-sm">Select date range. Leave blank to export all records.</p>
+              )}
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">From Date</label>
-                <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
+                <input type="date" value={exportFrom} max={exportType === 'pdf' ? localDate(new Date()) : undefined} onChange={(e) => setExportFrom(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
               </div>
               <div>
                 <label className="text-gray-400 text-sm mb-1 block">To Date</label>
-                <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
+                <input type="date" value={exportTo} max={exportType === 'pdf' ? localDate(new Date()) : undefined} onChange={(e) => setExportTo(e.target.value)} className="w-full bg-surface border border-surface-border text-white px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-primary" />
               </div>
+              {exportError && <p className="text-red-400 text-sm">{exportError}</p>}
               <div className="flex gap-3 pt-2">
                 <button onClick={() => setShowExportModal(false)} className="flex-1 py-2 bg-surface text-gray-300 rounded-lg hover:bg-surface-border transition">Cancel</button>
-                <button onClick={handleExport} className={`flex-1 py-2 text-white rounded-lg transition font-medium ${exportType === 'excel' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'}`}>Download</button>
+                <button onClick={handleExport} disabled={exporting} className={`flex-1 py-2 text-white rounded-lg transition font-medium disabled:opacity-60 ${exportType === 'excel' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'}`}>{exporting ? 'Preparing...' : 'Download'}</button>
               </div>
             </div>
           </div>
