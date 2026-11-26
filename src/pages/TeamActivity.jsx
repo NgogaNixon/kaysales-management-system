@@ -7,6 +7,7 @@ export default function TeamActivity() {
   const { isCeo } = useAuth()
   const [logs, setLogs] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [person, setPerson] = useState('all')
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
@@ -23,12 +24,20 @@ export default function TeamActivity() {
   // The database only returns the actions of this company's owner and team
   const fetchLogs = async () => {
     setLoading(true)
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('activity_logs')
       .select('id, user_name, user_email, action, details, created_at')
       .order('created_at', { ascending: false })
       .limit(500)
 
+    // If loading failed, keep the list already on the screen and say so
+    if (error) {
+      setLoadError('The activity could not be loaded. Please check your internet connection and try again.')
+      setLoading(false)
+      return
+    }
+
+    setLoadError('')
     setLogs(data || [])
     setLoading(false)
   }
@@ -44,7 +53,7 @@ export default function TeamActivity() {
     const matchesPerson = person === 'all' || log.user_name === person
     const matchesFilter = filter === 'all' || log.action?.toLowerCase().includes(filter)
     const logDate = new Date(log.created_at)
-    const matchesFrom = dateFrom ? logDate >= new Date(dateFrom) : true
+    const matchesFrom = dateFrom ? logDate >= new Date(dateFrom + 'T00:00:00') : true
     const matchesTo = dateTo ? logDate <= new Date(dateTo + 'T23:59:59') : true
     return matchesSearch && matchesPerson && matchesFilter && matchesFrom && matchesTo
   })
@@ -85,6 +94,14 @@ export default function TeamActivity() {
           <h1 className="text-2xl font-bold text-white">Team Activity</h1>
           <p className="text-gray-400 text-sm mt-1">See who did what in your company</p>
         </div>
+
+        {loadError && (
+          <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-lg p-3 text-sm flex flex-wrap items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button onClick={() => fetchLogs()} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Try again</button>
+          </div>
+        )}
+
 
         {/* Filters */}
         <div className="flex flex-col sm:flex-row gap-3">

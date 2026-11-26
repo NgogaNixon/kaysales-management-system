@@ -865,6 +865,7 @@ export default function Sales() {
   const [exportTo, setExportTo] = useState('')
   const [exportError, setExportError] = useState('')
   const [exporting, setExporting] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const [selectedSale, setSelectedSale] = useState(null)
   const [pendingEditSale, setPendingEditSale] = useState(null)
   const [receiptSale, setReceiptSale] = useState(null)
@@ -904,10 +905,25 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     }
   }, [profile])
 
+  // If something fails to load we keep the data already on the screen and say so.
+  // Empty lists would look like "no sales", which would be wrong.
+  const loadFailedText = 'Some of your data could not be loaded. Please check your internet connection and try again.'
+
+  const reloadAll = () => {
+    setLoadError('')
+    fetchSales()
+    fetchProducts()
+    fetchAllSaleItems()
+  }
+
   const fetchAllSaleItems = async () => {
-    const { data } = await fetchAllRows(() =>
+    const { data, error } = await fetchAllRows(() =>
       supabase.from('sale_items').select('*').eq('user_id', profile.id)
     )
+    if (error) {
+      setLoadError(loadFailedText)
+      return
+    }
     const grouped = {}
     ;(data || []).forEach(item => {
       if (!grouped[item.sale_id]) grouped[item.sale_id] = []
@@ -918,17 +934,26 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
 
   const fetchSales = async () => {
     setLoading(true)
-    const { data } = await fetchAllRows(() =>
+    const { data, error } = await fetchAllRows(() =>
       supabase.from('sales').select('*').eq('user_id', profile.id).order('created_at', { ascending: false })
     )
+    if (error) {
+      setLoadError(loadFailedText)
+      setLoading(false)
+      return
+    }
     setSales(data || [])
     setLoading(false)
   }
 
   const fetchProducts = async () => {
-    const { data } = await fetchAllRows(() =>
+    const { data, error } = await fetchAllRows(() =>
       supabase.from('products').select('*').eq('user_id', profile.id)
     )
+    if (error) {
+      setLoadError(loadFailedText)
+      return
+    }
     setProducts(data || [])
   }
 
@@ -1378,6 +1403,36 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
     if (!target) return false
 
     try {
+      // New way: one safe database step. Stock, credits, items and the sale
+      // are removed together, or nothing is changed at all.
+      const rpcResult = await supabase.rpc('delete_sale', { p_sale_id: String(target.id) })
+      const deleteFunctionMissing = Boolean(rpcResult.error) && isSaleFunctionProblem(rpcResult.error)
+
+      if (!deleteFunctionMissing) {
+        if (rpcResult.error) {
+          alert('Could not delete this sale:\n\n' + rpcResult.error.message)
+          setPendingDelete(null)
+          setShowUndoToast(false)
+          return false
+        }
+
+        await logActivity(
+          profile.id,
+          profile.email,
+          profile.full_name,
+          'Delete Sale',
+          `Deleted sale for: ${target.product_name} - RWF ${target.total?.toLocaleString()}`
+        )
+
+        setPendingDelete(null)
+        setShowUndoToast(false)
+        fetchSales()
+        fetchAllSaleItems()
+        fetchProducts()
+        return true
+      }
+
+      // Old way, only used when the database function is not installed yet
       const { data: items } = await supabase
         .from('sale_items')
         .select('*')
@@ -1621,7 +1676,13 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
       return
     }
 
-    // PDF report: both dates are needed
+    // PDF report: the data on the screen must be complete
+    if (loadError) {
+      setExportError('Your data did not load completely, so the report would be wrong. Close this window, press "Try again" on the page and export again.')
+      return
+    }
+
+    // Both dates are needed
     const today = localDate(new Date())
     if (!exportFrom || !exportTo) {
       setExportError('Please choose both the From and To dates.')
@@ -1680,6 +1741,13 @@ const [showProductDropdown, setShowProductDropdown] = useState({})
           </button>
           )}
         </div>
+
+        {loadError && (
+          <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-lg p-3 text-sm flex flex-wrap items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button onClick={reloadAll} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Try again</button>
+          </div>
+        )}
 
         <div className="flex flex-col sm:flex-row gap-3">
           <input

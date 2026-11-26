@@ -33,6 +33,7 @@ export default function Products() {
   const showProfit = profile?.show_profit === true && canView('financials')
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [showModal, setShowModal] = useState(false)
   const [showRestoreModal, setShowRestoreModal] = useState(false)
   const [restoreQuantity, setRestoreQuantity] = useState('')
@@ -62,9 +63,17 @@ export default function Products() {
 
   const fetchProducts = async () => {
     setLoading(true)
-    const { data } = await fetchAllRows(() =>
+    const { data, error } = await fetchAllRows(() =>
       supabase.from('products').select('*').eq('user_id', profile.id).order('name', { ascending: true })
     )
+    // If loading failed, keep the list already on the screen and say so.
+    // An empty list would look like "no products", which would be wrong.
+    if (error) {
+      setLoadError('Some of your data could not be loaded. Please check your internet connection and try again.')
+      setLoading(false)
+      return
+    }
+    setLoadError('')
     const sorted = (data || []).sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
     setProducts(sorted)
     setLoading(false)
@@ -378,6 +387,13 @@ export default function Products() {
   return (
     <Layout>
       <div className="p-6 space-y-6">
+
+        {loadError && (
+          <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-lg p-3 text-sm flex flex-wrap items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button onClick={() => fetchProducts()} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Try again</button>
+          </div>
+        )}
 
         {/* Header */}
         <div className="flex items-center justify-between">

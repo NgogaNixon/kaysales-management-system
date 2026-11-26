@@ -31,9 +31,11 @@ const ENTITY_LABEL = {
 async function fetchRequests(orgId, userId, isApprover) {
   const base = () => supabase.from('approval_requests').select('*').eq('organization_id', orgId)
   const mine = await base().eq('requested_by', userId).order('created_at', { ascending: false }).limit(50)
+  if (mine.error) return { failed: true }
   if (!isApprover) return { pending: [], history: [], mine: mine.data || [] }
   const pending = await base().eq('status', 'pending').order('created_at', { ascending: true })
   const history = await base().neq('status', 'pending').order('created_at', { ascending: false }).limit(50)
+  if (pending.error || history.error) return { failed: true }
   return { pending: pending.data || [], history: history.data || [], mine: mine.data || [] }
 }
 
@@ -58,6 +60,12 @@ export default function Approvals() {
     let active = true
     fetchRequests(orgId, userId, isApprover).then((result) => {
       if (!active) return
+      // If loading failed, keep what is on the screen and say so
+      if (result.failed) {
+        setError('Your requests could not be loaded. Please check your internet connection and press Refresh.')
+        setLoading(false)
+        return
+      }
       setData(result)
       setLoading(false)
     })

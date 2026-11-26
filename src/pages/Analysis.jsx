@@ -851,6 +851,7 @@ export default function Analysis() {
   const [exportTo, setExportTo] = useState('')
   const [exportError, setExportError] = useState('')
   const [exporting, setExporting] = useState(false)
+  const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
     if (profile?.id) fetchData()
@@ -867,19 +868,24 @@ export default function Analysis() {
   const fetchData = async (showLoader = true) => {
     if (showLoader) setLoading(true)
 
-    const [
-      { data: salesData },
-      { data: itemsData },
-      { data: productsData }
-    ] = await Promise.all([
+    const [salesResult, itemsResult, productsResult] = await Promise.all([
       fetchAllRows(() => supabase.from('sales').select('*').eq('user_id', profile.id).order('created_at', { ascending: true })),
       fetchAllRows(() => supabase.from('sale_items').select('*').eq('user_id', profile.id)),
       fetchAllRows(() => supabase.from('products').select('id, name, category').eq('user_id', profile.id)),
     ])
 
-    setSales(salesData || [])
-    setSaleItems(itemsData || [])
-    setProducts(productsData || [])
+    // If anything failed to load, keep the data already on the screen.
+    // Empty numbers would look like "no sales", which would be wrong.
+    if (salesResult.error || itemsResult.error || productsResult.error) {
+      setLoadError('Your data could not be loaded. Please check your internet connection and try again.')
+      setLoading(false)
+      return
+    }
+
+    setLoadError('')
+    setSales(salesResult.data || [])
+    setSaleItems(itemsResult.data || [])
+    setProducts(productsResult.data || [])
     setLoading(false)
   }
 
@@ -1032,6 +1038,10 @@ export default function Analysis() {
   }
 
   const handleExport = async () => {
+    if (loadError) {
+      setExportError('Your data did not load completely, so the report would be wrong. Close this window, press "Try again" on the page and export again.')
+      return
+    }
     const today = localDate(new Date())
     if (!exportFrom || !exportTo) {
       setExportError('Please choose both the From and To dates.')
@@ -1091,6 +1101,13 @@ export default function Analysis() {
             Export PDF
           </button>
         </div>
+
+        {loadError && (
+          <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-lg p-3 text-sm flex flex-wrap items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button onClick={() => fetchData()} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Try again</button>
+          </div>
+        )}
 
         {/* Date Filter */}
         <div className="flex flex-wrap gap-2 items-center">

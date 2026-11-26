@@ -63,6 +63,7 @@ export default function Credits() {
 
   // Credits <-> Sales consistency: sales whose credits don't match them
   const [syncIssues, setSyncIssues] = useState([])
+  const [loadError, setLoadError] = useState('')
   const [syncing, setSyncing] = useState(false)
   // Staff edit: the approval used to open the editor, used up only once the edit is saved
   const [editApprovalId, setEditApprovalId] = useState(null)
@@ -73,7 +74,7 @@ export default function Credits() {
 
   const fetchCredits = async () => {
     setLoading(true)
-    const [{ data: given }, { data: taken }] = await Promise.all([
+    const [givenResult, takenResult] = await Promise.all([
       fetchAllRows(() =>
         supabase.from('credits_given').select('*').eq('user_id', profile.id).order('created_at', { ascending: false })
       ),
@@ -82,8 +83,17 @@ export default function Credits() {
       ),
     ])
 
-    setCreditsGiven(given || [])
-    setCreditsTaken(taken || [])
+    // If loading failed, keep what is already on the screen and say so.
+    // An empty list would look like "no credits", which would be wrong.
+    if (givenResult.error || takenResult.error) {
+      setLoadError('Your credits could not be loaded. Please check your internet connection and try again.')
+      setLoading(false)
+      return
+    }
+
+    setLoadError('')
+    setCreditsGiven(givenResult.data || [])
+    setCreditsTaken(takenResult.data || [])
     setLoading(false)
   }
 
@@ -363,28 +373,45 @@ export default function Credits() {
     }
   }
 
-  const handleDelete = async (target = target) => {
+  const handleDelete = async (target = selectedCredit) => {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
 
     if (activeTab === 'given' && target.sale_id) {
-      const { data: saleItems } = await supabase
-        .from('sale_items')
-        .select('*')
-        .eq('sale_id', target.sale_id)
+      // New way: one safe database step. Stock, items, the sale and all its credits
+      // are removed together, or nothing is changed at all.
+      const rpcResult = await supabase.rpc('delete_sale', { p_sale_id: String(target.sale_id) })
+      const functionMissing = Boolean(rpcResult.error) &&
+        (rpcResult.error.code === 'PGRST202' || /could not find the function/i.test(rpcResult.error.message || ''))
 
-      if (saleItems && saleItems.length > 0) {
-        for (const item of saleItems) {
-          if (item.is_consignment) continue
-          await changeStock(item.product_id, item.quantity_sold)
+      if (rpcResult.error && !functionMissing) {
+        if (!/Sale not found/i.test(rpcResult.error.message || '')) {
+          throw new Error(rpcResult.error.message)
         }
+        // The sale is already gone, only remove the credit records left behind
+        await supabase.from('credits_given').delete().eq('sale_id', target.sale_id)
       }
 
-      await supabase.from('sale_items').delete().eq('sale_id', target.sale_id)
-      await supabase.from('sales').delete().eq('id', target.sale_id)
+      // Old way, only used when the database function is not installed yet
+      if (functionMissing) {
+        const { data: saleItems } = await supabase
+          .from('sale_items')
+          .select('*')
+          .eq('sale_id', target.sale_id)
 
-      // The sale is gone — remove every credit record tied to it, not just this
-      // one, so a multi-product sale doesn't leave sibling credits orphaned.
-      await supabase.from('credits_given').delete().eq('sale_id', target.sale_id)
+        if (saleItems && saleItems.length > 0) {
+          for (const item of saleItems) {
+            if (item.is_consignment) continue
+            await changeStock(item.product_id, item.quantity_sold)
+          }
+        }
+
+        await supabase.from('sale_items').delete().eq('sale_id', target.sale_id)
+        await supabase.from('sales').delete().eq('id', target.sale_id)
+
+        // The sale is gone — remove every credit record tied to it, not just this
+        // one, so a multi-product sale doesn't leave sibling credits orphaned.
+        await supabase.from('credits_given').delete().eq('sale_id', target.sale_id)
+      }
     } else {
       await supabase.from(table).delete().eq('id', target.id)
     }
@@ -418,8 +445,25 @@ export default function Credits() {
     const table = activeTab === 'given' ? 'credits_given' : 'credits_taken'
     const items = deleteAllTarget.items
 
+    // A sale with several products has one credit per product, so each sale is deleted only once
+    const deletedSales = {}
     for (const credit of items) {
       if (activeTab === 'given' && credit.sale_id) {
+        if (deletedSales[credit.sale_id]) continue
+        deletedSales[credit.sale_id] = true
+
+        // New way: one safe database step (stock, items, the sale and its credits together)
+        const rpcResult = await supabase.rpc('delete_sale', { p_sale_id: String(credit.sale_id) })
+        const functionMissing = Boolean(rpcResult.error) &&
+          (rpcResult.error.code === 'PGRST202' || /could not find the function/i.test(rpcResult.error.message || ''))
+
+        if (rpcResult.error && !functionMissing && !/Sale not found/i.test(rpcResult.error.message || '')) {
+          alert('Could not delete the sale of ' + (credit.customer_name || 'this customer') + ':\n\n' + rpcResult.error.message)
+          return
+        }
+        if (!functionMissing) continue
+
+        // Old way, only used when the database function is not installed yet
         const { data: saleItems } = await supabase
           .from('sale_items')
           .select('*')
@@ -1033,6 +1077,10 @@ export default function Credits() {
   // header, details block, items table, right-aligned totals, signature/stamp
   // and a thank-you footer.
   const handleExportClientPDF = async () => {
+    if (loadError) {
+      alert('Your data did not load completely, so the export would be wrong. Press "Try again" on the page first.')
+      return
+    }
     const label = activeTab === 'given' ? 'Customer' : 'Supplier'
     const items = statementItems
 
@@ -1135,11 +1183,15 @@ export default function Credits() {
   }
 
   const handleExport = () => {
+    if (loadError) {
+      alert('Your data did not load completely, so the export would be wrong. Press "Try again" on the page first.')
+      return
+    }
     const currentData = activeTab === 'given' ? creditsGiven : creditsTaken
     const nameField = activeTab === 'given' ? 'customer_name' : 'supplier_name'
     const exportFiltered = currentData.filter(c => {
       const creditDate = new Date(c.date || c.created_at)
-      const matchesFrom = exportFrom ? creditDate >= new Date(exportFrom) : true
+      const matchesFrom = exportFrom ? creditDate >= new Date(exportFrom + 'T00:00:00') : true
       const matchesTo = exportTo ? creditDate <= new Date(exportTo + 'T23:59:59') : true
       return matchesFrom && matchesTo
     })
@@ -1273,6 +1325,13 @@ export default function Credits() {
             )}
           </div>
         </div>
+
+        {loadError && (
+          <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-lg p-3 text-sm flex flex-wrap items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button onClick={() => fetchCredits()} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Try again</button>
+          </div>
+        )}
 
         {syncIssues.length > 0 && !isOrgStaff && (
           <div className="bg-yellow-900 border border-yellow-700 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">

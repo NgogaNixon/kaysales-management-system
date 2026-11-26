@@ -92,7 +92,7 @@ async function seedBuiltInRoles(orgId) {
 
 // Reads the team (members with their names, and pending invitations) from the database
 async function fetchTeamData(orgId) {
-  const { data: memberRows } = await supabase
+  const { data: memberRows, error: memberError } = await supabase
     .from('organization_members')
     .select('*')
     .eq('organization_id', orgId)
@@ -101,25 +101,30 @@ async function fetchTeamData(orgId) {
   const ids = (memberRows || []).map((m) => m.user_id)
   let profileMap = {}
   if (ids.length > 0) {
-    const { data: profileRows } = await supabase
+    const { data: profileRows, error: profileError } = await supabase
       .from('profiles')
       .select('id, full_name, email')
       .in('id', ids)
+    if (profileError) return { failed: true }
     profileMap = Object.fromEntries((profileRows || []).map((p) => [p.id, p]))
   }
 
-  const { data: inviteRows } = await supabase
+  if (memberError) return { failed: true }
+
+  const { data: inviteRows, error: inviteError } = await supabase
     .from('organization_invites')
     .select('*')
     .eq('organization_id', orgId)
     .eq('status', 'pending')
     .order('created_at', { ascending: false })
 
-  const { data: roleRows } = await supabase
+  const { data: roleRows, error: roleError } = await supabase
     .from('organization_roles')
     .select('*')
     .eq('organization_id', orgId)
     .order('created_at', { ascending: true })
+
+  if (inviteError || roleError) return { failed: true }
 
   return {
     members: (memberRows || []).map((m) => ({ ...m, profile: profileMap[m.user_id] || null })),
@@ -159,11 +164,17 @@ export default function Team() {
     const load = async () => {
       let result = await fetchTeamData(orgId)
       // First time: create the three standard roles for this company
-      if (result.roles.length === 0) {
+      // (never when loading failed, an empty list would be a false alarm)
+      if (!result.failed && result.roles.length === 0) {
         await seedBuiltInRoles(orgId)
         result = await fetchTeamData(orgId)
       }
       if (!active) return
+      if (result.failed) {
+        setError('The team could not be loaded. Please check your internet connection and try again.')
+        setLoading(false)
+        return
+      }
       setMembers(result.members)
       setInvites(result.invites)
       setRoles(result.roles)

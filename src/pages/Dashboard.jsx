@@ -28,6 +28,7 @@ export default function Dashboard() {
     recentSales: [],
   })
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [subscription, setSubscription] = useState(null)
   const [selectedSale, setSelectedSale] = useState(null)
   const [receiptItems, setReceiptItems] = useState([])
@@ -72,12 +73,22 @@ export default function Dashboard() {
   }, [profile])
 
   const fetchExpenses = async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('expenses')
       .select('*')
       .eq('user_id', profile.id)
       .order('created_at', { ascending: false })
+    if (error) {
+      setLoadError('Some of your data could not be loaded. Please check your internet connection and try again.')
+      return
+    }
     setExpenseList(data || [])
+  }
+
+  const reloadAll = () => {
+    setLoadError('')
+    fetchDashboardData()
+    fetchExpenses()
   }
 
   const handleDeleteExpense = async (expense) => {
@@ -128,10 +139,21 @@ export default function Dashboard() {
     setLoading(true)
 
     // Load everything (not just the first 1000 rows), both at the same time
-    const [{ data: salesData }, { data: productsData }] = await Promise.all([
+    const [salesResult, productsResult] = await Promise.all([
       fetchAllRows(() => supabase.from('sales').select('*').eq('user_id', profile.id)),
       fetchAllRows(() => supabase.from('products').select('*').eq('user_id', profile.id)),
     ])
+
+    // If loading failed, keep what is already on the screen and say so.
+    // Zero sales would look real, but it would be wrong.
+    if (salesResult.error || productsResult.error) {
+      setLoadError('Some of your data could not be loaded. Please check your internet connection and try again.')
+      setLoading(false)
+      return
+    }
+    setLoadError('')
+    const salesData = salesResult.data
+    const productsData = productsResult.data
 
     const totalRevenue = salesData?.reduce((sum, s) => sum + (s.total || 0), 0) || 0
     const totalProfit = salesData?.reduce((sum, s) => sum + (s.profit || 0), 0) || 0
@@ -314,7 +336,7 @@ export default function Dashboard() {
     if (periodPreset === 'all') return { start: null, end: null }
     if (periodPreset === 'custom') {
       return {
-        start: customFrom ? new Date(customFrom) : null,
+        start: customFrom ? new Date(customFrom + 'T00:00:00') : null,
         end: customTo ? new Date(customTo + 'T23:59:59') : null,
       }
     }
@@ -355,6 +377,13 @@ export default function Dashboard() {
   return (
     <Layout>
       <div className="p-6 space-y-6">
+
+        {loadError && (
+          <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-lg p-3 text-sm flex flex-wrap items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button onClick={reloadAll} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Try again</button>
+          </div>
+        )}
 
         <div className="flex items-center justify-between">
           <div>

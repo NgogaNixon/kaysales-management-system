@@ -34,6 +34,7 @@ export default function Quotations() {
   const [quotations, setQuotations] = useState([])
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [showModal, setShowModal] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [selectedQuotation, setSelectedQuotation] = useState(null)
@@ -67,18 +68,34 @@ export default function Quotations() {
 
   const fetchQuotations = async () => {
     setLoading(true)
-    const { data } = await fetchAllRows(() =>
+    const { data, error } = await fetchAllRows(() =>
       supabase.from('quotations').select('*').eq('user_id', profile.id).order('date', { ascending: false })
     )
+    // If loading failed, keep the list already on the screen and say so.
+    if (error) {
+      setLoadError('Some of your data could not be loaded. Please check your internet connection and try again.')
+      setLoading(false)
+      return
+    }
     setQuotations(data || [])
     setLoading(false)
   }
 
   const fetchProducts = async () => {
-    const { data } = await fetchAllRows(() =>
+    const { data, error } = await fetchAllRows(() =>
       supabase.from('products').select('*').eq('user_id', profile.id)
     )
+    if (error) {
+      setLoadError('Some of your data could not be loaded. Please check your internet connection and try again.')
+      return
+    }
     setProducts(data || [])
+  }
+
+  const reloadAll = () => {
+    setLoadError('')
+    fetchQuotations()
+    fetchProducts()
   }
 
   const openAdd = () => {
@@ -528,6 +545,13 @@ export default function Quotations() {
   return (
     <Layout>
       <div className="p-6 space-y-6">
+
+        {loadError && (
+          <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-lg p-3 text-sm flex flex-wrap items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button onClick={reloadAll} className="px-3 py-1 bg-red-700 hover:bg-red-600 text-white rounded-lg text-xs transition font-medium">Try again</button>
+          </div>
+        )}
 
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>

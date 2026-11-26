@@ -41,7 +41,7 @@ export default function ActivityLog() {
       log.action?.toLowerCase().includes(search.toLowerCase())
     const matchesFilter = filter === 'all' || log.action?.toLowerCase().includes(filter)
     const logDate = new Date(log.created_at)
-    const matchesFrom = dateFrom ? logDate >= new Date(dateFrom) : true
+    const matchesFrom = dateFrom ? logDate >= new Date(dateFrom + 'T00:00:00') : true
     const matchesTo = dateTo ? logDate <= new Date(dateTo + 'T23:59:59') : true
     return matchesSearch && matchesFilter && matchesFrom && matchesTo
   })
